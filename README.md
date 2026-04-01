@@ -228,7 +228,7 @@ brain/
 ### Individual Dockerfiles (Uses same pattern for all services e.g. services/thalamus/Dockerfile)
 
 ---------------------------------------------------------------------------------
-
+<pre>
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -249,44 +249,52 @@ httpx==0.27.0
 pydantic==2.7.0
 redis==5.0.4
 anthropic==0.28.0
-
+</pre>
 ---------------------------------------------------------------------------------
 
 ### .Env file
-
+<pre>
 ANTHROPIC_API_KEY=sk-ant-...
 OPENCLAW_WEBHOOK_SECRET=your-secret-here
 GITHUB_TOKEN=ghp_...
-
+</pre>
 ## System Startup and Usage
 
 ### Start everything
+<pre>
 docker compose up -d
-
+</pre>
 ### Watch all logs
+<pre>
 docker compose logs -f
-
+</pre>
 ### Wait for health
+<pre>
 curl http://localhost:8000/health
-
+</pre>
 ### Talk to the brain
+<pre>
 curl -X POST http://localhost:8000/brain/process \
   -H "Content-Type: application/json" \
   -d '{"session_id": "sess_001", "user_input": "I am stuck on a hard problem."}'
-
+</pre>
 ### Adjust a knob on the fly
+<pre>
 curl -X PATCH "http://localhost:8000/knobs/adjust?knob_name=humor&value=0.8"
-
+</pre>
 ### Apply a preset
+<pre>
 curl -X POST http://localhost:8000/knobs/preset/therapist
-
+</pre>
 ### See what the brain is perceiving
+<pre>
 curl http://localhost:8000/perception/recent
-
+</pre>
 ### Trigger self-analysis
+<pre>
 curl -X POST http://localhost:8000/update/self-analyze \
   -d '{"session_id": "sess_001", "experiences": []}'
-
+</pre>
 ### OpenClaw webhook (configure openclaw to POST here)
 ### OpenClaw message: "Make the brain more formal and skeptical"
 ### → Self-update interprets and applies knob changes automatically
@@ -296,17 +304,19 @@ curl -X POST http://localhost:8000/update/self-analyze \
 ## What You Have Now
 
 ### Compose
-
+<pre>
 ONE COMMAND: docker compose up -d
-
+</pre>
 ### THEN:
+<pre>
   POST /brain/process          → full cognitive pipeline
   PATCH /knobs/adjust          → tune any behavior live
   POST /knobs/preset/{name}    → switch personality presets
   POST /update/webhook/openclaw→ OpenClaw controls the brain
   POST /update/self-analyze    → brain improves itself
-
+</pre>
 ### EACH SERVICE:
+<pre>
   - Independent container
   - Its own FastAPI app
   - Reads knobs from Redis on every request
@@ -314,8 +324,9 @@ ONE COMMAND: docker compose up -d
   - /health endpoint
   - /knobs endpoint (shows current parameters)
   - Restartable independently
-
+</pre>
 ### THE BRAIN PERCEIVES:
+<pre>
   - Semantic novelty (new concepts)
   - Knowledge boundaries (what it doesn't know)
   - Human resonance (distress, need, joy)
@@ -326,10 +337,12 @@ ONE COMMAND: docker compose up -d
   - Parameter drift (its own personality shifting)
   - Temporal patterns (recurring question types)
   - Analogical insight (cross-domain connections clicking)
-
+</pre>
 ### SELF-MODIFICATION:
+<pre>
   - OpenClaw sends natural language → interpreted → applied
   - Claude Code can call /update directly
   - Self-analysis runs automatically when experiences are significant
   - Low-risk changes (knobs) applied automatically
   - High-risk changes (code) surfaced for human review
+</pre>
