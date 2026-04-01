@@ -8,7 +8,7 @@ Given the technological advancements in recent years with the creation of word2v
 Sensory input in the human brain goes through specific stages when a new experience is 'recorded'. The brain workflow looks something like this:
 
 ------------------------------------------------------------------------
-
+<pre>
 Sensory Input
      ↓
 Thalamus receives it, decides urgency
@@ -34,7 +34,7 @@ Hippocampus encodes the new episode
      [During sleep / idle time]
      ↓
 Hippocampus consolidates to Neocortex (long-term semantic storage)
-
+</pre>
 ------------------------------------------------------------------------
 
 ## System perception of sensory input
