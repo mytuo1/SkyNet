@@ -1,0 +1,232 @@
+version: "3.9"
+
+networks:
+  brain-net:
+    driver: bridge
+
+volumes:
+  edgedb-data:
+  elasticsearch-data:
+  redis-data:
+  self-update-workspace:
+
+services:
+
+  # ─── API GATEWAY ─────────────────────────────────────────────────────────
+  gateway:
+    image: nginx:alpine
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - thalamus
+      - knobs
+      - self-update
+    networks: [brain-net]
+    restart: unless-stopped
+
+  # ─── DATABASES ───────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 1gb --maxmemory-policy allkeys-lru
+    volumes: [redis-data:/data]
+    networks: [brain-net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+    volumes: [elasticsearch-data:/usr/share/elasticsearch/data]
+    networks: [brain-net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  edgedb:
+    image: edgedb/edgedb:4
+    environment:
+      EDGEDB_SERVER_SECURITY: insecure_dev_mode
+    volumes:
+      - edgedb-data:/var/lib/edgedb/data
+      - ./databases/edgedb/schema:/schema
+    networks: [brain-net]
+    restart: unless-stopped
+
+  # ─── BRAIN REGIONS ───────────────────────────────────────────────────────
+  amygdala:
+    build: ./services/amygdala
+    environment:
+      - REDIS_URL=redis://redis:6379
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+
+  hippocampus:
+    build: ./services/hippocampus
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - EDGEDB_DSN=edgedb://edgedb/main
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - OLLAMA_URL=http://host.docker.internal:11434
+    env_file: .env
+    networks: [brain-net]
+    depends_on:
+      edgedb:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  neocortex:
+    build: ./services/neocortex
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - REDIS_URL=redis://redis:6379
+      - OLLAMA_URL=http://host.docker.internal:11434
+    env_file: .env
+    networks: [brain-net]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  cerebellum:
+    build: ./services/cerebellum
+    environment:
+      - EDGEDB_DSN=edgedb://edgedb/main
+      - REDIS_URL=redis://redis:6379
+      - OLLAMA_URL=http://host.docker.internal:11434
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
+
+  working-memory:
+    build: ./services/working-memory
+    environment:
+      - REDIS_URL=redis://redis:6379
+    networks: [brain-net]
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  perception:
+    build: ./services/perception
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - NEOCORTEX_URL=http://neocortex:8004
+      - OLLAMA_URL=http://host.docker.internal:11434
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
+
+  verification:
+    build: ./services/verification
+    environment:
+      - NEOCORTEX_URL=http://neocortex:8004
+      - REDIS_URL=redis://redis:6379
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OLLAMA_URL=http://host.docker.internal:11434
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
+
+  cross-domain:
+    build: ./services/cross-domain
+    environment:
+      - NEOCORTEX_URL=http://neocortex:8004
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - REDIS_URL=redis://redis:6379
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
+
+  compass:
+    build: ./services/compass
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
+
+  framework-router:
+    build: ./services/framework-router
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
+
+  knobs:
+    build: ./services/knobs
+    environment:
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "8090:8090"    # exposed directly for easy adjustment
+    networks: [brain-net]
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  self-update:
+    build: ./services/self-update
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379
+      - OPENCLAW_WEBHOOK_SECRET=${OPENCLAW_WEBHOOK_SECRET}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    volumes:
+      - self-update-workspace:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock  # can restart containers
+    networks: [brain-net]
+    restart: unless-stopped
+
+  # ─── THALAMUS — LAST (depends on everything) ──────────────────────────
+  thalamus:
+    build: ./services/thalamus
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379
+      - AMYGDALA_URL=http://amygdala:8001
+      - HIPPOCAMPUS_URL=http://hippocampus:8002
+      - NEOCORTEX_URL=http://neocortex:8004
+      - CEREBELLUM_URL=http://cerebellum:8003
+      - WORKING_MEMORY_URL=http://working-memory:8005
+      - PERCEPTION_URL=http://perception:8006
+      - VERIFICATION_URL=http://verification:8007
+      - CROSS_DOMAIN_URL=http://cross-domain:8008
+      - COMPASS_URL=http://compass:8009
+      - FRAMEWORK_ROUTER_URL=http://framework-router:8010
+      - KNOBS_URL=http://knobs:8090
+    env_file: .env
+    networks: [brain-net]
+    depends_on:
+      - amygdala
+      - hippocampus
+      - neocortex
+      - cerebellum
+      - working-memory
+      - perception
+      - verification
+      - cross-domain
+      - compass
+      - framework-router
+      - knobs
+    restart: unless-stopped
