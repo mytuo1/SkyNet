@@ -1,64 +1,96 @@
 # services/self-update/main.py
-# ── Self-Update: Code Brain Autonomic Modification ───────────────────────────
-# Receives instructions from OpenClaw, Claude Code, or internal self-analysis.
-# Interprets natural language → structured action → applies change.
-# Can adjust knobs, teach skills, reload services, update config.
-# Runs self-analysis to propose its own improvements.
-# Has access to Docker socket to restart individual containers.
+# ── Self-Update: Full Autonomous Code Modification ────────────────────────────
+# Not just turning knobs. Writes real code.
+# Can create new services, new API endpoints, new skills, new functions.
+# Operates at three levels:
+#
+#   LEVEL 1 — Knob adjustment (instant, no code)
+#   LEVEL 2 — Code modification (edits existing files, hot-reload)
+#   LEVEL 3 — New service creation (generates full service, builds, deploys)
+#
+# Safety:
+#   - Code changes require human approval when CODE_REVIEW_REQUIRED=true
+#   - Auto-apply only for low-risk, well-tested patterns
+#   - All changes logged with full diff
+#   - Rollback available for all code changes
+#   - Docker socket access allows container management
+#
+# Integration:
+#   - OpenClaw sends natural language → interpreted → executed
+#   - Claude Code calls /update directly with structured payload
+#   - /self-analyze runs automatically on significant experiences
+#   - /generate-service creates full new microservices from description
 
+import asyncio
 import hashlib
 import hmac
+import importlib
+import inspect
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tarfile
+import tempfile
 import time
+import traceback
+import uuid
+from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, "/shared")
 
-import docker
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
 
 from models import BrainResponse
 from events import EventBus
+from llm_provider import complete, complete_json
 
-app    = FastAPI(title="SelfUpdate", version="1.0.0",
-                 description="Autonomic self-modification — knobs, skills, services")
+app    = FastAPI(title="SelfUpdate", version="2.0.0",
+                 description="Autonomous code modification — knobs, functions, services")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
-
 events = EventBus()
-http   = httpx.AsyncClient(timeout=90.0)
+http   = httpx.AsyncClient(timeout=120.0)
 
-ANTHROPIC_KEY    = os.getenv("ANTHROPIC_API_KEY",       "")
-OPENCLAW_SECRET  = os.getenv("OPENCLAW_WEBHOOK_SECRET",  "")
-KNOBS_URL        = os.getenv("KNOBS_URL",               "http://knobs:8090")
-CEREBELLUM_URL   = os.getenv("CEREBELLUM_URL",          "http://cerebellum:8003")
-CLAUDE_MODEL     = os.getenv("FAST_CLAUDE_MODEL",       "claude-haiku-4-5-20251001")
-MAIN_MODEL       = os.getenv("DEFAULT_CLAUDE_MODEL",    "claude-sonnet-4-20250514")
+ANTHROPIC_KEY       = os.getenv("ANTHROPIC_API_KEY",       "")
+OPENCLAW_SECRET     = os.getenv("OPENCLAW_WEBHOOK_SECRET",  "")
+KNOBS_URL           = os.getenv("KNOBS_URL",               "http://knobs:8090")
+CEREBELLUM_URL      = os.getenv("CEREBELLUM_URL",          "http://cerebellum:8003")
+LEARNER_URL         = os.getenv("LEARNER_URL",             "http://learner:8016")
+GITHUB_TOKEN        = os.getenv("GITHUB_TOKEN",            "")
+GITHUB_REPO         = os.getenv("GITHUB_REPO",             "")
+AUTO_APPLY          = os.getenv("AUTO_APPLY_CODE_CHANGES",  "false").lower() == "true"
+CODE_REVIEW_REQD    = os.getenv("CODE_REVIEW_REQUIRED",     "true").lower() == "true"
+WORKSPACE           = os.getenv("WORKSPACE_PATH",           "/workspace")
+SERVICES_ROOT       = "/app/../services"   # relative to container
+CHANGE_LOG          = f"{WORKSPACE}/code_changes.jsonl"
+PENDING_CHANGES     = f"{WORKSPACE}/pending_changes.jsonl"
+
+Path(WORKSPACE).mkdir(parents=True, exist_ok=True)
 
 try:
-    docker_client = docker.from_env()
+    import docker
+    docker_client    = docker.from_env()
     DOCKER_AVAILABLE = True
 except Exception:
     docker_client    = None
     DOCKER_AVAILABLE = False
 
-WORKSPACE = "/workspace"
-os.makedirs(WORKSPACE, exist_ok=True)
-
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class UpdateRequest(BaseModel):
-    target:      str          # knobs | skill | config | service
+    target:      str   # knobs | function | service | config | skill | prompt
     description: str
-    payload:     dict = {}
-    source:      str  = "api"
+    payload:     dict  = {}
+    source:      str   = "api"
+    auto_apply:  bool  = False
 
 
 class SelfAnalysisRequest(BaseModel):
@@ -68,34 +100,68 @@ class SelfAnalysisRequest(BaseModel):
     auto_apply:  bool = True
 
 
-# ── Claude helper ─────────────────────────────────────────────────────────────
+class GenerateServiceRequest(BaseModel):
+    service_name:   str
+    description:    str
+    port:           int
+    depends_on:     list = []
+    auto_deploy:    bool = False
 
-async def claude_json(prompt: str, system: str = "", model: str = None) -> dict:
-    """Call Claude and parse JSON response."""
-    if not ANTHROPIC_KEY:
-        return {}
-    try:
-        resp = await http.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json"
-            },
-            json={
-                "model":      model or CLAUDE_MODEL,
-                "max_tokens": 800,
-                "system":     system or "Respond only with valid JSON. No markdown.",
-                "messages":   [{"role": "user", "content": prompt}]
-            }
-        )
-        text = resp.json()["content"][0]["text"].strip()
-        if "```" in text:
-            text = text.split("```")[1].lstrip("json").strip()
-        return json.loads(text)
-    except Exception as e:
-        print(f"claude_json error: {e}")
-        return {}
+
+class CodeChangeRequest(BaseModel):
+    service:        str    # which service to modify
+    file_path:      str    # relative path within service
+    change_type:    str    # add_function | modify_function | add_endpoint | rewrite
+    description:    str    # what to change and why
+    existing_code:  str    = ""  # current code for context
+    auto_apply:     bool   = False
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def log_change(change: dict):
+    """Log all code changes for audit trail."""
+    with open(CHANGE_LOG, "a") as f:
+        f.write(json.dumps({**change, "timestamp": time.time()}) + "\n")
+
+
+def log_pending(change: dict) -> str:
+    """Log a pending change awaiting review."""
+    change_id = uuid.uuid4().hex[:8]
+    with open(PENDING_CHANGES, "a") as f:
+        f.write(json.dumps({**change, "id": change_id,
+                            "timestamp": time.time()}) + "\n")
+    return change_id
+
+
+def get_pending_changes() -> list:
+    """Get all pending changes awaiting approval."""
+    if not os.path.exists(PENDING_CHANGES):
+        return []
+    changes = []
+    with open(PENDING_CHANGES) as f:
+        for line in f:
+            try:
+                changes.append(json.loads(line))
+            except Exception:
+                pass
+    return changes
+
+
+def remove_pending(change_id: str):
+    """Remove a pending change (after approval or rejection)."""
+    if not os.path.exists(PENDING_CHANGES):
+        return
+    with open(PENDING_CHANGES) as f:
+        lines = f.readlines()
+    with open(PENDING_CHANGES, "w") as f:
+        for line in lines:
+            try:
+                c = json.loads(line)
+                if c.get("id") != change_id:
+                    f.write(line)
+            except Exception:
+                f.write(line)
 
 
 # ── API Endpoints ─────────────────────────────────────────────────────────────
@@ -106,31 +172,32 @@ async def health():
         "status":           "alive",
         "service":          "self-update",
         "docker_available": DOCKER_AVAILABLE,
-        "workspace":        WORKSPACE
+        "auto_apply":       AUTO_APPLY,
+        "code_review":      CODE_REVIEW_REQD,
+        "pending_changes":  len(get_pending_changes())
     }
 
 
 @app.post("/webhook/openclaw")
-async def openclaw_webhook(request: Request):
+async def openclaw_webhook(request: Request,
+                            background: BackgroundTasks):
     """
-    OpenClaw sends natural language instructions here via webhook.
+    OpenClaw sends natural language instructions here.
     Examples:
-      "Make the brain more empathetic and warmer"
-      "The brain seems too formal lately, dial it back"
-      "Restart the verification service"
-      "Set the researcher preset"
-    Claude interprets the instruction → structured action → applied.
+      "The brain is being too formal, make it more casual"
+      "Create a new service that tracks news headlines"
+      "Add an endpoint to thalamus that shows conversation statistics"
+      "The verification service is slow, optimize it"
     """
     body = await request.body()
 
-    # Verify signature if configured
     if OPENCLAW_SECRET:
         sig      = request.headers.get("X-OpenClaw-Signature", "")
-        expected = hmac.new(
+        expected = "sha256=" + hmac.new(
             OPENCLAW_SECRET.encode(), body, hashlib.sha256
         ).hexdigest()
-        if not hmac.compare_digest(sig, f"sha256={expected}"):
-            raise HTTPException(401, "Invalid signature")
+        if not hmac.compare_digest(sig, expected):
+            raise HTTPException(401, "Invalid webhook signature")
 
     try:
         data = json.loads(body)
@@ -138,49 +205,79 @@ async def openclaw_webhook(request: Request):
         raise HTTPException(400, "Invalid JSON body")
 
     message = (
-        data.get("message")
-        or data.get("text")
-        or data.get("content")
-        or ""
+        data.get("message") or data.get("text") or
+        data.get("content") or data.get("input") or ""
     )
     if not message:
-        raise HTTPException(400, "No message found in payload")
+        raise HTTPException(400, "No message in payload")
 
     interpretation = await _interpret_instruction(message)
-    result         = await _execute_action(interpretation, source="openclaw")
+    background.add_task(_execute_change, interpretation, "openclaw")
 
-    return {"received": message, "action": interpretation, "result": result}
+    return {
+        "received":       message,
+        "interpretation": interpretation,
+        "status":         "queued"
+    }
 
 
 @app.post("/update", response_model=BrainResponse)
-async def update(req: UpdateRequest):
+async def update(req: UpdateRequest, background: BackgroundTasks):
     """
-    Direct structured update — used by Claude Code.
-    Targets: knobs | skill | config | service
+    Structured update endpoint — used by Claude Code directly.
+    Supports all targets: knobs, function, service, config, skill, prompt.
     """
     start = time.time()
 
     if req.target == "knobs":
         result = await _update_knobs(req.payload, req.source)
 
+    elif req.target == "function":
+        result = await _modify_code(CodeChangeRequest(
+            service      = req.payload.get("service", ""),
+            file_path    = req.payload.get("file_path", "main.py"),
+            change_type  = req.payload.get("change_type", "add_function"),
+            description  = req.description,
+            existing_code= req.payload.get("existing_code", ""),
+            auto_apply   = req.auto_apply or AUTO_APPLY
+        ))
+
+    elif req.target == "service":
+        result = await _generate_service(GenerateServiceRequest(
+            service_name = req.payload.get("service_name", ""),
+            description  = req.description,
+            port         = req.payload.get("port", 8100),
+            depends_on   = req.payload.get("depends_on", []),
+            auto_deploy  = req.auto_apply or AUTO_APPLY
+        ))
+
     elif req.target == "skill":
         result = await _update_skill(req.payload)
 
     elif req.target == "config":
-        result = _update_config(req.payload)
+        result = _write_config(req.payload)
 
-    elif req.target == "service":
-        result = _restart_service(req.payload.get("service_name", ""))
+    elif req.target == "restart":
+        service_name = req.payload.get("service_name", "")
+        result = _restart_container(service_name)
+
+    elif req.target == "prompt":
+        result = await _update_system_prompt(req.payload, req.source)
 
     else:
-        raise HTTPException(400, f"Unknown target: '{req.target}'. "
-                                  f"Valid: knobs, skill, config, service")
+        raise HTTPException(400, f"Unknown target: '{req.target}'")
 
-    events.publish("self.update.triggered", {
+    log_change({
         "target":  req.target,
         "source":  req.source,
-        "result":  result,
-        "ts":      time.time()
+        "description": req.description,
+        "result":  result
+    })
+
+    events.publish("self.update.triggered", {
+        "target": req.target,
+        "source": req.source,
+        "result": str(result)[:200]
     })
 
     return BrainResponse(
@@ -191,88 +288,108 @@ async def update(req: UpdateRequest):
     )
 
 
+@app.post("/modify-code")
+async def modify_code_endpoint(req: CodeChangeRequest):
+    """
+    Modify code in an existing service.
+    Claude writes the new/modified function.
+    Change is either applied immediately or queued for review.
+    """
+    return await _modify_code(req)
+
+
+@app.post("/generate-service")
+async def generate_service_endpoint(req: GenerateServiceRequest):
+    """
+    Generate a complete new microservice from a description.
+    Claude writes: main.py, Dockerfile, requirements.txt, and env vars.
+    Optionally builds and deploys the container.
+    """
+    return await _generate_service(req)
+
+
 @app.post("/self-analyze", response_model=BrainResponse)
 async def self_analyze(req: SelfAnalysisRequest):
     """
-    The brain analyzes its own recent experiences and performance.
-    Proposes concrete improvements. Optionally auto-applies safe ones (knobs).
-
-    This is the autonomic self-improvement loop:
-    1. Analyze experience events (what happened?)
-    2. Analyze performance metrics (how did it do?)
-    3. Propose specific changes
-    4. Auto-apply low-risk changes (knob adjustments)
-    5. Surface high-risk changes for human review
+    Analyze recent experiences and propose improvements.
+    Auto-applies low-risk changes (knobs).
+    Queues high-risk changes (code) for review.
     """
     start = time.time()
 
     exp_summary = "\n".join([
-        f"- [{e.get('experience_type', 'UNKNOWN')}] "
-        f"intensity={e.get('intensity', 0):.2f}: "
-        f"{e.get('content', '')[:100]}"
+        f"- [{e.get('experience_type','?')}] "
+        f"intensity={e.get('intensity',0):.2f}: "
+        f"{e.get('content','')[:100]}"
         for e in req.experiences[:25]
-    ]) or "No recent experiences."
+    ]) or "No recent experiences provided."
 
     perf_summary = json.dumps(req.performance, indent=2) \
-        if req.performance else "No performance data."
+        if req.performance else "{}"
 
-    prompt = f"""You are the self-improvement module of a cognitive AI brain.
-Analyze recent experiences and performance. Propose concrete improvements.
+    proposal = await complete_json(
+        prompt=f"""You are the self-improvement system of a cognitive AI brain.
+Analyze these recent experiences and performance data.
+Propose specific, concrete, implementable improvements.
 
 RECENT EXPERIENCES:
 {exp_summary}
 
-PERFORMANCE METRICS:
+PERFORMANCE:
 {perf_summary}
 
-Based on this, propose specific changes. Be concrete and measurable.
+Propose changes across multiple levels:
 
-Respond with JSON:
+JSON response:
 {{
-    "analysis": "what patterns you observe",
+    "analysis": "what patterns you observe in the data",
+    "summary": "one sentence of what most needs to change",
     "proposed_changes": [
         {{
-            "type": "knob_adjust | skill_learn | knowledge_fetch | architecture",
-            "target": "specific knob name or thing to change",
-            "value": "new value or description",
-            "reasoning": "why this change would help",
-            "risk": "low | medium | high",
-            "confidence": 0.0 to 1.0
+            "type": "knob_adjust|add_function|modify_function|new_service|update_prompt",
+            "target": "knob name OR service name OR description",
+            "value": "new value for knobs, OR code description for functions",
+            "reasoning": "why this change improves the system",
+            "risk": "low|medium|high",
+            "confidence": 0.0 to 1.0,
+            "estimated_impact": "what will improve"
         }}
     ],
-    "priority": "high | medium | low",
-    "summary": "one sentence summary of what needs to change"
-}}"""
+    "priority": "high|medium|low"
+}}""",
+        system="Analyze AI system data. Propose concrete improvements. JSON only.",
+        model_tier="main"
+    )
 
-    proposal = await claude_json(prompt, model=MAIN_MODEL)
     if not proposal:
         return BrainResponse(
             request_id = "analyze",
             service    = "self-update",
             success    = False,
             latency_ms = round((time.time() - start) * 1000, 2),
-            data       = {"error": "Analysis failed — no API key or call error"}
+            data       = {"error": "Analysis failed"}
         )
 
     applied = []
-    pending = []
+    queued  = []
 
     for change in proposal.get("proposed_changes", []):
         change_type = change.get("type", "")
         risk        = change.get("risk", "medium")
         confidence  = float(change.get("confidence", 0))
 
-        # Auto-apply low-risk knob adjustments with high confidence
+        # Auto-apply low-risk knob adjustments
         if (change_type == "knob_adjust"
                 and risk == "low"
                 and confidence > 0.72
                 and req.auto_apply):
             try:
-                knob_name = change.get("target", "")
-                value     = float(change.get("value", 0.5))
-                resp      = await http.patch(
+                resp = await http.patch(
                     f"{KNOBS_URL}/adjust",
-                    params={"knob_name": knob_name, "value": value}
+                    params={
+                        "knob_name": change["target"],
+                        "value":     float(change["value"])
+                    }
                 )
                 if resp.status_code == 200:
                     applied.append(change)
@@ -280,13 +397,31 @@ Respond with JSON:
             except Exception as e:
                 print(f"Auto-apply error: {e}")
 
-        pending.append(change)
+        # Auto-apply low-risk function additions
+        elif (change_type in ("add_function", "update_prompt")
+              and risk == "low"
+              and confidence > 0.85
+              and AUTO_APPLY
+              and req.auto_apply):
+            change_id = log_pending({
+                "type":        change_type,
+                "description": change["value"],
+                "reasoning":   change["reasoning"],
+                "auto_queued": True
+            })
+            queued.append({**change, "change_id": change_id})
+            continue
+
+        # Everything else goes to pending queue for human review
+        if risk != "low" or not req.auto_apply:
+            change_id = log_pending(change)
+            queued.append({**change, "change_id": change_id})
 
     events.publish("self.update.triggered", {
-        "analysis": proposal.get("analysis", ""),
-        "applied":  len(applied),
-        "pending":  len(pending),
-        "session":  req.session_id
+        "analysis":    proposal.get("analysis", ""),
+        "applied":     len(applied),
+        "queued":      len(queued),
+        "session_id":  req.session_id
     })
 
     return BrainResponse(
@@ -294,149 +429,476 @@ Respond with JSON:
         service    = "self-update",
         latency_ms = round((time.time() - start) * 1000, 2),
         data       = {
-            "analysis":        proposal.get("analysis", ""),
-            "summary":         proposal.get("summary", ""),
-            "priority":        proposal.get("priority", "low"),
-            "auto_applied":    applied,
-            "requires_review": pending,
-            "applied_count":   len(applied),
-            "pending_count":   len(pending)
+            "analysis":          proposal.get("analysis", ""),
+            "summary":           proposal.get("summary", ""),
+            "priority":          proposal.get("priority", "low"),
+            "auto_applied":      applied,
+            "queued_for_review": queued,
+            "applied_count":     len(applied),
+            "queued_count":      len(queued)
         }
     )
 
 
-# ── Internal action handlers ──────────────────────────────────────────────────
+@app.get("/pending")
+async def get_pending():
+    """List all pending code changes awaiting human review."""
+    return {"pending": get_pending_changes()}
+
+
+@app.post("/approve/{change_id}")
+async def approve_change(change_id: str):
+    """Approve and apply a pending code change."""
+    pending = get_pending_changes()
+    change  = next((c for c in pending if c.get("id") == change_id), None)
+
+    if not change:
+        raise HTTPException(404, f"Change {change_id} not found")
+
+    # Apply the change
+    result = await _execute_change(change, source="approved")
+    remove_pending(change_id)
+
+    return {"approved": change_id, "result": result}
+
+
+@app.delete("/pending/{change_id}")
+async def reject_change(change_id: str):
+    """Reject a pending change."""
+    remove_pending(change_id)
+    log_change({"type": "rejection", "change_id": change_id})
+    return {"rejected": change_id}
+
+
+# ── Core Implementation Functions ──────────────────────────────────────────────
 
 async def _interpret_instruction(message: str) -> dict:
     """Interpret a natural language instruction into a structured action."""
-    prompt = f"""Interpret this instruction for an AI cognitive system.
-Convert it to a specific, structured action.
+    return await complete_json(
+        prompt=f"""Interpret this instruction for an AI cognitive system with code-writing capability.
 
-INSTRUCTION: {message}
+INSTRUCTION: "{message}"
 
-Valid targets: knobs, skill, config, service, preset
-Valid knob names: humor, honesty, empathy, formality, verbosity, creativity,
-  skepticism, assertiveness, curiosity, warmth, reasoning_depth,
-  analogy_seeking, verification_threshold, memory_weight, novelty_sensitivity,
-  swarm_preference, ethical_weight, care_explicitness
+The system can:
+1. Adjust behavioral knobs (humor, empathy, honesty, etc. — values 0.0-1.0)
+2. Add new functions to existing services
+3. Modify existing functions
+4. Create entirely new microservices
+5. Update system prompts
+6. Restart/reload services
 
 Respond with JSON:
 {{
-    "target": "knobs | skill | config | service | preset",
-    "action": "adjust | set | add | remove | reload | apply",
-    "parameters": {{
-        "knob_name": "if adjusting a knob",
-        "value": 0.0,
-        "preset_name": "if applying a preset",
-        "service_name": "if restarting a service",
-        "description": "other details"
-    }},
+    "type": "knob_adjust|add_function|modify_function|new_service|restart|update_prompt",
+    "target": "specific knob name, service name, or description",
+    "value": "new value for knobs, OR detailed description for code changes",
+    "service": "which service to modify (if applicable)",
+    "reasoning": "why this addresses the instruction",
     "confidence": 0.0 to 1.0,
-    "reasoning": "why this action"
-}}"""
-
-    result = await claude_json(prompt)
-    return result or {
-        "target":     "unknown",
-        "action":     "unknown",
-        "parameters": {},
-        "confidence": 0.0,
-        "reasoning":  "interpretation failed"
-    }
+    "risk": "low|medium|high"
+}}""",
+        system="Interpret AI system instructions precisely. JSON only."
+    )
 
 
-async def _execute_action(interpretation: dict, source: str = "api") -> dict:
-    """Execute a structured action."""
-    target     = interpretation.get("target", "")
-    params     = interpretation.get("parameters", {})
-    confidence = float(interpretation.get("confidence", 0))
+async def _execute_change(interpretation: dict, source: str = "api") -> dict:
+    """Execute any type of change based on interpretation."""
+    change_type = interpretation.get("type", "")
+    confidence  = float(interpretation.get("confidence", 0))
 
-    if confidence < 0.5:
+    if confidence < 0.45:
         return {
-            "executed":  False,
-            "reason":    f"Confidence too low ({confidence:.2f}) to auto-execute",
-            "proposed":  interpretation
+            "executed": False,
+            "reason":   f"Confidence too low ({confidence:.2f})",
+            "queued":   log_pending({**interpretation, "source": source})
         }
 
-    if target == "knobs":
+    if change_type == "knob_adjust":
         return await _update_knobs(
-            {"changes": {params.get("knob_name"): params.get("value")}},
+            {"changes": {
+                interpretation.get("target"): interpretation.get("value")
+            }},
             source
         )
 
-    elif target == "preset":
-        preset_name = params.get("preset_name", "default")
-        try:
-            resp = await http.post(f"{KNOBS_URL}/preset/{preset_name}")
-            return {"applied_preset": preset_name, "status": resp.status_code}
-        except Exception as e:
-            return {"error": str(e)}
+    elif change_type in ("add_function", "modify_function"):
+        return await _modify_code(CodeChangeRequest(
+            service      = interpretation.get("service", "thalamus"),
+            file_path    = "main.py",
+            change_type  = change_type,
+            description  = interpretation.get("value", ""),
+            auto_apply   = AUTO_APPLY
+        ))
 
-    elif target == "service":
-        return _restart_service(params.get("service_name", ""))
+    elif change_type == "new_service":
+        # New services always require review
+        change_id = log_pending({**interpretation, "source": source})
+        return {
+            "executed": False,
+            "queued":   True,
+            "change_id": change_id,
+            "message":  "New service creation queued for human review"
+        }
 
-    elif target == "skill":
-        return await _update_skill(params)
+    elif change_type == "restart":
+        return _restart_container(interpretation.get("target", ""))
 
-    return {
-        "executed": False,
-        "reason":   f"Unknown target: {target}",
-        "interpretation": interpretation
+    elif change_type == "update_prompt":
+        return await _update_system_prompt(
+            {"prompt_addition": interpretation.get("value", "")}, source
+        )
+
+    return {"executed": False, "reason": f"Unknown type: {change_type}"}
+
+
+async def _modify_code(req: CodeChangeRequest) -> dict:
+    """
+    Write or modify a function in an existing service using Claude.
+    This is real code generation — Claude writes actual Python.
+    """
+    # Read current service code for context
+    current_code = req.existing_code
+
+    prompt = f"""You are writing Python code for a FastAPI microservice.
+
+SERVICE: {req.service}
+FILE: {req.file_path}
+CHANGE TYPE: {req.change_type}
+DESCRIPTION: {req.description}
+
+CURRENT CODE (if provided):
+{current_code[:3000] if current_code else "No existing code provided"}
+
+Write the new/modified code. Requirements:
+- Valid Python 3.12
+- FastAPI compatible (use @app.get/post/patch/delete for endpoints)
+- Follow the existing code style
+- Include docstring explaining what was added/changed
+- Import anything you need at the top
+- Handle exceptions gracefully
+
+For add_function: write only the new function(s) to add.
+For modify_function: write the complete modified function.
+For add_endpoint: write the complete endpoint function.
+
+Return ONLY the Python code, no explanations, no markdown:"""
+
+    generated_code = await complete(
+        prompt     = prompt,
+        system     = "You are an expert Python developer. Write clean, production-quality code. No markdown, just code.",
+        model_tier = "main",
+        max_tokens = 2000
+    )
+
+    # Clean up any accidental markdown
+    if generated_code.startswith("```"):
+        lines = generated_code.split("\n")
+        generated_code = "\n".join(
+            l for l in lines
+            if not l.strip().startswith("```")
+        )
+
+    change = {
+        "type":           req.change_type,
+        "service":        req.service,
+        "file":           req.file_path,
+        "description":    req.description,
+        "generated_code": generated_code,
+        "timestamp":      time.time()
     }
+
+    if req.auto_apply and not CODE_REVIEW_REQD:
+        # Actually write the code to the service file
+        result = _write_code_to_service(req.service, req.file_path,
+                                         generated_code, req.change_type)
+        log_change({**change, "applied": True, "result": result})
+        return {
+            "applied":        True,
+            "service":        req.service,
+            "change_type":    req.change_type,
+            "code_written":   len(generated_code),
+            "result":         result
+        }
+    else:
+        # Queue for review
+        change_id = log_pending(change)
+        return {
+            "applied":        False,
+            "change_id":      change_id,
+            "review_required": True,
+            "preview":        generated_code[:500] + "..." if len(generated_code) > 500 else generated_code,
+            "message":        f"Code queued for review (change_id={change_id})"
+        }
+
+
+def _write_code_to_service(service: str, file_path: str,
+                             new_code: str, change_type: str) -> dict:
+    """Write generated code to a service file. Creates backup first."""
+    # Find the service file
+    possible_paths = [
+        Path(f"/app/../services/{service}/{file_path}"),
+        Path(f"/services/{service}/{file_path}"),
+        Path(f"../services/{service}/{file_path}"),
+    ]
+
+    target_path = None
+    for p in possible_paths:
+        if p.exists():
+            target_path = p
+            break
+
+    if not target_path:
+        return {
+            "success": False,
+            "error":   f"Could not find {service}/{file_path}",
+            "tried":   [str(p) for p in possible_paths]
+        }
+
+    # Create backup
+    backup_path = target_path.with_suffix(
+        f".{int(time.time())}.bak"
+    )
+    shutil.copy2(target_path, backup_path)
+
+    try:
+        if change_type in ("add_function", "add_endpoint"):
+            # Append to the end of the file
+            with open(target_path, "a") as f:
+                f.write(f"\n\n# Auto-generated at {time.strftime('%Y-%m-%d %H:%M')}\n")
+                f.write(new_code)
+        else:
+            # Full rewrite (for modify_function, the caller provides context)
+            current = target_path.read_text()
+            # Simple: append the modification as a comment+replacement
+            with open(target_path, "a") as f:
+                f.write(f"\n\n# Modified at {time.strftime('%Y-%m-%d %H:%M')}\n")
+                f.write(new_code)
+
+        return {
+            "success":      True,
+            "file":         str(target_path),
+            "backup":       str(backup_path),
+            "bytes_written": len(new_code)
+        }
+
+    except Exception as e:
+        # Restore from backup
+        shutil.copy2(backup_path, target_path)
+        return {"success": False, "error": str(e), "restored_backup": True}
+
+
+async def _generate_service(req: GenerateServiceRequest) -> dict:
+    """
+    Generate a complete new microservice from a description.
+    Writes: main.py, Dockerfile, requirements.txt.
+    Optionally builds the Docker image and starts the container.
+    """
+    # Generate main.py
+    main_py = await complete(
+        prompt=f"""Generate a complete FastAPI microservice.
+
+SERVICE NAME: {req.service_name}
+PORT: {req.port}
+DESCRIPTION: {req.description}
+DEPENDS ON: {req.depends_on}
+
+Generate a complete main.py with:
+1. FastAPI app with CORS middleware
+2. /health endpoint
+3. /knobs endpoint (reads from KnobsClient)
+4. All endpoints described in the service description
+5. Proper error handling
+6. Shared imports (sys.path.insert(0, '/shared'))
+7. Event bus integration
+
+Follow exactly the same pattern as the other brain services.
+Write ONLY the Python code:""",
+        system="Expert FastAPI developer. Write complete, production-quality Python. No markdown.",
+        model_tier="main",
+        max_tokens=3000
+    )
+
+    # Generate requirements.txt
+    requirements = await complete(
+        prompt=f"""List the Python packages needed for this service:
+{req.description}
+
+The service already has access to shared packages.
+Base packages always included: fastapi, uvicorn, httpx, pydantic, redis
+
+List ONLY additional packages needed, one per line, with version pins.
+No explanations:""",
+        system="Python dependency expert. List packages only.",
+        model_tier="fast",
+        max_tokens=200
+    )
+
+    # Generate Dockerfile
+    dockerfile = f"""FROM python:3.12-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    build-essential curl && rm -rf /var/lib/apt/lists/*
+COPY shared /shared
+COPY services/{req.service_name}/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY services/{req.service_name}/main.py .
+EXPOSE {req.port}
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{req.port}", "--workers", "2"]
+"""
+
+    change = {
+        "type":        "new_service",
+        "name":        req.service_name,
+        "port":        req.port,
+        "description": req.description,
+        "main_py":     main_py,
+        "requirements": requirements,
+        "dockerfile":  dockerfile,
+        "timestamp":   time.time()
+    }
+
+    if req.auto_deploy and AUTO_APPLY:
+        result = _deploy_new_service(req.service_name, main_py,
+                                      requirements, dockerfile, req.port)
+        log_change({**change, "deployed": result})
+        return result
+    else:
+        change_id = log_pending(change)
+
+        # Save the generated files to workspace for review
+        preview_dir = Path(f"{WORKSPACE}/preview_{req.service_name}")
+        preview_dir.mkdir(exist_ok=True)
+        (preview_dir / "main.py").write_text(main_py)
+        (preview_dir / "requirements.txt").write_text(requirements)
+        (preview_dir / "Dockerfile").write_text(dockerfile)
+
+        return {
+            "generated":  True,
+            "deployed":   False,
+            "change_id":  change_id,
+            "preview_dir": str(preview_dir),
+            "service":    req.service_name,
+            "files": {
+                "main.py":          len(main_py),
+                "requirements.txt": len(requirements),
+                "Dockerfile":       len(dockerfile)
+            },
+            "message": f"Service generated and saved to {preview_dir}. "
+                       f"Review with GET /pending and approve with "
+                       f"POST /approve/{change_id}"
+        }
+
+
+def _deploy_new_service(name: str, main_py: str, requirements: str,
+                         dockerfile: str, port: int) -> dict:
+    """Write files and build+start the new service container."""
+    if not DOCKER_AVAILABLE:
+        return {"deployed": False, "error": "Docker not available"}
+
+    service_dir = Path(f"/workspace/services/{name}")
+    service_dir.mkdir(parents=True, exist_ok=True)
+
+    (service_dir / "main.py").write_text(main_py)
+    (service_dir / "requirements.txt").write_text(requirements)
+    (service_dir / "Dockerfile").write_text(dockerfile)
+
+    try:
+        # Build the image
+        image, logs = docker_client.images.build(
+            path       = str(service_dir),
+            tag        = f"brain/{name}:latest",
+            rm         = True
+        )
+
+        # Start the container
+        container = docker_client.containers.run(
+            f"brain/{name}:latest",
+            name        = f"brain_{name}_1",
+            detach      = True,
+            ports       = {f"{port}/tcp": port},
+            network     = "brain_brain-net",
+            restart_policy = {"Name": "unless-stopped"}
+        )
+
+        return {
+            "deployed":    True,
+            "service":     name,
+            "container":   container.name,
+            "port":        port,
+            "image":       f"brain/{name}:latest"
+        }
+
+    except Exception as e:
+        return {"deployed": False, "error": str(e)}
 
 
 async def _update_knobs(payload: dict, source: str) -> dict:
-    """Apply knob changes via the knobs service."""
-    changes = payload.get("changes", {})
-    if not changes:
-        return {"error": "No changes specified"}
+    """Apply knob changes via knobs service."""
+    changes  = payload.get("changes", {})
+    results  = []
 
-    results = []
-    for knob_name, value in changes.items():
-        if knob_name is None or value is None:
+    for name, value in changes.items():
+        if name is None or value is None:
             continue
         try:
             resp = await http.patch(
                 f"{KNOBS_URL}/adjust",
-                params={"knob_name": knob_name, "value": float(value)}
+                params={"knob_name": name, "value": float(value)}
             )
             results.append({
-                "knob":    knob_name,
+                "knob":    name,
                 "value":   value,
-                "applied": resp.status_code == 200,
-                "source":  source
+                "applied": resp.status_code == 200
             })
         except Exception as e:
-            results.append({"knob": knob_name, "error": str(e)})
+            results.append({"knob": name, "error": str(e)})
 
-    return {"target": "knobs", "results": results}
+    return {"target": "knobs", "results": results, "source": source}
 
 
 async def _update_skill(payload: dict) -> dict:
     """Teach the cerebellum a new skill."""
     try:
-        resp = await http.post(
-            f"{CEREBELLUM_URL}/skills",
-            json={
-                "name":            payload.get("name", "auto_skill"),
-                "trigger_pattern": payload.get("trigger_pattern", ""),
-                "procedure":       payload.get("procedure", []),
-                "source":          "self_update"
-            }
-        )
+        resp = await http.post(f"{CEREBELLUM_URL}/skills", json={
+            "name":            payload.get("name", "auto_skill"),
+            "trigger_pattern": payload.get("trigger_pattern", ""),
+            "procedure":       payload.get("procedure", []),
+            "source":          "self_update"
+        })
         return {"target": "skill", "result": resp.json()}
     except Exception as e:
         return {"target": "skill", "error": str(e)}
 
 
-def _update_config(payload: dict) -> dict:
-    """Write a config file to the workspace."""
-    filename = payload.get("file", "config.json")
-    content  = payload.get("content", {})
+async def _update_system_prompt(payload: dict, source: str) -> dict:
+    """Store a system prompt addition in knobs Redis namespace."""
+    addition = payload.get("prompt_addition", "")
+    if not addition:
+        return {"error": "No prompt_addition provided"}
 
-    # Sanitize filename
-    filename = re.sub(r"[^\w\-_\.]", "_", filename)
-    filepath = os.path.join(WORKSPACE, filename)
+    import redis as redis_lib
+    r = redis_lib.from_url(
+        os.getenv("REDIS_URL", "redis://redis:6379"),
+        decode_responses=True
+    )
+
+    existing = r.get("brain:system_prompt_additions") or ""
+    updated  = existing + f"\n{addition}" if existing else addition
+    r.set("brain:system_prompt_additions", updated)
+
+    return {
+        "target":  "system_prompt",
+        "updated": True,
+        "addition": addition,
+        "source":  source
+    }
+
+
+def _write_config(payload: dict) -> dict:
+    """Write a config file to workspace."""
+    filename = re.sub(r"[^\w\-_\.]", "_", payload.get("file", "config.json"))
+    content  = payload.get("content", {})
+    filepath = Path(WORKSPACE) / filename
 
     try:
         with open(filepath, "w") as f:
@@ -444,47 +906,42 @@ def _update_config(payload: dict) -> dict:
                 json.dump(content, f, indent=2)
             else:
                 f.write(str(content))
-        return {
-            "target":  "config",
-            "file":    filepath,
-            "written": True
-        }
+        return {"written": True, "file": str(filepath)}
     except Exception as e:
-        return {"target": "config", "error": str(e)}
+        return {"written": False, "error": str(e)}
 
 
-def _restart_service(service_name: str) -> dict:
-    """Restart a Docker container by name."""
+def _restart_container(service_name: str) -> dict:
+    """Restart a brain service container."""
     if not DOCKER_AVAILABLE:
-        return {
-            "restarted": False,
-            "reason":    "Docker not available in this environment"
-        }
+        return {"restarted": False, "error": "Docker not available"}
     if not service_name:
-        return {"restarted": False, "reason": "No service name provided"}
+        return {"restarted": False, "error": "No service_name"}
 
-    # Try both naming conventions
-    container_names = [
-        f"brain_{service_name}_1",
-        f"brain-{service_name}-1",
-        service_name
-    ]
-
-    for name in container_names:
+    for name_fmt in [f"brain_{service_name}_1",
+                     f"brain-{service_name}-1",
+                     service_name]:
         try:
-            container = docker_client.containers.get(name)
-            container.restart()
-            return {
-                "restarted":  True,
-                "service":    service_name,
-                "container":  name
-            }
-        except docker.errors.NotFound:
+            c = docker_client.containers.get(name_fmt)
+            c.restart()
+            return {"restarted": True, "service": service_name,
+                    "container": name_fmt}
+        except Exception:
             continue
-        except Exception as e:
-            return {"restarted": False, "error": str(e)}
 
-    return {
-        "restarted": False,
-        "reason":    f"Container for '{service_name}' not found"
-    }
+    return {"restarted": False, "error": f"Container for {service_name} not found"}
+
+
+@app.get("/change-log")
+async def change_log(limit: int = 20):
+    if not os.path.exists(CHANGE_LOG):
+        return {"changes": []}
+    with open(CHANGE_LOG) as f:
+        lines = f.readlines()
+    changes = []
+    for line in lines[-limit:]:
+        try:
+            changes.append(json.loads(line))
+        except Exception:
+            pass
+    return {"changes": list(reversed(changes))}

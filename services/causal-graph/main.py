@@ -1,10 +1,10 @@
-# ── Causal Graph: Explicit Cause-Effect Knowledge ─────────────────────────────
-# Tracks causal relationships discovered during interactions.
-# When the system learns "X causes Y" it stores this explicitly
-# in a directed graph, not just as a text embedding.
-# This is the backbone of predictive world modeling.
+# services/causal-graph/main.py
+# ── Causal Graph: Explicit Cause-Effect Knowledge Base ───────────────────────
+# Tracks causal relationships as a directed graph in Redis.
+# Extracts cause→effect pairs from text using Claude.
+# Enables predictive reasoning: "if X then Y" queries.
+# Integrates with neocortex and verification services.
 
-import asyncio
 import json
 import os
 import sys
@@ -13,16 +13,19 @@ from typing import Optional
 
 sys.path.insert(0, "/shared")
 
-import httpx
 import redis
+import httpx
+import numpy as np
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from models import BrainResponse
 from events import EventBus
+from llm_provider import complete_json, complete
 
-app    = FastAPI(title="CausalGraph", version="1.0.0")
+app    = FastAPI(title="CausalGraph", version="1.0.0",
+                 description="Explicit cause-effect knowledge and causal reasoning")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 events = EventBus()
@@ -32,237 +35,234 @@ r      = redis.from_url(
     decode_responses=True
 )
 
-ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL  = os.getenv("FAST_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
-
-# Causal graph stored in Redis as adjacency structure
-# Key: "cg:node:{concept}" → JSON with outgoing edges
-# Key: "cg:edge:{cause}::{effect}" → JSON with relationship details
-# Key: "cg:evidence:{cause}::{effect}" → count of supporting observations
+OLLAMA_URL  = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
+EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
 
-class CausalEdge(BaseModel):
-    cause:       str
-    effect:      str
-    mechanism:   str   = ""    # how/why this causes that
-    strength:    float = 0.5   # 0=weak, 1=strong
-    domain:      str   = "general"
-    evidence:    int   = 1     # times this relationship was observed
-    direction:   str   = "forward"  # forward | bidirectional | probabilistic
+async def embed(text: str) -> list:
+    try:
+        resp = await http.post(
+            f"{OLLAMA_URL}/api/embeddings",
+            json={"model": EMBED_MODEL, "prompt": text[:1500]}
+        )
+        return resp.json()["embedding"]
+    except Exception:
+        return [0.0] * 768
+
+
+def cosine_sim(a: list, b: list) -> float:
+    va, vb = np.array(a, dtype=np.float32), np.array(b, dtype=np.float32)
+    n = np.linalg.norm(va) * np.linalg.norm(vb)
+    return float(np.dot(va, vb) / n) if n > 1e-8 else 0.0
 
 
 class ExtractRequest(BaseModel):
-    text:       str
+    request_id: str = "causal"
     session_id: str = ""
+    text:       str
     domain:     str = "general"
 
 
 class QueryRequest(BaseModel):
-    concept:    str
-    depth:      int   = 2      # how many hops to follow
-    direction:  str   = "both" # causes | effects | both
+    concept:   str
+    depth:     int = 2
+    direction: str = "both"   # causes | effects | both
+
+
+class AddEdgeRequest(BaseModel):
+    cause:     str
+    effect:    str
+    mechanism: str   = ""
+    strength:  float = 0.5
+    domain:    str   = "general"
+    evidence:  int   = 1
 
 
 @app.get("/health")
 async def health():
-    return {"status": "alive", "service": "causal-graph"}
+    node_count = r.scard("cg:nodes")
+    return {"status": "alive", "service": "causal-graph",
+            "nodes": node_count}
 
 
-@app.post("/extract")
+@app.post("/extract", response_model=BrainResponse)
 async def extract_causal_relations(req: ExtractRequest):
     """
-    Parse text and extract explicit causal relationships.
-    Uses Claude to identify cause→effect pairs.
+    Parse text and extract causal relationships using Claude/OpenAI.
+    Stores extracted relations in Redis causal graph.
     """
-    if not ANTHROPIC_KEY:
-        return {"extracted": [], "reason": "no API key"}
-    
-    prompt = f"""Extract all explicit causal relationships from this text.
-Look for: causes, leads to, results in, because, therefore, enables, prevents, increases, decreases.
+    start = time.time()
+
+    result = await complete_json(
+        prompt=f"""Extract all causal relationships from this text.
+Look for: causes, leads to, results in, because, therefore, enables,
+prevents, increases, decreases, triggers, produces, inhibits.
 
 TEXT: {req.text[:800]}
+DOMAIN: {req.domain}
 
-Respond with JSON:
+JSON response:
 {{
     "causal_relations": [
         {{
-            "cause": "the thing that causes",
-            "effect": "the thing caused",
-            "mechanism": "how or why this works",
+            "cause": "the causing entity/event",
+            "effect": "the resulting entity/event",
+            "mechanism": "how or why this causal link works",
             "strength": 0.0 to 1.0,
             "direction": "forward | bidirectional | probabilistic"
         }}
     ]
-}}"""
-    
-    try:
-        resp = await http.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json"
-            },
-            json={
-                "model":      CLAUDE_MODEL,
-                "max_tokens": 500,
-                "system":     "Extract causal relationships. Respond only with valid JSON.",
-                "messages":   [{"role": "user", "content": prompt}]
-            }
+}}""",
+        system="Extract causal relationships precisely. Only include explicit causal links."
+    )
+
+    relations = result.get("causal_relations", [])
+    stored    = []
+
+    for rel in relations:
+        if not rel.get("cause") or not rel.get("effect"):
+            continue
+        await _store_edge(
+            cause     = str(rel["cause"])[:200],
+            effect    = str(rel["effect"])[:200],
+            mechanism = str(rel.get("mechanism", ""))[:400],
+            strength  = float(rel.get("strength", 0.5)),
+            domain    = req.domain,
+            evidence  = 1
         )
-        
-        text = resp.json()["content"][0]["text"].strip()
-        if "```" in text:
-            text = text.split("```")[1].lstrip("json").strip()
-        data     = json.loads(text)
-        relations = data.get("causal_relations", [])
-        
-        # Store each relation in the graph
-        stored = []
-        for rel in relations:
-            if rel.get("cause") and rel.get("effect"):
-                await store_edge(CausalEdge(
-                    cause     = rel["cause"],
-                    effect    = rel["effect"],
-                    mechanism = rel.get("mechanism", ""),
-                    strength  = float(rel.get("strength", 0.5)),
-                    domain    = req.domain,
-                    direction = rel.get("direction", "forward")
-                ))
-                stored.append(rel)
-        
-        return {"extracted": stored, "count": len(stored)}
-    
-    except Exception as e:
-        return {"extracted": [], "error": str(e)}
+        stored.append(rel)
+
+    return BrainResponse(
+        request_id = req.request_id,
+        service    = "causal-graph",
+        latency_ms = round((time.time() - start) * 1000, 2),
+        data       = {"extracted": stored, "count": len(stored)}
+    )
 
 
-async def store_edge(edge: CausalEdge):
-    """Store a causal edge in the Redis graph."""
-    edge_key = f"cg:edge:{edge.cause}::{edge.effect}"
-    
-    existing = r.get(edge_key)
+async def _store_edge(cause: str, effect: str, mechanism: str,
+                       strength: float, domain: str, evidence: int = 1):
+    """Store a causal edge in Redis graph."""
+    edge_key = f"cg:edge:{cause}::{effect}"
+    existing  = r.get(edge_key)
+
     if existing:
-        data     = json.loads(existing)
-        evidence = data.get("evidence", 1) + 1
-        # Update strength as running average
-        new_strength = (data["strength"] * (evidence - 1) + edge.strength) / evidence
+        data         = json.loads(existing)
+        ev           = data.get("evidence", 1) + 1
+        new_strength = (data["strength"] * (ev - 1) + strength) / ev
         data.update({
             "strength": round(new_strength, 3),
-            "evidence": evidence,
+            "evidence": ev,
             "updated":  time.time()
         })
     else:
+        emb  = await embed(f"{cause} causes {effect}: {mechanism}")
         data = {
-            **edge.dict(),
-            "created": time.time(),
-            "updated": time.time()
+            "cause": cause, "effect": effect, "mechanism": mechanism,
+            "strength": strength, "domain": domain, "evidence": evidence,
+            "embedding": emb, "created": time.time(), "updated": time.time()
         }
-        evidence = 1
-    
+
     r.set(edge_key, json.dumps(data))
-    
-    # Add to adjacency lists
-    r.sadd(f"cg:causes:{edge.cause}", edge.effect)
-    r.sadd(f"cg:effects:{edge.effect}", edge.cause)
-    
-    # Add node index
-    r.sadd("cg:nodes", edge.cause)
-    r.sadd("cg:nodes", edge.effect)
+    r.sadd(f"cg:causes:{cause}", effect)
+    r.sadd(f"cg:effects:{effect}", cause)
+    r.sadd("cg:nodes", cause)
+    r.sadd("cg:nodes", effect)
+
+
+@app.post("/add-edge")
+async def add_edge(req: AddEdgeRequest):
+    """Manually add a causal edge (from user or other services)."""
+    await _store_edge(req.cause, req.effect, req.mechanism,
+                      req.strength, req.domain, req.evidence)
+    return {"added": True, "cause": req.cause, "effect": req.effect}
 
 
 @app.post("/query", response_model=BrainResponse)
 async def query_causal_graph(req: QueryRequest):
     """
-    Query the causal graph for what causes or is caused by a concept.
-    Traverses up to `depth` hops.
+    Traverse the causal graph from a starting concept.
+    Returns causes and effects up to `depth` hops away.
     """
-    start  = time.time()
-    result = {"causes": [], "effects": [], "graph": {}}
-    
+    start   = time.time()
     visited = set()
-    
-    def get_edges_from(concept: str, direction: str, hops_left: int):
-        """Recursively traverse the causal graph."""
-        if hops_left == 0 or concept in visited:
-            return []
+    edges   = []
+
+    def traverse(concept: str, direction: str, hops: int):
+        if hops == 0 or concept in visited:
+            return
         visited.add(concept)
-        
-        edges = []
-        
+
         if direction in ("effects", "both"):
-            effects = r.smembers(f"cg:causes:{concept}")
-            for effect in effects:
-                edge_key = f"cg:edge:{concept}::{effect}"
-                edge_data = r.get(edge_key)
-                if edge_data:
-                    e = json.loads(edge_data)
+            for effect in r.smembers(f"cg:causes:{concept}"):
+                raw = r.get(f"cg:edge:{concept}::{effect}")
+                if raw:
+                    e = json.loads(raw)
+                    e.pop("embedding", None)   # don't return vectors
                     edges.append(e)
-                    # Recurse
-                    edges.extend(
-                        get_edges_from(effect, "effects", hops_left - 1)
-                    )
-        
+                    traverse(effect, "effects", hops - 1)
+
         if direction in ("causes", "both"):
-            causes = r.smembers(f"cg:effects:{concept}")
-            for cause in causes:
-                edge_key = f"cg:edge:{cause}::{concept}"
-                edge_data = r.get(edge_key)
-                if edge_data:
-                    e = json.loads(edge_data)
+            for cause in r.smembers(f"cg:effects:{concept}"):
+                raw = r.get(f"cg:edge:{cause}::{concept}")
+                if raw:
+                    e = json.loads(raw)
+                    e.pop("embedding", None)
                     edges.append(e)
-                    edges.extend(
-                        get_edges_from(cause, "causes", hops_left - 1)
-                    )
-        
-        return edges
-    
-    edges = get_edges_from(req.concept, req.direction, req.depth)
-    
-    # Organize into causes and effects
+                    traverse(cause, "causes", hops - 1)
+
+    traverse(req.concept, req.direction, req.depth)
+
+    # Deduplicate
+    seen  = set()
+    dedup = []
     for e in edges:
-        if e.get("effect") == req.concept or \
-           any(e.get("effect") == req.concept for e in edges):
-            result["causes"].append(e)
-        if e.get("cause") == req.concept:
-            result["effects"].append(e)
-    
-    result["graph"] = {
-        "node":       req.concept,
-        "all_edges":  edges,
-        "edge_count": len(edges)
-    }
-    
+        k = f"{e['cause']}::{e['effect']}"
+        if k not in seen:
+            seen.add(k)
+            dedup.append(e)
+
+    dedup.sort(key=lambda x: x.get("strength", 0) * x.get("evidence", 1),
+               reverse=True)
+
     return BrainResponse(
         request_id = "causal",
         service    = "causal-graph",
         latency_ms = round((time.time() - start) * 1000, 2),
-        data       = result
+        data       = {
+            "concept":    req.concept,
+            "edges":      dedup[:20],
+            "edge_count": len(dedup),
+            "node_count": r.scard("cg:nodes")
+        }
     )
 
 
 @app.post("/predict")
-async def predict_effects(cause: str, context: str = ""):
-    """
-    Given a cause, predict likely effects using the stored causal graph
-    combined with Claude reasoning.
-    """
-    # Get direct effects from graph
-    known_effects = []
-    effects_set   = r.smembers(f"cg:causes:{cause}")
-    
-    for effect in effects_set:
-        edge_key = f"cg:edge:{cause}::{effect}"
-        e = r.get(edge_key)
-        if e:
-            known_effects.append(json.loads(e))
-    
-    known_effects.sort(key=lambda x: x.get("strength", 0) * x.get("evidence", 1),
-                       reverse=True)
-    
+async def predict_effects(body: dict):
+    """Given a cause, predict most likely effects."""
+    cause    = body.get("cause", "")
+    effects  = r.smembers(f"cg:causes:{cause}")
+    result   = []
+
+    for effect in effects:
+        raw = r.get(f"cg:edge:{cause}::{effect}")
+        if raw:
+            e = json.loads(raw)
+            e.pop("embedding", None)
+            result.append(e)
+
+    result.sort(
+        key=lambda x: x.get("strength", 0) * min(10, x.get("evidence", 1)),
+        reverse=True
+    )
+
+    return {"cause": cause, "predicted_effects": result[:10]}
+
+
+@app.get("/stats")
+async def stats():
     return {
-        "cause":         cause,
-        "known_effects": known_effects[:10],
-        "graph_size":    r.scard("cg:nodes"),
-        "context":       context
+        "nodes":     r.scard("cg:nodes"),
+        "domains":   list(r.smembers("cg:domains") or []),
     }
