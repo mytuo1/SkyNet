@@ -346,3 +346,63 @@ ONE COMMAND: docker compose up -d
   - Low-risk changes (knobs) applied automatically
   - High-risk changes (code) surfaced for human review
 </pre>
+
+
+# Final Outlook:
+<pre>
+brain.zip contains:
+├── .env                          ← fill in your API keys
+├── docker-compose.yml            ← one command starts everything
+├── nginx/nginx.conf              ← API gateway routing
+├── databases/edgedb/schema/
+│   └── schema.esdl               ← EdgeDB schema (Episode, Concept, Skill, Habit)
+├── shared/
+│   ├── models.py                 ← BrainRequest, BrainResponse, KnobSet, ExperienceEvent
+│   ├── knobs.py                  ← KnobsClient (read-only, every service uses this)
+│   ├── events.py                 ← EventBus (Redis pub/sub)
+│   └── __init__.py
+└── services/
+    ├── thalamus/                 ← Master orchestrator, port 8000
+    ├── amygdala/                 ← Urgency+emotion, port 8001
+    ├── hippocampus/              ← Episodic memory (EdgeDB), port 8002
+    ├── cerebellum/               ← Skills+procedures (EdgeDB), port 8003
+    ├── neocortex/                ← Semantic memory (Elasticsearch), port 8004
+    ├── working-memory/           ← Active context (Redis), port 8005
+    ├── perception/               ← 11 experience detectors, port 8006
+    ├── verification/             ← 3-stage fact checking, port 8007
+    ├── cross-domain/             ← Structural analogies, port 8008
+    ├── compass/                  ← Ethics as orientation, port 8009
+    ├── framework-router/         ← Parallel/Colony/Hive/Swarm, port 8010
+    ├── self-update/              ← OpenClaw + Claude Code webhook, port 8011
+    └── knobs/                    ← Dynamic behavioral parameters, port 8090
+    
+    Each service has: main.py + Dockerfile + requirements.txt
+</pre>
+
+# Starting it Up
+
+### 1. Edit .env — add your ANTHROPIC_API_KEY
+
+### 2. Make sure Ollama is running on your host
+ollama pull nomic-embed-text
+ollama pull phi4
+
+### 3. Launch everything
+docker compose up -d
+
+### 4. Check health
+curl http://localhost:8000/health
+
+### 5. Talk to it
+curl -X POST http://localhost:8000/brain/process \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "sess_1", "user_input": "Hello, what can you do?"}'
+
+### 6. Tune a knob live
+curl -X PATCH "http://localhost:8090/adjust?knob_name=humor&value=0.8"
+
+### 7. Apply a personality preset
+curl -X POST http://localhost:8090/preset/therapist
+
+### 8. Point OpenClaw webhook to:
+http://localhost:8000/update/webhook/openclaw

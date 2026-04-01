@@ -1,0 +1,384 @@
+# services/verification/main.py
+# ── Verification: Epistemic Immune System ─────────────────────────────────────
+# Three-stage verification pipeline:
+#   1. Internal consistency — does this contradict known facts?
+#   2. Multi-source corroboration — do independent sources agree?
+#   3. Logical coherence — does this violate any known principles?
+# Runs on every response before it reaches the user.
+
+import asyncio
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+from enum import Enum
+from typing import Optional
+
+sys.path.insert(0, "/shared")
+
+import httpx
+import numpy as np
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from models import BrainRequest, BrainResponse
+from knobs import KnobsClient
+from events import EventBus
+
+app = FastAPI(title="Verification", version="1.0.0",
+              description="Epistemic immune system — fact checking and coherence")
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                   allow_methods=["*"], allow_headers=["*"])
+
+knobs  = KnobsClient()
+events = EventBus()
+http   = httpx.AsyncClient(timeout=45.0)
+
+NEOCORTEX_URL = os.getenv("NEOCORTEX_URL",    "http://neocortex:8004")
+OLLAMA_URL    = os.getenv("OLLAMA_URL",        "http://host.docker.internal:11434")
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+EMBED_MODEL   = os.getenv("OLLAMA_EMBED_MODEL","nomic-embed-text")
+CLAUDE_MODEL  = os.getenv("FAST_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+# ── Verification result types ─────────────────────────────────────────────────
+
+class VerificationStatus(str, Enum):
+    CONFIRMED  = "confirmed"   # multiple independent sources agree
+    PROBABLE   = "probable"    # one reliable source, no contradictions
+    UNCERTAIN  = "uncertain"   # conflicting or low-confidence
+    CONTESTED  = "contested"   # active disagreement between sources
+    REFUTED    = "refuted"     # contradicted by higher-confidence source
+    UNVERIFIED = "unverified"  # never checked
+
+# ── In-memory verification cache ──────────────────────────────────────────────
+_cache: dict = {}   # claim_hash → {result, timestamp}
+CACHE_TTL = 3600    # 1 hour
+
+
+class VerifyRequest(BaseModel):
+    request_id: str = "verify"
+    session_id: str = ""
+    claim:      str
+    context:    str = ""
+    domain:     str = "general"
+
+
+@app.get("/health")
+async def health():
+    return {"status": "alive", "service": "verification", "version": "1.0.0"}
+
+
+@app.get("/knobs")
+async def get_knobs():
+    return knobs.get().dict()
+
+
+async def embed(text: str) -> list:
+    try:
+        resp = await http.post(
+            f"{OLLAMA_URL}/api/embeddings",
+            json={"model": EMBED_MODEL, "prompt": text[:2000]}
+        )
+        return resp.json()["embedding"]
+    except Exception:
+        return [0.0] * 768
+
+
+async def search_neocortex(embedding: list, text: str = "",
+                             domain: str = None, top_k: int = 12) -> list:
+    """Search neocortex for relevant knowledge."""
+    try:
+        resp = await http.post(
+            f"{NEOCORTEX_URL}/search",
+            json={
+                "request_id": "verify",
+                "session_id": "verify",
+                "user_input": text
+            },
+            params={"domain": domain, "top_k": top_k}
+        )
+        return resp.json().get("data", {}).get("results", [])
+    except Exception:
+        return []
+
+
+def generate_negation(claim: str) -> str:
+    """Generate the logical negation of a claim."""
+    pairs = [
+        ("is not ", "is "), ("are not ", "are "),
+        (" is ", " is not "), (" are ", " are not "),
+        ("can ", "cannot "), ("cannot ", "can "),
+        ("will ", "will not "), ("does ", "does not "),
+        ("always", "never"), ("never", "always"),
+    ]
+    lower = claim.lower()
+    for pos, neg in pairs:
+        if pos in lower:
+            return claim.lower().replace(pos, neg, 1)
+    return f"not true that: {claim}"
+
+
+async def check_internal_consistency(claim: str, domain: str) -> dict:
+    """
+    Stage 1: Does this claim contradict anything already in the neocortex?
+    Searches for both the claim and its logical negation.
+    """
+    embedding        = await embed(claim)
+    negation         = generate_negation(claim)
+    negation_embedding = await embed(negation)
+
+    # Search for supporting evidence
+    supporting = await search_neocortex(embedding, claim, domain, top_k=8)
+
+    # Search for contradicting evidence (negation search)
+    contradicting_raw = await search_neocortex(
+        negation_embedding, negation, domain, top_k=6
+    )
+    contradicting = [r for r in contradicting_raw
+                     if float(r.get("score", 0)) > 0.72]
+
+    consistency_score = max(
+        0.0, 1.0 - len(contradicting) * 0.3
+    )
+
+    return {
+        "supporting":       [s for s in supporting if float(s.get("score",0)) > 0.65],
+        "contradicting":    contradicting,
+        "consistency_score": round(consistency_score, 3)
+    }
+
+
+async def check_corroboration(claim: str, domain: str) -> dict:
+    """
+    Stage 2: Do independent sources agree with this claim?
+    Independence across domains is stronger than same-domain agreement.
+    """
+    embedding = await embed(claim)
+    all_results = await search_neocortex(embedding, claim, top_k=20)
+
+    # Group by domain
+    domain_groups: dict = {}
+    for item in all_results:
+        d = item.get("domain", "unknown")
+        domain_groups.setdefault(d, []).append(item)
+
+    # Count domains with corroborating evidence
+    corroborating_domains = [
+        d for d, items in domain_groups.items()
+        if any(float(i.get("score", 0)) > 0.65 for i in items)
+        and d != domain
+    ]
+
+    count = len(corroborating_domains)
+    score = min(1.0, count * 0.25 + 0.2)
+
+    return {
+        "independent_domains":  corroborating_domains,
+        "corroborating_count":  count,
+        "corroboration_score":  round(score, 3),
+        "top_sources":          all_results[:4]
+    }
+
+
+async def check_logical_coherence(claim: str, context: str) -> dict:
+    """
+    Stage 3: Use Claude to check logical coherence.
+    Is this claim internally consistent? Does it violate known principles?
+    No external search — pure reasoning.
+    """
+    if not ANTHROPIC_KEY:
+        return {
+            "is_coherent":       True,
+            "coherence_score":   0.6,
+            "logical_issues":    [],
+            "hidden_assumptions": [],
+            "is_falsifiable":    True,
+            "reasoning":         "No API key — coherence check skipped"
+        }
+
+    prompt = f"""Evaluate the logical coherence of this claim briefly.
+
+CLAIM: {claim[:400]}
+CONTEXT: {context[:200] if context else "No additional context."}
+
+Check:
+1. Is this claim internally self-consistent?
+2. Does it violate any known logical or physical principles?
+3. Are there hidden assumptions that may be false?
+
+Respond with JSON only (no markdown):
+{{
+    "is_coherent": true or false,
+    "coherence_score": 0.0 to 1.0,
+    "logical_issues": ["list issues if any"],
+    "hidden_assumptions": ["key assumptions"],
+    "is_falsifiable": true or false,
+    "reasoning": "one sentence explanation"
+}}"""
+
+    try:
+        resp = await http.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key":         ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type":      "application/json"
+            },
+            json={
+                "model":      CLAUDE_MODEL,
+                "max_tokens": 300,
+                "messages":   [{"role": "user", "content": prompt}]
+            }
+        )
+        text = resp.json()["content"][0]["text"].strip()
+        if "```" in text:
+            text = text.split("```")[1].lstrip("json").strip()
+        return json.loads(text)
+    except Exception as e:
+        return {
+            "is_coherent":       True,
+            "coherence_score":   0.55,
+            "logical_issues":    [],
+            "hidden_assumptions": [],
+            "is_falsifiable":    True,
+            "reasoning":         f"Coherence check inconclusive: {str(e)[:50]}"
+        }
+
+
+@app.post("/verify", response_model=BrainResponse)
+async def verify(req: VerifyRequest):
+    """
+    Full three-stage verification of a claim.
+    Returns a VerificationStatus with confidence score and reasoning.
+    Results are cached by claim hash for 1 hour.
+    """
+    start = time.time()
+    k     = knobs.get()
+
+    # Check cache first
+    cache_key = hashlib.md5(req.claim.encode()).hexdigest()
+    if cache_key in _cache:
+        cached = _cache[cache_key]
+        if time.time() - cached["timestamp"] < CACHE_TTL:
+            return BrainResponse(
+                request_id = req.request_id,
+                service    = "verification",
+                latency_ms = round((time.time() - start) * 1000, 2),
+                data       = {**cached["result"], "from_cache": True}
+            )
+
+    # Run all three checks in parallel
+    consistency_task    = asyncio.create_task(
+        check_internal_consistency(req.claim, req.domain)
+    )
+    corroboration_task  = asyncio.create_task(
+        check_corroboration(req.claim, req.domain)
+    )
+    coherence_task      = asyncio.create_task(
+        check_logical_coherence(req.claim, req.context)
+    )
+
+    consistency, corroboration, coherence = await asyncio.gather(
+        consistency_task, corroboration_task, coherence_task
+    )
+
+    # ── Synthesize ────────────────────────────────────────────────────────────
+    # Weighting: coherence 40% | consistency 35% | corroboration 25%
+    coherence_score     = float(coherence.get("coherence_score", 0.5))
+    consistency_score   = float(consistency.get("consistency_score", 0.5))
+    corroboration_score = float(corroboration.get("corroboration_score", 0.25))
+
+    combined = (
+        coherence_score     * 0.40 +
+        consistency_score   * 0.35 +
+        corroboration_score * 0.25
+    )
+
+    contradictions = consistency.get("contradicting", [])
+    logical_issues = coherence.get("logical_issues", [])
+
+    # Determine status
+    if not coherence.get("is_coherent", True):
+        status   = VerificationStatus.REFUTED
+        combined = min(combined, 0.2)
+
+    elif len(contradictions) > 1:
+        status = VerificationStatus.CONTESTED
+
+    elif len(contradictions) == 1:
+        status = VerificationStatus.UNCERTAIN
+
+    elif combined > 0.78:
+        status = VerificationStatus.CONFIRMED
+
+    elif combined > 0.50:
+        status = VerificationStatus.PROBABLE
+
+    else:
+        status = VerificationStatus.UNVERIFIED
+
+    # Build reasoning string
+    reasoning_parts = []
+    if logical_issues:
+        reasoning_parts.append(f"Logic: {'; '.join(logical_issues[:2])}")
+    if contradictions:
+        reasoning_parts.append(f"{len(contradictions)} contradiction(s) found")
+    corr_count = corroboration.get("corroborating_count", 0)
+    if corr_count > 0:
+        reasoning_parts.append(
+            f"Corroborated by {corr_count} independent domain(s)"
+        )
+    if not reasoning_parts:
+        reasoning_parts.append(coherence.get("reasoning", "No issues detected"))
+
+    result = {
+        "claim":               req.claim[:200],
+        "status":              status.value,
+        "confidence":          round(combined, 3),
+        "supporting_count":    len(consistency.get("supporting", [])),
+        "contradicting_count": len(contradictions),
+        "corroborating_domains": corroboration.get("independent_domains", []),
+        "reasoning":           " | ".join(reasoning_parts),
+        "hidden_assumptions":  coherence.get("hidden_assumptions", []),
+        "requires_recheck":    status in [
+            VerificationStatus.UNCERTAIN,
+            VerificationStatus.CONTESTED
+        ]
+    }
+
+    # Cache result
+    _cache[cache_key] = {"result": result, "timestamp": time.time()}
+
+    # Publish contested claims to event bus
+    if status == VerificationStatus.CONTESTED:
+        events.publish("verification.contested", {
+            "claim":   req.claim[:200],
+            "session": req.session_id,
+            "domains": corroboration.get("independent_domains", [])
+        })
+
+    return BrainResponse(
+        request_id = req.request_id,
+        service    = "verification",
+        latency_ms = round((time.time() - start) * 1000, 2),
+        data       = result
+    )
+
+
+@app.delete("/cache")
+async def clear_cache():
+    """Clear the verification cache."""
+    count = len(_cache)
+    _cache.clear()
+    return {"cleared": count}
+
+
+@app.get("/cache/stats")
+async def cache_stats():
+    return {
+        "cached_items": len(_cache),
+        "ttl_seconds":  CACHE_TTL
+    }

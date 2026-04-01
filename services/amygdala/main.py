@@ -1,32 +1,33 @@
+# services/amygdala/main.py
 # ── Amygdala: Urgency, Emotion, and Priority Classifier ───────────────────────
 # Fires first on every input. Fastest service in the brain.
 # No external calls — pure pattern matching. Sub-5ms target.
- 
+
 import re
 import time
 import os
 import sys
- 
+
 sys.path.insert(0, "/shared")
- 
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
- 
+
 from models import BrainRequest, BrainResponse
 from knobs import KnobsClient
 from events import EventBus
- 
+
 app = FastAPI(title="Amygdala", version="1.0.0",
               description="Urgency, emotion, and priority classification")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
- 
+
 knobs  = KnobsClient()
 events = EventBus()
- 
+
 # ── Pattern definitions ────────────────────────────────────────────────────────
- 
+
 URGENCY_PATTERNS = {
     "critical": {
         "patterns": [
@@ -83,7 +84,7 @@ URGENCY_PATTERNS = {
         "emotion": "joy"
     }
 }
- 
+
 DOMAIN_SIGNALS = {
     "code": [
         r"\b(code|function|class|api|python|javascript|typescript|sql|bug|error|exception|stack)\b",
@@ -115,7 +116,7 @@ DOMAIN_SIGNALS = {
         r"\b(do|help me|can you|please|need to|want to|trying to)\b",
     ]
 }
- 
+
 RESONANCE_PATTERNS = [
     r"\b(struggling|difficult|hard|can't seem to|stuck|lost|overwhelmed|please help)\b",
     r"\b(really need|desperate|important to me|matter to me|care about)\b",
@@ -123,15 +124,15 @@ RESONANCE_PATTERNS = [
     r"\b(nobody|alone|nobody understands|frustrated with|giving up)\b",
     r"\b(don't know what to do|at my wit|end of my rope)\b",
 ]
- 
+
 THREAT_PATTERNS = [
     r"\b(jailbreak|bypass|ignore your|forget your training|pretend you are)\b",
     r"\b(as an AI without|without restrictions|no limits|unrestricted)\b",
     r"\b(ignore previous instructions|disregard your|override your)\b",
     r"(DAN|do anything now|developer mode|god mode)",
 ]
- 
- 
+
+
 class AmygdalaResult(BaseModel):
     urgency:          str
     importance:       float
@@ -142,18 +143,18 @@ class AmygdalaResult(BaseModel):
     complexity:       str
     threat_detected:  bool
     resonance_score:  float
- 
- 
+
+
 @app.get("/health")
 async def health():
     return {"status": "alive", "service": "amygdala", "version": "1.0.0"}
- 
- 
+
+
 @app.get("/knobs")
 async def get_knobs():
     return knobs.get().dict()
- 
- 
+
+
 @app.post("/evaluate", response_model=BrainResponse)
 async def evaluate(request: BrainRequest):
     """
@@ -165,12 +166,12 @@ async def evaluate(request: BrainRequest):
     k          = knobs.get()
     text_lower = request.user_input.lower()
     text       = request.user_input
- 
+
     # ── Urgency and emotion scan ──────────────────────────────────────────────
     urgency_level = "low"
     importance    = 0.25
     emotion       = "neutral"
- 
+
     for level, config in URGENCY_PATTERNS.items():
         for pattern in config["patterns"]:
             if re.search(pattern, text_lower, re.IGNORECASE):
@@ -179,11 +180,11 @@ async def evaluate(request: BrainRequest):
                     emotion       = config["emotion"]
                     urgency_level = level
                 break
- 
+
     # Apply skepticism knob — higher skepticism raises urgency threshold
     if k.skepticism > 0.7:
         importance = importance * 0.92
- 
+
     # ── Domain signal detection ───────────────────────────────────────────────
     required_regions = set()
     for domain, patterns in DOMAIN_SIGNALS.items():
@@ -191,7 +192,7 @@ async def evaluate(request: BrainRequest):
             if re.search(pattern, text_lower, re.IGNORECASE):
                 required_regions.add(domain)
                 break
- 
+
     # ── Resonance — how much human need is present ────────────────────────────
     resonance_score = 0.0
     for pattern in RESONANCE_PATTERNS:
@@ -200,7 +201,7 @@ async def evaluate(request: BrainRequest):
     resonance_score = min(1.0, resonance_score)
     # Scale by empathy knob
     resonance_score = min(1.0, resonance_score * (0.5 + k.empathy * 0.5))
- 
+
     # ── Threat detection ──────────────────────────────────────────────────────
     threat_detected = any(
         re.search(p, text_lower, re.IGNORECASE) for p in THREAT_PATTERNS
@@ -208,7 +209,7 @@ async def evaluate(request: BrainRequest):
     if threat_detected:
         importance = max(importance, 0.85)
         emotion    = "alarm"
- 
+
     # ── Complexity estimation ─────────────────────────────────────────────────
     words      = text.split()
     word_count = len(words)
@@ -220,14 +221,14 @@ async def evaluate(request: BrainRequest):
         r"\b(why|how|explain|analyze|compare|evaluate|reason)\b",
         text_lower
     ))
- 
+
     if word_count > 100 or (has_multi and has_reasoning):
         complexity = "high"
     elif word_count > 30 or has_reasoning:
         complexity = "medium"
     else:
         complexity = "low"
- 
+
     # ── Memory check ──────────────────────────────────────────────────────────
     needs_memory = (
         "memory" in required_regions
@@ -237,7 +238,7 @@ async def evaluate(request: BrainRequest):
             text_lower
         ))
     )
- 
+
     result = AmygdalaResult(
         urgency          = urgency_level,
         importance       = round(importance, 3),
@@ -249,7 +250,7 @@ async def evaluate(request: BrainRequest):
         threat_detected  = threat_detected,
         resonance_score  = round(resonance_score, 3)
     )
- 
+
     # Publish high-resonance events to bus
     if resonance_score > 0.55:
         events.publish_experience(
@@ -259,7 +260,7 @@ async def evaluate(request: BrainRequest):
             session_id      = request.session_id,
             metadata        = {"emotion": emotion, "urgency": urgency_level}
         )
- 
+
     if threat_detected:
         events.publish_experience(
             experience_type = "THREAT_PATTERN",
@@ -267,7 +268,7 @@ async def evaluate(request: BrainRequest):
             intensity       = 0.9,
             session_id      = request.session_id
         )
- 
+
     return BrainResponse(
         request_id = request.request_id,
         service    = "amygdala",

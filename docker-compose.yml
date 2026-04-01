@@ -12,7 +12,7 @@ volumes:
 
 services:
 
-  # ─── API GATEWAY ─────────────────────────────────────────────────────────
+  # ── API Gateway ─────────────────────────────────────────────────────────────
   gateway:
     image: nginx:alpine
     ports:
@@ -26,16 +26,18 @@ services:
     networks: [brain-net]
     restart: unless-stopped
 
-  # ─── DATABASES ───────────────────────────────────────────────────────────
+  # ── Databases ───────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    command: redis-server --maxmemory 1gb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 1gb --maxmemory-policy allkeys-lru --appendonly yes
     volumes: [redis-data:/data]
     networks: [brain-net]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
+      timeout: 3s
+      retries: 5
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
@@ -43,190 +45,342 @@ services:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms2g -Xmx2g
+      - cluster.name=brain-neocortex
     volumes: [elasticsearch-data:/usr/share/elasticsearch/data]
     networks: [brain-net]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -v '\"status\":\"red\"'"]
+      interval: 15s
+      timeout: 10s
       retries: 10
 
   edgedb:
     image: edgedb/edgedb:4
     environment:
       EDGEDB_SERVER_SECURITY: insecure_dev_mode
+      EDGEDB_SERVER_BIND_ADDRESS: "0.0.0.0"
     volumes:
       - edgedb-data:/var/lib/edgedb/data
-      - ./databases/edgedb/schema:/schema
-    networks: [brain-net]
-    restart: unless-stopped
-
-  # ─── BRAIN REGIONS ───────────────────────────────────────────────────────
-  amygdala:
-    build: ./services/amygdala
-    environment:
-      - REDIS_URL=redis://redis:6379
-    env_file: .env
+      - ./databases/edgedb/schema:/dbschema
     networks: [brain-net]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 10s
+      test: ["CMD", "edgedb", "query", "--dsn", "edgedb://edgedb/main", "SELECT 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
 
-  hippocampus:
-    build: ./services/hippocampus
+  # ── Brain Regions ────────────────────────────────────────────────────────────
+  amygdala:
+    build:
+      context: .
+      dockerfile: services/amygdala/Dockerfile
     environment:
-      - REDIS_URL=redis://redis:6379
-      - EDGEDB_DSN=edgedb://edgedb/main
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - OLLAMA_URL=http://host.docker.internal:11434
+      - REDIS_URL=${REDIS_URL}
     env_file: .env
     networks: [brain-net]
+    restart: unless-stopped
     depends_on:
-      edgedb:
-        condition: service_started
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  neocortex:
-    build: ./services/neocortex
+  hippocampus:
+    build:
+      context: .
+      dockerfile: services/hippocampus/Dockerfile
     environment:
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - REDIS_URL=redis://redis:6379
-      - OLLAMA_URL=http://host.docker.internal:11434
+      - REDIS_URL=${REDIS_URL}
+      - EDGEDB_DSN=${EDGEDB_DSN}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
+      - OLLAMA_URL=${OLLAMA_URL}
+      - NEOCORTEX_URL=${NEOCORTEX_URL}
     env_file: .env
     networks: [brain-net]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      edgedb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  neocortex:
+    build:
+      context: .
+      dockerfile: services/neocortex/Dockerfile
+    environment:
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
+      - REDIS_URL=${REDIS_URL}
+      - OLLAMA_URL=${OLLAMA_URL}
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
     depends_on:
       elasticsearch:
         condition: service_healthy
-    restart: unless-stopped
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   cerebellum:
-    build: ./services/cerebellum
+    build:
+      context: .
+      dockerfile: services/cerebellum/Dockerfile
     environment:
-      - EDGEDB_DSN=edgedb://edgedb/main
-      - REDIS_URL=redis://redis:6379
-      - OLLAMA_URL=http://host.docker.internal:11434
+      - EDGEDB_DSN=${EDGEDB_DSN}
+      - REDIS_URL=${REDIS_URL}
+      - OLLAMA_URL=${OLLAMA_URL}
     env_file: .env
     networks: [brain-net]
     restart: unless-stopped
+    depends_on:
+      edgedb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   working-memory:
-    build: ./services/working-memory
+    build:
+      context: .
+      dockerfile: services/working-memory/Dockerfile
     environment:
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=${REDIS_URL}
+    env_file: .env
     networks: [brain-net]
+    restart: unless-stopped
     depends_on:
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8005/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   perception:
-    build: ./services/perception
+    build:
+      context: .
+      dockerfile: services/perception/Dockerfile
     environment:
-      - REDIS_URL=redis://redis:6379
-      - NEOCORTEX_URL=http://neocortex:8004
-      - OLLAMA_URL=http://host.docker.internal:11434
+      - REDIS_URL=${REDIS_URL}
+      - NEOCORTEX_URL=${NEOCORTEX_URL}
+      - OLLAMA_URL=${OLLAMA_URL}
     env_file: .env
     networks: [brain-net]
     restart: unless-stopped
-
-  verification:
-    build: ./services/verification
-    environment:
-      - NEOCORTEX_URL=http://neocortex:8004
-      - REDIS_URL=redis://redis:6379
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OLLAMA_URL=http://host.docker.internal:11434
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
-
-  cross-domain:
-    build: ./services/cross-domain
-    environment:
-      - NEOCORTEX_URL=http://neocortex:8004
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OLLAMA_URL=http://host.docker.internal:11434
-      - REDIS_URL=redis://redis:6379
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
-
-  compass:
-    build: ./services/compass
-    environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - REDIS_URL=redis://redis:6379
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
-
-  framework-router:
-    build: ./services/framework-router
-    environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - REDIS_URL=redis://redis:6379
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
-
-  knobs:
-    build: ./services/knobs
-    environment:
-      - REDIS_URL=redis://redis:6379
-    ports:
-      - "8090:8090"    # exposed directly for easy adjustment
-    networks: [brain-net]
     depends_on:
       redis:
         condition: service_healthy
-    restart: unless-stopped
+      neocortex:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8006/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  self-update:
-    build: ./services/self-update
+  verification:
+    build:
+      context: .
+      dockerfile: services/verification/Dockerfile
     environment:
+      - NEOCORTEX_URL=${NEOCORTEX_URL}
+      - REDIS_URL=${REDIS_URL}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - REDIS_URL=redis://redis:6379
-      - OPENCLAW_WEBHOOK_SECRET=${OPENCLAW_WEBHOOK_SECRET}
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-    volumes:
-      - self-update-workspace:/workspace
-      - /var/run/docker.sock:/var/run/docker.sock  # can restart containers
-    networks: [brain-net]
-    restart: unless-stopped
-
-  # ─── THALAMUS — LAST (depends on everything) ──────────────────────────
-  thalamus:
-    build: ./services/thalamus
-    environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - REDIS_URL=redis://redis:6379
-      - AMYGDALA_URL=http://amygdala:8001
-      - HIPPOCAMPUS_URL=http://hippocampus:8002
-      - NEOCORTEX_URL=http://neocortex:8004
-      - CEREBELLUM_URL=http://cerebellum:8003
-      - WORKING_MEMORY_URL=http://working-memory:8005
-      - PERCEPTION_URL=http://perception:8006
-      - VERIFICATION_URL=http://verification:8007
-      - CROSS_DOMAIN_URL=http://cross-domain:8008
-      - COMPASS_URL=http://compass:8009
-      - FRAMEWORK_ROUTER_URL=http://framework-router:8010
-      - KNOBS_URL=http://knobs:8090
+      - OLLAMA_URL=${OLLAMA_URL}
     env_file: .env
     networks: [brain-net]
-    depends_on:
-      - amygdala
-      - hippocampus
-      - neocortex
-      - cerebellum
-      - working-memory
-      - perception
-      - verification
-      - cross-domain
-      - compass
-      - framework-router
-      - knobs
     restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      neocortex:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8007/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cross-domain:
+    build:
+      context: .
+      dockerfile: services/cross-domain/Dockerfile
+    environment:
+      - NEOCORTEX_URL=${NEOCORTEX_URL}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OLLAMA_URL=${OLLAMA_URL}
+      - REDIS_URL=${REDIS_URL}
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      neocortex:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8008/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  compass:
+    build:
+      context: .
+      dockerfile: services/compass/Dockerfile
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=${REDIS_URL}
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8009/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  framework-router:
+    build:
+      context: .
+      dockerfile: services/framework-router/Dockerfile
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=${REDIS_URL}
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8010/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  knobs:
+    build:
+      context: .
+      dockerfile: services/knobs/Dockerfile
+    environment:
+      - REDIS_URL=${REDIS_URL}
+    env_file: .env
+    ports:
+      - "8090:8090"
+    networks: [brain-net]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  self-update:
+    build:
+      context: .
+      dockerfile: services/self-update/Dockerfile
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=${REDIS_URL}
+      - OPENCLAW_WEBHOOK_SECRET=${OPENCLAW_WEBHOOK_SECRET}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - KNOBS_URL=${KNOBS_URL}
+      - CEREBELLUM_URL=${CEREBELLUM_URL}
+    env_file: .env
+    volumes:
+      - self-update-workspace:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [brain-net]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      knobs:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8011/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Thalamus — last, depends on everything ───────────────────────────────────
+  thalamus:
+    build:
+      context: .
+      dockerfile: services/thalamus/Dockerfile
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=${REDIS_URL}
+      - AMYGDALA_URL=${AMYGDALA_URL}
+      - HIPPOCAMPUS_URL=${HIPPOCAMPUS_URL}
+      - CEREBELLUM_URL=${CEREBELLUM_URL}
+      - NEOCORTEX_URL=${NEOCORTEX_URL}
+      - WORKING_MEMORY_URL=${WORKING_MEMORY_URL}
+      - PERCEPTION_URL=${PERCEPTION_URL}
+      - VERIFICATION_URL=${VERIFICATION_URL}
+      - CROSS_DOMAIN_URL=${CROSS_DOMAIN_URL}
+      - COMPASS_URL=${COMPASS_URL}
+      - FRAMEWORK_ROUTER_URL=${FRAMEWORK_ROUTER_URL}
+      - SELF_UPDATE_URL=${SELF_UPDATE_URL}
+      - KNOBS_URL=${KNOBS_URL}
+      - OLLAMA_URL=${OLLAMA_URL}
+    env_file: .env
+    networks: [brain-net]
+    restart: unless-stopped
+    depends_on:
+      amygdala:
+        condition: service_healthy
+      hippocampus:
+        condition: service_healthy
+      neocortex:
+        condition: service_healthy
+      cerebellum:
+        condition: service_healthy
+      working-memory:
+        condition: service_healthy
+      perception:
+        condition: service_healthy
+      verification:
+        condition: service_healthy
+      cross-domain:
+        condition: service_healthy
+      compass:
+        condition: service_healthy
+      framework-router:
+        condition: service_healthy
+      knobs:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
