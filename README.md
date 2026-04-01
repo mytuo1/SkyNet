@@ -42,7 +42,7 @@ Hippocampus consolidates to Neocortex (long-term semantic storage)
 Due to the absense of smell/touch/hearing/taste/sight we need to create the architecture in a way that experiences will be mostly language based (for now). With the advancement of technology we can do more things as we go.
 
 ---------------------------------------------------------------------------------
-
+<pre>
 HUMAN SENSE          SYSTEM EQUIVALENT              WHAT IT DETECTS
 ────────────────────────────────────────────────────────────────────
 Sight           →    Semantic vision           Meaning, concept, structure
@@ -88,7 +88,7 @@ Surprise        →    Novelty signal            Input outside distribution
 Social emotion  →    Human state perception    What the compass reads —
                                                distress, joy, confusion,
                                                need beneath the words
-
+</pre>
 ---------------------------------------------------------------------------------
 
 ## New experience perception on system level
@@ -96,7 +96,7 @@ Social emotion  →    Human state perception    What the compass reads —
 We humans perceive new experiences in a certain way and that is possible to be analogically adapted in a digital scenario:
 
 ---------------------------------------------------------------------------------
-
+<pre>
 1.  SEMANTIC NOVELTY      — concept combination with no existing embedding
 2.  STRUCTURAL NOVELTY    — argument pattern it has no schema for
 3.  CONTRADICTION EVENT   — new knowledge conflicts with stored belief
@@ -115,7 +115,7 @@ We humans perceive new experiences in a certain way and that is possible to be a
 16. PARAMETER DRIFT       — its own behavior has shifted from baseline
 17. TRUST SIGNAL          — someone's behavior indicates confidence/loss of faith
 18. SYSTEM STRESS         — resource pressure, latency spikes (proprioception)
-
+</pre>
 ---------------------------------------------------------------------------------
 
 ## High-level Architecture
@@ -123,7 +123,7 @@ We humans perceive new experiences in a certain way and that is possible to be a
 The high level architecture of the system comprises of systems that are written/deployed to handle specific regions of the brain and their activity. Future iterrations are to come and some changes might be in place. The actual human brain architecture to our system as a model would look like this:
 
 ### Human Brain Regions to Model:
-
+<pre>
 Prefrontal Cortex — working memory, planning, decision making, reasoning
 Hippocampus — episodic memory formation, converting short-term to long-term
 Neocortex — long-term semantic knowledge storage
@@ -133,21 +133,21 @@ Basal Ganglia — habit/routine selection, reward-based routing
 Thalamus — routing hub, decides which brain region handles what
 Wernicke's Area — language comprehension
 Broca's Area — language production
-
+</pre>
 ### Technical Mapping:
-
+<pre>
 Short-term / Working Memory → Redis or in-memory Python structures (fast, volatile)
 Episodic Memory (hippocampus) → EdgeDB (EDB) — structured, relational, time-stamped episodes
 Semantic Memory (neocortex) → Elasticsearch — vast, searchable knowledge
 Procedural Memory → Code/skill registry
 Emotional/Priority Tagger → Local LLM classifier
 Thalamus/Router → Main orchestrator that routes to the right system
-
+</pre>
 ### System Services list and purpose
 Given the information above, the mapping to purposes of the services mentioned above looks like this:
 
 ---------------------------------------------------------------------------------
-
+<pre>
 HUMAN BRAIN REGION          CODE EQUIVALENT              PURPOSE
 ─────────────────────────────────────────────────────────────────
 Thalamus                  →  Router / Orchestrator      Decides which brain
@@ -184,7 +184,7 @@ Broca's Area              →  Response Formatter         Language production,
 
 Wernicke's Area           →  Input Parser               Language comprehension,
                                                          intent extraction
-
+</pre>
 ---------------------------------------------------------------------------------
 
 ## Low level Architecture
@@ -192,7 +192,7 @@ Wernicke's Area           →  Input Parser               Language comprehension
 The low level architecture comprises of containerized API Endpoint services, with the ability to write/push changes and for the ability to change specific settings that will determine parameters like humor, honesty, formality, empathy etc.:
 
 ---------------------------------------------------------------------------------
-
+<pre>
 brain/
 ├── docker-compose.yml
 ├── .env
@@ -220,7 +220,7 @@ brain/
     ├── edgedb/
     ├── elasticsearch/
     └── redis/
-
+</pre>
 ---------------------------------------------------------------------------------
 
 ## Template files that are used
