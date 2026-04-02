@@ -1,102 +1,189 @@
 version: "3.9"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# BRAIN SYSTEM — COMPLETE DOCKER COMPOSE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# PROFILES:
+#   (none)     — all core services (19 brain regions + databases)
+#   --profile vision  — add camera/CLIP visual memory service
+#   --profile full    — everything including vision
+#
+# STARTUP:
+#   docker compose up -d                    ← core system
+#   docker compose --profile vision up -d   ← core + vision
+#   docker compose --profile full up -d     ← everything
+#
+# REDEPLOY (preserves all data):
+#   docker compose pull              (if using pre-built images)
+#   docker compose build --no-cache  (rebuild from source)
+#   docker compose up -d             (rolling restart, zero downtime)
+#
+# FULL RESET (wipes all data, fresh start):
+#   docker compose down -v           ← removes all volumes
+#   docker compose up -d
+#
+# SINGLE SERVICE UPDATE:
+#   docker compose build <service>
+#   docker compose up -d --no-deps <service>
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
 networks:
   brain-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
 
 volumes:
+  # Database storage — NEVER wipe these without intent
   edgedb-data:
+    driver: local
   elasticsearch-data:
+    driver: local
   redis-data:
-  models-volume:          # local models (Phi-4-mini, emotion classifier)
-  workspace-volume:       # training logs, replay buffer, code changes
-  frames-volume:          # captured vision frames
+    driver: local
+
+  # Model storage — persists downloaded HuggingFace models
+  models-volume:
+    driver: local
+
+  # Shared workspace — training logs, replay buffer, claw staging, pending changes
+  workspace-volume:
+    driver: local
+
+  # Vision frame storage (only used with vision profile)
+  frames-volume:
+    driver: local
+
+# ─────────────────────────────────────────────────────────────────────────────
+# x-common: shared config fragments (DRY)
+# ─────────────────────────────────────────────────────────────────────────────
+x-common-healthcheck: &common-healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  start_period: 15s
+
+x-common-restart: &common-restart
+  restart: unless-stopped
+
+x-common-network: &common-network
+  networks:
+    - brain-net
+
+x-common-env: &common-env
+  env_file: .env
 
 services:
 
-  # ═══════════════════════════════════════════════════════════════════
+  # ═══════════════════════════════════════════════════════════════════════════
   # API GATEWAY
-  # ═══════════════════════════════════════════════════════════════════
+  # ═══════════════════════════════════════════════════════════════════════════
   gateway:
     image: nginx:alpine
+    container_name: brain_gateway
     ports:
-      - "8000:80"
+      - "${GATEWAY_PORT:-8000}:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on: [thalamus, knobs, self-update]
-    networks: [brain-net]
-    restart: unless-stopped
+    depends_on:
+      thalamus:
+        condition: service_healthy
+      knobs:
+        condition: service_healthy
+    <<: [*common-network, *common-restart]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      <<: *common-healthcheck
 
-  # ═══════════════════════════════════════════════════════════════════
+  # ═══════════════════════════════════════════════════════════════════════════
   # DATABASES
-  # ═══════════════════════════════════════════════════════════════════
+  # ═══════════════════════════════════════════════════════════════════════════
+
   redis:
     build:
       context: .
       dockerfile: databases/redis/Dockerfile
+    container_name: brain_redis
     volumes:
       - redis-data:/data
-    networks: [brain-net]
-    restart: unless-stopped
+    <<: [*common-network, *common-restart]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
+      start_period: 5s
 
   elasticsearch:
     build:
       context: .
       dockerfile: databases/elasticsearch/Dockerfile
+    container_name: brain_elasticsearch
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=${ES_JAVA_OPTS:--Xms2g -Xmx2g}
       - cluster.name=brain-neocortex
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
-    networks: [brain-net]
-    restart: unless-stopped
+    <<: [*common-network, *common-restart]
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qv '\"status\":\"red\"'"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
       interval: 15s
       timeout: 10s
-      retries: 12
+      retries: 15
+      start_period: 30s
 
   edgedb:
     build:
       context: .
       dockerfile: databases/edgedb/Dockerfile
+    container_name: brain_edgedb
     environment:
       - EDGEDB_SERVER_SECURITY=insecure_dev_mode
       - EDGEDB_SERVER_BIND_ADDRESS=0.0.0.0
     volumes:
       - edgedb-data:/var/lib/edgedb/data
       - ./databases/edgedb/schema:/dbschema
-    networks: [brain-net]
-    restart: unless-stopped
+    <<: [*common-network, *common-restart]
     healthcheck:
-      test: ["CMD-SHELL", "edgedb query --dsn edgedb://edgedb/main 'SELECT 1' || exit 1"]
+      test: ["CMD-SHELL", "edgedb query --dsn edgedb://edgedb/main 'SELECT 1' 2>/dev/null && echo ok"]
       interval: 15s
       timeout: 8s
-      retries: 12
+      retries: 20
+      start_period: 30s
 
-  # Database initialization (runs once, then exits)
+  # ── Database Initializer ───────────────────────────────────────────────────
+  # Idempotent: safe to run on every deploy. All scripts check before creating.
+  # Creates indices, applies schema migrations, seeds base data.
   db-init:
     image: python:3.12-slim
+    container_name: brain_db_init
     command: >
-      sh -c "pip install -q redis elasticsearch edgedb &&
-             python /init/redis/init.py &&
-             python /init/elasticsearch/init.py &&
-             python /init/edgedb/init.py &&
-             echo 'All databases initialized'"
+      sh -c "
+        pip install -q redis==5.0.4 elasticsearch==8.13.0 edgedb==1.8.0 &&
+        echo '--- Redis init ---' &&
+        python /init/redis/init.py &&
+        echo '--- Elasticsearch init ---' &&
+        python /init/elasticsearch/init.py &&
+        echo '--- EdgeDB init ---' &&
+        python /init/edgedb/init.py &&
+        echo '=== All databases initialized ==='
+      "
     volumes:
-      - ./databases:/init
+      - ./databases:/init:ro
     environment:
-      - REDIS_URL=${REDIS_URL}
-      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
-      - EDGEDB_DSN=${EDGEDB_DSN}
-    networks: [brain-net]
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-http://elasticsearch:9200}
+      - EDGEDB_DSN=${EDGEDB_DSN:-edgedb://edgedb/main}
     depends_on:
       redis:
         condition: service_healthy
@@ -104,290 +191,364 @@ services:
         condition: service_healthy
       edgedb:
         condition: service_healthy
+    <<: *common-network
     restart: "no"
 
-  # ═══════════════════════════════════════════════════════════════════
+  # ═══════════════════════════════════════════════════════════════════════════
   # CORE BRAIN REGIONS
-  # ═══════════════════════════════════════════════════════════════════
+  # ═══════════════════════════════════════════════════════════════════════════
+
   amygdala:
     build:
       context: .
       dockerfile: services/amygdala/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_amygdala
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis: {condition: service_healthy}
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   hippocampus:
     build:
       context: .
       dockerfile: services/hippocampus/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_hippocampus
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis:          {condition: service_healthy}
-      elasticsearch:  {condition: service_healthy}
-      edgedb:         {condition: service_healthy}
-      db-init:        {condition: service_completed_successfully}
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      edgedb:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8002/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   neocortex:
     build:
       context: .
       dockerfile: services/neocortex/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_neocortex
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      elasticsearch: {condition: service_healthy}
-      redis:         {condition: service_healthy}
-      db-init:       {condition: service_completed_successfully}
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8004/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   cerebellum:
     build:
       context: .
       dockerfile: services/cerebellum/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_cerebellum
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      edgedb: {condition: service_healthy}
-      redis:  {condition: service_healthy}
+      edgedb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8003/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   working-memory:
     build:
       context: .
       dockerfile: services/working-memory/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_working_memory
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis: {condition: service_healthy}
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8005/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   perception:
     build:
       context: .
       dockerfile: services/perception/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_perception
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis:     {condition: service_healthy}
-      neocortex: {condition: service_healthy}
+      redis:
+        condition: service_healthy
+      neocortex:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8006/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   verification:
     build:
       context: .
       dockerfile: services/verification/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_verification
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis:     {condition: service_healthy}
-      neocortex: {condition: service_healthy}
+      redis:
+        condition: service_healthy
+      neocortex:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8007/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   cross-domain:
     build:
       context: .
       dockerfile: services/cross-domain/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_cross_domain
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis:     {condition: service_healthy}
-      neocortex: {condition: service_healthy}
+      redis:
+        condition: service_healthy
+      neocortex:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8008/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   compass:
     build:
       context: .
       dockerfile: services/compass/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_compass
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis: {condition: service_healthy}
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8009/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   framework-router:
     build:
       context: .
       dockerfile: services/framework-router/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_framework_router
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis: {condition: service_healthy}
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8010/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   knobs:
     build:
       context: .
       dockerfile: services/knobs/Dockerfile
-    env_file: .env
+    container_name: brain_knobs
     ports:
-      - "8090:8090"
-    networks: [brain-net]
-    restart: unless-stopped
+      - "${KNOBS_PORT:-8090}:8090"
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis: {condition: service_healthy}
+      redis:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8090/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
+  # ── Self-Update (claw-powered code modification) ───────────────────────────
+  # IMPORTANT: First build takes 5-15 minutes (Rust compilation for claw).
+  # Use build cache: docker compose build self-update (not --no-cache) to reuse.
+  # To pin claw version: set CLAW_GIT_REF=<commit-sha> in .env
   self-update:
     build:
       context: .
       dockerfile: services/self-update/Dockerfile
-    env_file: .env
+      args:
+        # Reproducible builds: pin this to a commit SHA once claw stabilises
+        CLAW_GIT_REF: ${CLAW_GIT_REF:-main}
+    container_name: brain_self_update
+    environment:
+      - CLAW_BINARY_PATH=${CLAW_BINARY_PATH:-/usr/local/bin/claw}
+      - SERVICES_DIR=/services
+      - WORKSPACE_PATH=/workspace
+      - REDIS_URL=${REDIS_URL}
+      - KNOBS_URL=${KNOBS_URL}
+      - CEREBELLUM_URL=${CEREBELLUM_URL}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - OPENCLAW_WEBHOOK_SECRET=${OPENCLAW_WEBHOOK_SECRET}
+      - AUTO_APPLY_CODE_CHANGES=${AUTO_APPLY_CODE_CHANGES:-false}
+      - CODE_REVIEW_REQUIRED=${CODE_REVIEW_REQUIRED:-true}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_REPO=${GITHUB_REPO}
     volumes:
+      # Persistent workspace: training logs, pending changes, claw staging
       - workspace-volume:/workspace
+      # Docker socket: allows self-update to restart containers after code changes
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./services:/app/../services   # can read/write service files
-    networks: [brain-net]
-    restart: unless-stopped
+      # Mount services directory: claw reads and writes actual service files
+      # rw because claw will write the modified code back here
+      - ./services:/services:rw
+      # Root CLAW.md: architecture context available at filesystem root
+      - ./CLAW.md:/CLAW.md:ro
     depends_on:
-      redis: {condition: service_healthy}
-      knobs: {condition: service_healthy}
+      redis:
+        condition: service_healthy
+      knobs:
+        condition: service_healthy
+    <<: [*common-network, *common-restart]
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8011/health"]
-      interval: 10s
+      interval: 15s
+      timeout: 5s
       retries: 5
+      start_period: 20s
 
-  # ═══════════════════════════════════════════════════════════════════
-  # NEW COGNITIVE SERVICES
-  # ═══════════════════════════════════════════════════════════════════
+  # ═══════════════════════════════════════════════════════════════════════════
+  # EXTENDED COGNITIVE SERVICES
+  # ═══════════════════════════════════════════════════════════════════════════
+
   causal-graph:
     build:
       context: .
       dockerfile: services/causal-graph/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_causal_graph
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis: {condition: service_healthy}
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8012/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   simulator:
     build:
       context: .
       dockerfile: services/simulator/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_simulator
+    <<: [*common-env, *common-network, *common-restart]
+    # No external dependencies — pure sandboxed Python execution
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8013/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   metacognition:
     build:
       context: .
       dockerfile: services/metacognition/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_metacognition
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis:     {condition: service_healthy}
-      neocortex: {condition: service_healthy}
+      redis:
+        condition: service_healthy
+      neocortex:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8014/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
   goals:
     build:
       context: .
       dockerfile: services/goals/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_goals
+    <<: [*common-env, *common-network, *common-restart]
     depends_on:
-      redis: {condition: service_healthy}
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8015/health"]
-      interval: 10s
-      retries: 5
+      <<: *common-healthcheck
 
+  # ── Learner (local model — heavy, 4-8GB RAM) ──────────────────────────────
+  # Model downloads on first start (10-30 min). Subsequent starts are instant.
+  # Watch: docker compose logs -f learner
   learner:
     build:
       context: .
       dockerfile: services/learner/Dockerfile
-    env_file: .env
+    container_name: brain_learner
+    environment:
+      - LOCAL_MODEL_NAME=${LOCAL_MODEL_NAME:-microsoft/phi-4-mini-instruct}
+      - LOCAL_MODEL_PATH=/models/local_llm
+      - ADAPTER_PATH=/models/adapters
+      - EMOTION_MODEL_PATH=/models/emotion
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_HOME=/models/hf_cache
+      - REDIS_URL=${REDIS_URL}
+      - WORKSPACE_PATH=/workspace
     volumes:
+      # models-volume persists downloaded models — do NOT wipe casually
       - models-volume:/models
       - workspace-volume:/workspace
-    networks: [brain-net]
-    restart: unless-stopped
+    <<: [*common-network, *common-restart]
     depends_on:
-      redis: {condition: service_healthy}
+      redis:
+        condition: service_healthy
     deploy:
       resources:
         limits:
           memory: ${LEARNER_MAX_MEMORY:-8g}
+        reservations:
+          memory: 2g
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8016/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 60s
 
+  # ── Vision (optional — requires camera or can use image upload) ────────────
+  # Enable: docker compose --profile vision up -d
+  # Or set in .env: VISION_ENABLED=true
+  # Camera: requires /dev/video0 on host. Remove the devices section if no camera.
   vision:
+    profiles:
+      - vision
+      - full
     build:
       context: .
       dockerfile: services/vision/Dockerfile
-    env_file: .env
+    container_name: brain_vision
+    environment:
+      - VISION_ENABLED=${VISION_ENABLED:-false}
+      - VISION_MODEL=${VISION_MODEL:-openai/clip-vit-base-patch32}
+      - VISION_CAPTURE_INTERVAL=${VISION_CAPTURE_INTERVAL:-0}
+      - CAMERA_INDEX=${CAMERA_INDEX:-0}
+      - VISION_STORE_FRAMES=${VISION_STORE_FRAMES:-false}
+      - REDIS_URL=${REDIS_URL}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
+      - NEOCORTEX_URL=${NEOCORTEX_URL}
+      - WORKING_MEMORY_URL=${WORKING_MEMORY_URL}
+      - OLLAMA_URL=${OLLAMA_URL}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER}
     volumes:
       - frames-volume:/workspace/frames
       - models-volume:/models
-    devices:
-      - /dev/video0:/dev/video0   # USB camera (remove if no camera)
-    networks: [brain-net]
-    restart: unless-stopped
+    # ── CAMERA: uncomment if you have a USB camera ─────────────────────────
+    # If /dev/video0 does not exist, this service will fail to start.
+    # Remove or comment the devices section if running on a server.
+    # devices:
+    #   - /dev/video0:/dev/video0
     depends_on:
-      redis:         {condition: service_healthy}
-      elasticsearch: {condition: service_healthy}
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    <<: [*common-network, *common-restart]
     deploy:
       resources:
         limits:
@@ -395,37 +556,85 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8017/health"]
       interval: 15s
+      timeout: 10s
       retries: 5
+      start_period: 30s
 
-  # ═══════════════════════════════════════════════════════════════════
-  # THALAMUS — LAST (depends on everything)
-  # ═══════════════════════════════════════════════════════════════════
+  # ═══════════════════════════════════════════════════════════════════════════
+  # THALAMUS — Master Orchestrator (starts last, depends on everything)
+  # ═══════════════════════════════════════════════════════════════════════════
   thalamus:
     build:
       context: .
       dockerfile: services/thalamus/Dockerfile
-    env_file: .env
-    networks: [brain-net]
-    restart: unless-stopped
+    container_name: brain_thalamus
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - ANTHROPIC_MAIN_MODEL=${ANTHROPIC_MAIN_MODEL:-claude-sonnet-4-20250514}
+      - ANTHROPIC_FAST_MODEL=${ANTHROPIC_FAST_MODEL:-claude-haiku-4-5-20251001}
+      - OPENAI_MAIN_MODEL=${OPENAI_MAIN_MODEL:-gpt-4o}
+      - OPENAI_FAST_MODEL=${OPENAI_FAST_MODEL:-gpt-4o-mini}
+      - REDIS_URL=${REDIS_URL}
+      - AMYGDALA_URL=${AMYGDALA_URL}
+      - HIPPOCAMPUS_URL=${HIPPOCAMPUS_URL}
+      - CEREBELLUM_URL=${CEREBELLUM_URL}
+      - NEOCORTEX_URL=${NEOCORTEX_URL}
+      - WORKING_MEMORY_URL=${WORKING_MEMORY_URL}
+      - PERCEPTION_URL=${PERCEPTION_URL}
+      - VERIFICATION_URL=${VERIFICATION_URL}
+      - CROSS_DOMAIN_URL=${CROSS_DOMAIN_URL}
+      - COMPASS_URL=${COMPASS_URL}
+      - FRAMEWORK_ROUTER_URL=${FRAMEWORK_ROUTER_URL}
+      - SELF_UPDATE_URL=${SELF_UPDATE_URL}
+      - KNOBS_URL=${KNOBS_URL}
+      - CAUSAL_GRAPH_URL=${CAUSAL_GRAPH_URL}
+      - SIMULATOR_URL=${SIMULATOR_URL}
+      - METACOGNITION_URL=${METACOGNITION_URL}
+      - GOALS_URL=${GOALS_URL}
+      - LEARNER_URL=${LEARNER_URL}
+      - VISION_URL=${VISION_URL}
+      - OLLAMA_URL=${OLLAMA_URL}
+    <<: [*common-network, *common-restart]
     depends_on:
-      amygdala:       {condition: service_healthy}
-      hippocampus:    {condition: service_healthy}
-      neocortex:      {condition: service_healthy}
-      cerebellum:     {condition: service_healthy}
-      working-memory: {condition: service_healthy}
-      perception:     {condition: service_healthy}
-      verification:   {condition: service_healthy}
-      cross-domain:   {condition: service_healthy}
-      compass:        {condition: service_healthy}
-      framework-router:{condition: service_healthy}
-      knobs:          {condition: service_healthy}
-      causal-graph:   {condition: service_healthy}
-      simulator:      {condition: service_healthy}
-      metacognition:  {condition: service_healthy}
-      goals:          {condition: service_healthy}
-      learner:        {condition: service_healthy}
-      vision:         {condition: service_healthy}
+      amygdala:
+        condition: service_healthy
+      hippocampus:
+        condition: service_healthy
+      neocortex:
+        condition: service_healthy
+      cerebellum:
+        condition: service_healthy
+      working-memory:
+        condition: service_healthy
+      perception:
+        condition: service_healthy
+      verification:
+        condition: service_healthy
+      cross-domain:
+        condition: service_healthy
+      compass:
+        condition: service_healthy
+      framework-router:
+        condition: service_healthy
+      knobs:
+        condition: service_healthy
+      self-update:
+        condition: service_healthy
+      causal-graph:
+        condition: service_healthy
+      simulator:
+        condition: service_healthy
+      metacognition:
+        condition: service_healthy
+      goals:
+        condition: service_healthy
+      learner:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 10s
+      timeout: 8s
       retries: 5
+      start_period: 30s
