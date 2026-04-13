@@ -2,38 +2,51 @@
 
 ## What You're Running
 
-19 containerized services. Total system at rest: ~6-8GB RAM minimum.
+21 containerized services + infrastructure. Total system at rest: ~6-8GB RAM minimum.
 With learner model loaded: 12-16GB. With vision: +4GB.
 
 ```
 SERVICE          PORT    RAM       CPU      PURPOSE
 ────────────────────────────────────────────────────────────────────
 gateway          8000    100MB     minimal  Nginx routing
-redis            6379    1GB       minimal  Working memory, knobs
+redis            6379    1GB       minimal  Working memory, knobs, metrics
 elasticsearch    9200    2-4GB     medium   Neocortex semantic storage
 edgedb           5656    512MB     minimal  Episodic memory, skills
 thalamus         8000    256MB     high     Orchestrator
-amygdala         8001    128MB     minimal  Urgency detection
+amygdala         8001    128MB     minimal  Urgency + emotion detection
 hippocampus      8002    256MB     medium   Episode encoding
 neocortex        8004    256MB     medium   Knowledge search
 cerebellum       8003    256MB     medium   Skill matching
 working-memory   8005    128MB     minimal  Session state
-perception       8006    128MB     minimal  Experience detection
+perception       8006    128MB     minimal  Experience detection (21 types)
 verification     8007    256MB     medium   Fact checking
 cross-domain     8008    256MB     medium   Analogy reasoning
-compass          8009    256MB     medium   Ethical orientation
+compass          8009    256MB     medium   7-dimension ethical compass
 framework-router 8010    256MB     high     Multi-agent frameworks
-knobs            8090    128MB     minimal  Behavioral parameters
-self-update      8011    256MB     medium   Code modification
+knobs            8090    128MB     minimal  Behavioral parameters (21 knobs)
+self-update      8011    256MB     medium   Code modification via Supergrokie
 causal-graph     8012    256MB     medium   Cause-effect graph
 simulator        8013    128MB     minimal  Code execution sandbox
 metacognition    8014    256MB     medium   Uncertainty calibration
 goals            8015    256MB     medium   Long-horizon planning
 learner          8016    4-8GB     high     Local model (Phi-4-mini)
 vision           8017    2-4GB     medium   Camera + CLIP
+dashboard        8080    128MB     minimal  Web UI — terminal, monitoring, logs
+autonomy         8018    256MB     medium   Autonomous self-improvement loop
 ────────────────────────────────────────────────────────────────────
 TOTAL (no learner/vision):  ~6GB RAM
 TOTAL (full system):        ~16GB RAM
+```
+
+---
+
+## Quick Start with skynet.sh
+
+```bash
+git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
+./skynet.sh setup    # installs deps, creates .env, pulls models
+./skynet.sh start    # builds and starts everything
+./skynet.sh dashboard  # opens http://localhost:8080
 ```
 
 ---
@@ -43,7 +56,19 @@ TOTAL (full system):        ~16GB RAM
 ### Required on every deployment target:
 - Docker 24+ and Docker Compose 2.20+
 - Ollama running on host (for embeddings)
-- At least one LLM API key (Anthropic or OpenAI)
+- At least one LLM API key (see supported providers below)
+
+### Supported LLM Providers (set LLM_PROVIDER in .env):
+```
+anthropic   — Claude (needs ANTHROPIC_API_KEY)
+openai      — GPT (needs OPENAI_API_KEY)
+gemini      — Google Gemini (needs GEMINI_API_KEY)
+ollama      — Local models via Ollama (no key needed)
+deepseek    — DeepSeek (needs DEEPSEEK_API_KEY)
+groq        — Groq (needs GROQ_API_KEY)
+openrouter  — OpenRouter (needs OPENROUTER_API_KEY)
+generic     — Any OpenAI-compatible endpoint (needs GENERIC_API_KEY + GENERIC_BASE_URL)
+```
 
 ### Install Ollama and pull models:
 ```bash
@@ -495,23 +520,73 @@ curl http://localhost:8000/update/change-log
 
 ## Switching LLM Provider
 
-To switch from Anthropic to OpenAI (or back):
+8 providers supported. Switch at any time — no code changes, no rebuild:
 
 ```bash
-# 1. Edit .env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-your-key
+# 1. Edit .env — pick one:
+LLM_PROVIDER=anthropic      # Claude (default)
+LLM_PROVIDER=openai         # GPT-4o
+LLM_PROVIDER=gemini         # Google Gemini
+LLM_PROVIDER=ollama         # Local Ollama models (free, private)
+LLM_PROVIDER=deepseek       # DeepSeek
+LLM_PROVIDER=groq           # Groq (fast inference)
+LLM_PROVIDER=openrouter     # OpenRouter (multi-model)
+LLM_PROVIDER=generic        # Any OpenAI-compatible endpoint
 
-# Or to use Anthropic:
-LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-your-key
+# 2. Set the corresponding API key:
+ANTHROPIC_API_KEY=sk-ant-...
+# or OPENAI_API_KEY=sk-...
+# or GEMINI_API_KEY=...
+# or DEEPSEEK_API_KEY=...
+# or GROQ_API_KEY=...
+# or OPENROUTER_API_KEY=...
+# or GENERIC_API_KEY=... + GENERIC_BASE_URL=https://your-endpoint/v1
 
-# 2. Restart services that use LLM (no rebuild needed)
+# 3. Optional: override default models
+ANTHROPIC_MAIN_MODEL=claude-sonnet-4-20250514
+ANTHROPIC_FAST_MODEL=claude-haiku-4-5-20251001
+# or OPENAI_MAIN_MODEL=gpt-4o / OPENAI_FAST_MODEL=gpt-4o-mini
+# etc.
+
+# 4. Optional: override token limits
+MAX_TOKENS_MAIN=8192
+MAX_TOKENS_FAST=4096
+
+# 5. Restart services (no rebuild needed)
 docker compose restart thalamus compass verification cross-domain \
                         metacognition framework-router self-update goals
 
-# 3. Verify
+# 6. Verify
 curl http://localhost:8000/health | grep llm_provider
+```
+
+## Dashboard
+
+Access the web dashboard at **http://localhost:8080** after startup.
+
+Features:
+- **Terminal**: Chat with the brain, voice input (STT), webcam emotional analysis
+- **Brain Schematic**: Animated SVG showing cognitive pipeline in real-time
+- **Monitoring**: Per-service metrics, latency, error rates, sparkline charts (7-day history)
+- **Logging**: Structured logs per service, live WebSocket event stream
+- **Controls**: Rotary dial knobs (drag/scroll to adjust), personality presets, perception feed
+- **Autonomy**: Activate/deactivate autonomous thinking, view self-generated insights
+
+## Autonomous Thinking
+
+The autonomy service (port 8018) enables the brain to think on its own:
+
+```bash
+# Activate via skynet.sh
+./skynet.sh think
+
+# Or via API
+curl -X POST http://localhost:8018/activate \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "full", "interval_seconds": 300}'
+
+# Modes: observe, analyze, improve, full
+# Risk levels: AUTONOMY_MAX_RISK=low|medium|high (in .env)
 ```
 
 That's all. The llm_provider.py abstraction handles everything else.

@@ -78,16 +78,18 @@ Your brain directory must look exactly like this before deployment:
 ```
 brain/
 ├── .env                          ← you create this from .env.example
+├── .gitignore
 ├── docker-compose.yml
+├── skynet.sh                     ← launcher script (start/stop/status/etc.)
 ├── SUPERGROKIE.md                  ← supergrokie architecture context (do not delete)
 ├── nginx/
 │   └── nginx.conf
 ├── shared/
 │   ├── __init__.py
-│   ├── models.py
-│   ├── knobs.py
-│   ├── events.py
-│   └── llm_provider.py
+│   ├── models.py               ← 21 ExperienceTypes, BrainResponse, KnobSet
+│   ├── knobs.py                ← 21 behavioral knobs including gratitude/belonging
+│   ├── events.py               ← Redis pub/sub event bus (sync + async)
+│   └── llm_provider.py         ← 8-provider LLM abstraction
 ├── services/
 │   ├── thalamus/     main.py  Dockerfile  requirements.txt
 │   ├── amygdala/     main.py  Dockerfile  requirements.txt
@@ -95,10 +97,10 @@ brain/
 │   ├── neocortex/    main.py  Dockerfile  requirements.txt
 │   ├── cerebellum/   main.py  Dockerfile  requirements.txt
 │   ├── working-memory/
-│   ├── perception/
+│   ├── perception/               ← 14 senses including gratitude, regret, belonging
 │   ├── verification/
 │   ├── cross-domain/
-│   ├── compass/
+│   ├── compass/                  ← 7 dimensions (gratitude, belonging, empathy, ...)
 │   ├── framework-router/
 │   ├── self-update/  main.py  Dockerfile  requirements.txt
 │   ├── knobs/
@@ -107,7 +109,9 @@ brain/
 │   ├── metacognition/
 │   ├── goals/
 │   ├── learner/
-│   └── vision/
+│   ├── vision/
+│   ├── dashboard/    main.py  Dockerfile  requirements.txt  ← web UI (port 8080)
+│   └── autonomy/     main.py  Dockerfile  requirements.txt  ← self-improvement (port 8018)
 └── databases/
     ├── redis/        Dockerfile  redis.conf  init.py  init.sh  requirements.txt
     ├── elasticsearch/ Dockerfile  init.py  requirements.txt
@@ -129,14 +133,26 @@ system if left empty.
 ```
 LLM_PROVIDER=anthropic
 ```
-Controls which AI provider is used for reasoning.
-- `anthropic` — uses Claude (Sonnet for reasoning, Haiku for fast calls)
-- `openai`    — uses GPT-4o and GPT-4o-mini
-- To switch: change this value, restart thalamus and compass only
+Controls which AI provider is used for reasoning. 8 providers supported:
+- `anthropic`   — uses Claude (Sonnet for reasoning, Haiku for fast calls)
+- `openai`      — uses GPT-4o and GPT-4o-mini
+- `gemini`      — uses Google Gemini (2.5 Pro / 2.0 Flash)
+- `ollama`      — uses local Ollama models (no API key needed, fully private)
+- `deepseek`    — uses DeepSeek (deepseek-reasoner / deepseek-chat)
+- `groq`        — uses Groq (Llama 3.3 70B / Llama 3.1 8B — very fast inference)
+- `openrouter`  — uses OpenRouter (multi-model gateway)
+- `generic`     — uses any OpenAI-compatible endpoint (set GENERIC_BASE_URL)
+- To switch: change this value + set the corresponding API key, restart services
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...          REQUIRED if LLM_PROVIDER=anthropic
 OPENAI_API_KEY=sk-...                 REQUIRED if LLM_PROVIDER=openai
+GEMINI_API_KEY=...                    REQUIRED if LLM_PROVIDER=gemini
+DEEPSEEK_API_KEY=...                  REQUIRED if LLM_PROVIDER=deepseek
+GROQ_API_KEY=...                      REQUIRED if LLM_PROVIDER=groq
+OPENROUTER_API_KEY=...                REQUIRED if LLM_PROVIDER=openrouter
+GENERIC_API_KEY=...                   REQUIRED if LLM_PROVIDER=generic
+GENERIC_BASE_URL=https://...          REQUIRED if LLM_PROVIDER=generic
 ```
 
 ```
@@ -144,13 +160,38 @@ ANTHROPIC_MAIN_MODEL=claude-sonnet-4-20250514
 ANTHROPIC_FAST_MODEL=claude-haiku-4-5-20251001
 OPENAI_MAIN_MODEL=gpt-4o
 OPENAI_FAST_MODEL=gpt-4o-mini
+GEMINI_MAIN_MODEL=gemini-2.5-pro
+GEMINI_FAST_MODEL=gemini-2.0-flash
+DEEPSEEK_MAIN_MODEL=deepseek-reasoner
+DEEPSEEK_FAST_MODEL=deepseek-chat
+GROQ_MAIN_MODEL=llama-3.3-70b-versatile
+GROQ_FAST_MODEL=llama-3.1-8b-instant
+OLLAMA_LLM_MODEL=phi4
 DEFAULT_CLAUDE_MODEL=claude-sonnet-4-20250514
 FAST_CLAUDE_MODEL=claude-haiku-4-5-20251001
 ```
-These are the model names sent in API calls. Update if Anthropic or OpenAI
-releases new models. The DEFAULT_CLAUDE_MODEL and FAST_CLAUDE_MODEL values
-are legacy aliases read by older service code — keep them in sync with the
-Anthropic model names.
+These are the model names sent in API calls. Update when providers release new models.
+The DEFAULT_CLAUDE_MODEL and FAST_CLAUDE_MODEL are legacy aliases.
+
+### Token Limits
+
+```
+MAX_TOKENS_MAIN=0
+MAX_TOKENS_FAST=0
+```
+Override the default max_tokens for LLM calls. When 0, uses built-in defaults
+(4096 for complete(), 2048 for complete_json()). Increase if you need longer
+responses from the brain or if the LLM is truncating output.
+
+### Autonomy (Self-Improvement)
+
+```
+AUTONOMY_MAX_RISK=low
+```
+Controls what the autonomous thinking loop is allowed to propose:
+- `low`    — only knob adjustments (safe)
+- `medium` — knobs + small code improvements (add endpoints, fix bugs)
+- `high`   — can propose new services and major refactors (use with caution)
 
 ### Databases
 
@@ -349,6 +390,8 @@ GOALS_URL=http://goals:8015
 LEARNER_URL=http://learner:8016
 VISION_URL=http://vision:8017
 THALAMUS_URL=http://thalamus:8000
+AUTONOMY_URL=http://autonomy:8018
+DASHBOARD_URL=http://dashboard:8080
 ```
 
 ### Resource Limits
@@ -377,8 +420,12 @@ Container memory limits. Increase if learner OOM-kills during model loading.
 ```
 GATEWAY_PORT=8000
 KNOBS_PORT=8090
+DASHBOARD_PORT=8080
 ```
-The ports the gateway and knobs service expose to the host machine.
+The ports exposed to the host machine:
+- 8000 — Gateway (Nginx → Thalamus, the main API)
+- 8090 — Knobs service (direct access for tools)
+- 8080 — Dashboard (web UI — terminal, monitoring, logging, controls)
 All other services are internal to the Docker network only.
 
 ### Paths

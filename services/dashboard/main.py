@@ -103,9 +103,9 @@ async def _proxy_get(url: str) -> JSONResponse:
         r = await http_client.get(url)
         return JSONResponse(content=r.json(), status_code=r.status_code)
     except httpx.ConnectError:
-        return JSONResponse({"error": "Service unreachable", "url": url}, status_code=502)
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"error": "Service unreachable"}, status_code=502)
+    except Exception:
+        return JSONResponse({"error": "Internal proxy error"}, status_code=500)
 
 
 async def _proxy_post(url: str, body: dict) -> JSONResponse:
@@ -113,9 +113,9 @@ async def _proxy_post(url: str, body: dict) -> JSONResponse:
         r = await http_client.post(url, json=body)
         return JSONResponse(content=r.json(), status_code=r.status_code)
     except httpx.ConnectError:
-        return JSONResponse({"error": "Service unreachable", "url": url}, status_code=502)
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"error": "Service unreachable"}, status_code=502)
+    except Exception:
+        return JSONResponse({"error": "Internal proxy error"}, status_code=500)
 
 
 async def _proxy_patch(url: str, params: dict | None = None, body: dict | None = None) -> JSONResponse:
@@ -123,9 +123,9 @@ async def _proxy_patch(url: str, params: dict | None = None, body: dict | None =
         r = await http_client.patch(url, params=params, json=body)
         return JSONResponse(content=r.json(), status_code=r.status_code)
     except httpx.ConnectError:
-        return JSONResponse({"error": "Service unreachable", "url": url}, status_code=502)
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"error": "Service unreachable"}, status_code=502)
+    except Exception:
+        return JSONResponse({"error": "Internal proxy error"}, status_code=500)
 
 
 # ---------------------------------------------------------------------------
@@ -688,12 +688,20 @@ button{font-family:var(--font)}
   background:var(--surface2);color:var(--text);font-size:.78rem;cursor:pointer;transition:.15s}
 .knobs-presets button:hover{border-color:var(--accent);color:var(--accent)}
 .knobs-presets button.active-preset{background:var(--accent);color:#0a0e17;border-color:var(--accent);font-weight:700}
-.knob-groups{display:flex;flex-direction:column;gap:12px}
-.knob-group h4{font-size:.82rem;font-weight:700;margin-bottom:6px;color:var(--text-dim)}
-.knob-row{display:flex;align-items:center;gap:10px;margin-bottom:4px}
-.knob-row label{width:170px;font-size:.8rem;flex-shrink:0}
-.knob-row input[type=range]{flex:1;accent-color:var(--accent);height:4px}
-.knob-row .knob-val{width:42px;text-align:right;font-family:var(--mono);font-size:.78rem;color:var(--accent)}
+.knob-groups{display:flex;flex-direction:column;gap:16px}
+.knob-group h4{font-size:.82rem;font-weight:700;margin-bottom:8px;color:var(--text-dim)}
+.knob-grid{display:flex;flex-wrap:wrap;gap:14px}
+.rotary-knob{display:flex;flex-direction:column;align-items:center;width:88px;cursor:grab;user-select:none}
+.rotary-knob:active{cursor:grabbing}
+.rotary-knob .dial-wrap{position:relative;width:64px;height:64px}
+.rotary-knob svg.dial{width:64px;height:64px;display:block}
+.rotary-knob .dial-track{fill:none;stroke:var(--border);stroke-width:5;stroke-linecap:round}
+.rotary-knob .dial-fill{fill:none;stroke:var(--accent);stroke-width:5;stroke-linecap:round;transition:stroke-dashoffset .08s}
+.rotary-knob .dial-dot{fill:var(--accent);transition:transform .08s}
+.rotary-knob .dial-val{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-family:var(--mono);font-size:.72rem;color:var(--accent);font-weight:700;pointer-events:none}
+.rotary-knob .dial-label{font-size:.68rem;text-align:center;margin-top:4px;color:var(--text-dim);
+  line-height:1.15;max-width:88px;word-break:break-word}
 .perc-list{display:flex;flex-direction:column;gap:8px}
 .perc-card{padding:10px 14px;border-radius:var(--radius);background:var(--surface2);
   border:1px solid var(--border);display:flex;align-items:center;gap:12px}
@@ -1245,21 +1253,110 @@ function renderKnobs(knobs){
   var c=$('#knob-groups');
   c.innerHTML=Object.keys(knobGroups).map(function(group){
     var keys=knobGroups[group];
-    var rows=keys.filter(function(k){return knobs[k]!==undefined}).map(function(k){
-      var v=knobs[k];
-      return '<div class="knob-row"><label>'+esc(k)+'</label><input type="range" min="0" max="1" step="0.01" value="'+v+'" data-knob="'+k+'" oninput="adjustKnob(this)"><span class="knob-val">'+Number(v).toFixed(2)+'</span></div>';
+    var dials=keys.filter(function(k){return knobs[k]!==undefined}).map(function(k){
+      var v=Number(knobs[k]);
+      return buildRotaryKnob(k,v);
     }).join('');
-    if(!rows)return '';
-    return '<h4>'+esc(group)+'</h4>'+rows;
+    if(!dials)return '';
+    return '<h4>'+esc(group)+'</h4><div class="knob-grid">'+dials+'</div>';
   }).join('');
+  initRotaryKnobs();
 }
-var adjustTimer;
+
+/* ---- Rotary Knob SVG builder ---------------------------------------- */
+function buildRotaryKnob(name,val){
+  // Arc from 225deg (min) to -45deg (max) = 270deg sweep
+  var pct=Math.max(0,Math.min(1,val));
+  var id='rk-'+name.replace(/[^a-zA-Z0-9]/g,'_');
+  return '<div class="rotary-knob" data-knob="'+esc(name)+'" data-value="'+pct+'" id="'+id+'">'
+    +'<div class="dial-wrap">'
+    +'<svg class="dial" viewBox="0 0 64 64">'
+    +'<circle class="dial-track" cx="32" cy="32" r="26" stroke-dasharray="122.52" stroke-dashoffset="0" '
+    +'transform="rotate(135 32 32)"></circle>'
+    +'<circle class="dial-fill" cx="32" cy="32" r="26" stroke-dasharray="122.52" '
+    +'stroke-dashoffset="'+(122.52 - pct*122.52).toFixed(2)+'" transform="rotate(135 32 32)"></circle>'
+    +'<circle class="dial-dot" cx="32" cy="8" r="3" transform="rotate('+(135+pct*270)+' 32 32)"></circle>'
+    +'</svg>'
+    +'<div class="dial-val">'+pct.toFixed(2)+'</div>'
+    +'</div>'
+    +'<div class="dial-label">'+esc(name.replace(/_/g,' '))+'</div>'
+    +'</div>';
+}
+
+/* ---- Make rotary knobs interactive via mouse drag ------------------- */
+function initRotaryKnobs(){
+  document.querySelectorAll('.rotary-knob').forEach(function(el){
+    var svg=el.querySelector('svg.dial');
+    if(!svg)return;
+    var dragging=false, startY=0, startVal=0;
+
+    function onDown(e){
+      e.preventDefault();
+      dragging=true;
+      startY=(e.touches?e.touches[0].clientY:e.clientY);
+      startVal=parseFloat(el.dataset.value)||0;
+      document.addEventListener('mousemove',onMove);
+      document.addEventListener('mouseup',onUp);
+      document.addEventListener('touchmove',onMove,{passive:false});
+      document.addEventListener('touchend',onUp);
+    }
+    function onMove(e){
+      if(!dragging)return;
+      e.preventDefault();
+      var curY=(e.touches?e.touches[0].clientY:e.clientY);
+      var delta=(startY-curY)/150;  // 150px drag = full range
+      var nv=Math.max(0,Math.min(1,startVal+delta));
+      updateDial(el,nv);
+    }
+    function onUp(){
+      if(!dragging)return;
+      dragging=false;
+      document.removeEventListener('mousemove',onMove);
+      document.removeEventListener('mouseup',onUp);
+      document.removeEventListener('touchmove',onMove);
+      document.removeEventListener('touchend',onUp);
+      sendKnobValue(el.dataset.knob, parseFloat(el.dataset.value));
+    }
+    svg.addEventListener('mousedown',onDown);
+    svg.addEventListener('touchstart',onDown,{passive:false});
+
+    // Scroll wheel support
+    svg.addEventListener('wheel',function(e){
+      e.preventDefault();
+      var cur=parseFloat(el.dataset.value)||0;
+      var step=e.deltaY>0?-0.02:0.02;
+      var nv=Math.max(0,Math.min(1,cur+step));
+      updateDial(el,nv);
+      clearTimeout(el._wheelTimer);
+      el._wheelTimer=setTimeout(function(){
+        sendKnobValue(el.dataset.knob,parseFloat(el.dataset.value));
+      },400);
+    },{passive:false});
+  });
+}
+
+function updateDial(el,val){
+  val=Math.max(0,Math.min(1,val));
+  el.dataset.value=val;
+  var fill=el.querySelector('.dial-fill');
+  var dot=el.querySelector('.dial-dot');
+  var valEl=el.querySelector('.dial-val');
+  if(fill)fill.setAttribute('stroke-dashoffset',(122.52-val*122.52).toFixed(2));
+  if(dot)dot.setAttribute('transform','rotate('+(135+val*270)+' 32 32)');
+  if(valEl)valEl.textContent=val.toFixed(2);
+}
+
+var _knobSendTimer={};
+function sendKnobValue(name,val){
+  clearTimeout(_knobSendTimer[name]);
+  _knobSendTimer[name]=setTimeout(function(){
+    fetch('/api/knobs/adjust?knob_name='+encodeURIComponent(name)+'&value='+val.toFixed(3),{method:'PATCH'});
+  },250);
+}
+/* ---- Legacy compat -------------------------------------------------- */
 function adjustKnob(el){
   el.nextElementSibling.textContent=Number(el.value).toFixed(2);
-  clearTimeout(adjustTimer);
-  adjustTimer=setTimeout(function(){
-    fetch('/api/knobs/adjust?knob_name='+encodeURIComponent(el.dataset.knob)+'&value='+el.value,{method:'PATCH'});
-  },300);
+  sendKnobValue(el.dataset.knob,Number(el.value));
 }
 
 /* -- Perception Feed -------------------------------------------------- */

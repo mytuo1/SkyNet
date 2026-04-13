@@ -193,6 +193,16 @@ async def _safe_post(url: str, payload: dict) -> dict:
         return {}
 
 
+async def _safe_patch(url: str) -> dict:
+    """HTTP PATCH with graceful failure."""
+    try:
+        resp = await http.patch(url, timeout=30.0)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return {}
+
+
 # ── Phase 1: OBSERVE ─────────────────────────────────────────────────────────
 
 async def _observe() -> dict:
@@ -378,10 +388,8 @@ async def _act(proposals: list[dict]) -> list[dict]:
             knob_name = payload.get("knob_name", "")
             new_value = payload.get("new_value")
             if knob_name and new_value is not None:
-                resp = await _safe_post(
-                    f"{KNOBS_URL}/adjust",
-                    {"name": knob_name, "value": float(new_value),
-                     "reason": f"[autonomy] {p.get('rationale', 'auto-tuning')}"},
+                resp = await _safe_patch(
+                    f"{KNOBS_URL}/adjust?knob_name={knob_name}&value={float(new_value)}",
                 )
                 outcome = {
                     "proposal": p.get("description", ""),
