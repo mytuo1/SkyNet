@@ -585,6 +585,38 @@ services:
       <<: *common-healthcheck
 
   # ═══════════════════════════════════════════════════════════════════════════
+  # AUTONOMY — Self-Reflective Thinking and Continuous Improvement
+  # ═══════════════════════════════════════════════════════════════════════════
+  autonomy:
+    build:
+      context: .
+      dockerfile: services/autonomy/Dockerfile
+    container_name: brain_autonomy
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - THALAMUS_URL=${THALAMUS_URL}
+      - KNOBS_URL=${KNOBS_URL}
+      - SELF_UPDATE_URL=${SELF_UPDATE_URL}
+      - AUTONOMY_MAX_RISK=${AUTONOMY_MAX_RISK:-low}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - ANTHROPIC_MAIN_MODEL=${ANTHROPIC_MAIN_MODEL:-claude-sonnet-4-20250514}
+      - ANTHROPIC_FAST_MODEL=${ANTHROPIC_FAST_MODEL:-claude-haiku-4-5-20251001}
+      - OPENAI_MAIN_MODEL=${OPENAI_MAIN_MODEL:-gpt-4o}
+      - OPENAI_FAST_MODEL=${OPENAI_FAST_MODEL:-gpt-4o-mini}
+      - OLLAMA_URL=${OLLAMA_URL}
+    depends_on:
+      redis:
+        condition: service_healthy
+      knobs:
+        condition: service_healthy
+    <<: [*common-network, *common-restart]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8018/health"]
+      <<: *common-healthcheck
+
+  # ═══════════════════════════════════════════════════════════════════════════
   # THALAMUS — Master Orchestrator (starts last, depends on everything)
   # ═══════════════════════════════════════════════════════════════════════════
   thalamus:
