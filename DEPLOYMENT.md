@@ -61,11 +61,12 @@ git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
 ### Supported LLM Providers (set LLM_PROVIDER in .env):
 ```
 anthropic   — Claude (needs ANTHROPIC_API_KEY)
-openai      — GPT (needs OPENAI_API_KEY)
+openai      — GPT-5.4-mini/nano (needs OPENAI_API_KEY)
 gemini      — Google Gemini (needs GEMINI_API_KEY)
 ollama      — Local models via Ollama (no key needed)
-deepseek    — DeepSeek (needs DEEPSEEK_API_KEY)
+deepseek    — DeepSeek R1 (needs DEEPSEEK_API_KEY)
 groq        — Groq (needs GROQ_API_KEY)
+xai         — xAI Grok 4.20 (needs XAI_API_KEY)
 openrouter  — OpenRouter (needs OPENROUTER_API_KEY)
 generic     — Any OpenAI-compatible endpoint (needs GENERIC_API_KEY + GENERIC_BASE_URL)
 ```
@@ -520,16 +521,17 @@ curl http://localhost:8000/update/change-log
 
 ## Switching LLM Provider
 
-8 providers supported. Switch at any time — no code changes, no rebuild:
+9 providers supported. Switch at any time — no code changes, no rebuild:
 
 ```bash
 # 1. Edit .env — pick one:
 LLM_PROVIDER=anthropic      # Claude (default)
-LLM_PROVIDER=openai         # GPT-4o
+LLM_PROVIDER=openai         # GPT-5.4-mini / GPT-5.4-nano
 LLM_PROVIDER=gemini         # Google Gemini
 LLM_PROVIDER=ollama         # Local Ollama models (free, private)
-LLM_PROVIDER=deepseek       # DeepSeek
+LLM_PROVIDER=deepseek       # DeepSeek R1
 LLM_PROVIDER=groq           # Groq (fast inference)
+LLM_PROVIDER=xai            # xAI Grok 4.20
 LLM_PROVIDER=openrouter     # OpenRouter (multi-model)
 LLM_PROVIDER=generic        # Any OpenAI-compatible endpoint
 
@@ -539,13 +541,15 @@ ANTHROPIC_API_KEY=sk-ant-...
 # or GEMINI_API_KEY=...
 # or DEEPSEEK_API_KEY=...
 # or GROQ_API_KEY=...
+# or XAI_API_KEY=...
 # or OPENROUTER_API_KEY=...
 # or GENERIC_API_KEY=... + GENERIC_BASE_URL=https://your-endpoint/v1
 
 # 3. Optional: override default models
 ANTHROPIC_MAIN_MODEL=claude-sonnet-4-20250514
 ANTHROPIC_FAST_MODEL=claude-haiku-4-5-20251001
-# or OPENAI_MAIN_MODEL=gpt-4o / OPENAI_FAST_MODEL=gpt-4o-mini
+# or OPENAI_MAIN_MODEL=gpt-5.4-mini / OPENAI_FAST_MODEL=gpt-5.4-nano
+# or XAI_MAIN_MODEL=grok-4-20 / XAI_FAST_MODEL=grok-3-mini-fast
 # etc.
 
 # 4. Optional: override token limits
@@ -566,11 +570,14 @@ Access the web dashboard at **http://localhost:8080** after startup.
 
 Features:
 - **Terminal**: Chat with the brain, voice input (STT), webcam emotional analysis
-- **Brain Schematic**: Animated SVG showing cognitive pipeline in real-time
+- **3D Brain**: Three.js rendered brain with 10 anatomical regions, auto-rotation, click-to-expand, drag to rotate, emissive glow on activation during cognitive processing
+- **Pixelated Face**: Pixel-art avatar (80x80) showing current emotion — 6 distinct expressions (neutral, joy, curiosity, alarm, regret, belonging)
+- **Emotion Tracker**: Glassmorphism panel (upper-left) with current feeling, overall mood bar, expandable history of last 20 interactions
 - **Monitoring**: Per-service metrics, latency, error rates, sparkline charts (7-day history)
 - **Logging**: Structured logs per service, live WebSocket event stream
 - **Controls**: Rotary dial knobs (drag/scroll to adjust), personality presets, perception feed
 - **Autonomy**: Activate/deactivate autonomous thinking, view self-generated insights
+- **Premium Theme**: Glassmorphism, gradient backgrounds, glowing borders, smooth transitions
 
 ## Autonomous Thinking
 

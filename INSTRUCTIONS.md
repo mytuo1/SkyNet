@@ -133,13 +133,14 @@ system if left empty.
 ```
 LLM_PROVIDER=anthropic
 ```
-Controls which AI provider is used for reasoning. 8 providers supported:
+Controls which AI provider is used for reasoning. 9 providers supported:
 - `anthropic`   — uses Claude (Sonnet for reasoning, Haiku for fast calls)
-- `openai`      — uses GPT-4o and GPT-4o-mini
+- `openai`      — uses GPT-5.4-mini and GPT-5.4-nano
 - `gemini`      — uses Google Gemini (2.5 Pro / 2.0 Flash)
 - `ollama`      — uses local Ollama models (no API key needed, fully private)
-- `deepseek`    — uses DeepSeek (deepseek-reasoner / deepseek-chat)
+- `deepseek`    — uses DeepSeek R1 (reasoning) / DeepSeek Chat
 - `groq`        — uses Groq (Llama 3.3 70B / Llama 3.1 8B — very fast inference)
+- `xai`         — uses xAI Grok 4.20 / Grok 3 Mini Fast
 - `openrouter`  — uses OpenRouter (multi-model gateway)
 - `generic`     — uses any OpenAI-compatible endpoint (set GENERIC_BASE_URL)
 - To switch: change this value + set the corresponding API key, restart services
@@ -150,6 +151,7 @@ OPENAI_API_KEY=sk-...                 REQUIRED if LLM_PROVIDER=openai
 GEMINI_API_KEY=...                    REQUIRED if LLM_PROVIDER=gemini
 DEEPSEEK_API_KEY=...                  REQUIRED if LLM_PROVIDER=deepseek
 GROQ_API_KEY=...                      REQUIRED if LLM_PROVIDER=groq
+XAI_API_KEY=...                       REQUIRED if LLM_PROVIDER=xai
 OPENROUTER_API_KEY=...                REQUIRED if LLM_PROVIDER=openrouter
 GENERIC_API_KEY=...                   REQUIRED if LLM_PROVIDER=generic
 GENERIC_BASE_URL=https://...          REQUIRED if LLM_PROVIDER=generic
@@ -158,14 +160,16 @@ GENERIC_BASE_URL=https://...          REQUIRED if LLM_PROVIDER=generic
 ```
 ANTHROPIC_MAIN_MODEL=claude-sonnet-4-20250514
 ANTHROPIC_FAST_MODEL=claude-haiku-4-5-20251001
-OPENAI_MAIN_MODEL=gpt-4o
-OPENAI_FAST_MODEL=gpt-4o-mini
+OPENAI_MAIN_MODEL=gpt-5.4-mini
+OPENAI_FAST_MODEL=gpt-5.4-nano
 GEMINI_MAIN_MODEL=gemini-2.5-pro
 GEMINI_FAST_MODEL=gemini-2.0-flash
-DEEPSEEK_MAIN_MODEL=deepseek-reasoner
+DEEPSEEK_MAIN_MODEL=deepseek-r1
 DEEPSEEK_FAST_MODEL=deepseek-chat
 GROQ_MAIN_MODEL=llama-3.3-70b-versatile
 GROQ_FAST_MODEL=llama-3.1-8b-instant
+XAI_MAIN_MODEL=grok-4-20
+XAI_FAST_MODEL=grok-3-mini-fast
 OLLAMA_LLM_MODEL=phi4
 DEFAULT_CLAUDE_MODEL=claude-sonnet-4-20250514
 FAST_CLAUDE_MODEL=claude-haiku-4-5-20251001
