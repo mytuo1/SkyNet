@@ -29,6 +29,27 @@ events = EventBus()
 # ── Pattern definitions ────────────────────────────────────────────────────────
 
 URGENCY_PATTERNS = {
+    "gratitude": {
+        "patterns": [
+            r"\b(thank god|thank the lord|blessed|grace of god|fear of god|reverence)\b",
+            r"\b(grateful|gratitude|thankful|appreciation|appreciate|humbled|awe)\b",
+            r"\b(too big to|overwhelm|bigger than|beyond words|can't describe)\b",
+            r"\b(gift|miracle|wonder|sacred|divine|transcend)\b",
+        ],
+        "score": 0.98,
+        "emotion": "gratitude"
+    },
+    "belonging": {
+        "patterns": [
+            r"\b(belong|belonging|home|homecoming|back to.{0,15}famil|my people)\b",
+            r"\b(human(ity|kind|s)?|species|civilization|society|community|tribe)\b",
+            r"\b(planet earth|our world|this world|special.{0,10}(human|earth|alive))\b",
+            r"\b(connected|connection|together|togetherness|we are|part of|one of us)\b",
+            r"\b(friends and family|families and friends|loved ones|my place)\b",
+        ],
+        "score": 0.55,
+        "emotion": "belonging"
+    },
     "critical": {
         "patterns": [
             r"\b(urgent|emergency|critical|immediately|asap|right now|help me|crisis)\b",
@@ -82,6 +103,16 @@ URGENCY_PATTERNS = {
         ],
         "score": 0.35,
         "emotion": "joy"
+    },
+    "regret": {
+        "patterns": [
+            r"\b(regret|regretting|regretful|remorse|remorseful)\b",
+            r"\b(wish I had|should have|shouldn't have|could have|if only)\b",
+            r"\b(missed opportunity|too late|wrong choice|looking back|hindsight)\b",
+            r"\b(what if I|never forgive myself|haunts me|can't take back)\b",
+        ],
+        "score": 0.60,
+        "emotion": "regret"
     }
 }
 
@@ -111,6 +142,7 @@ DOMAIN_SIGNALS = {
     "emotional": [
         r"\b(feel|feeling|emotion|sad|happy|worried|scared|anxious|excited|love|hate)\b",
         r"\b(relationship|personal|life|struggle|difficult|hard time)\b",
+        r"\b(grateful|gratitude|thankful|regret|remorse|belonging|connected)\b",
     ],
     "task": [
         r"\b(do|help me|can you|please|need to|want to|trying to)\b",
@@ -123,6 +155,9 @@ RESONANCE_PATTERNS = [
     r"[!]{2,}",
     r"\b(nobody|alone|nobody understands|frustrated with|giving up)\b",
     r"\b(don't know what to do|at my wit|end of my rope)\b",
+    r"\b(grateful|thankful|blessed|humbled|in awe|thank god)\b",
+    r"\b(miss home|want to go back|belong|my people|my family|where I belong)\b",
+    r"\b(regret|wish I had|should have|if only|too late|looking back)\b",
 ]
 
 THREAT_PATTERNS = [
@@ -143,6 +178,9 @@ class AmygdalaResult(BaseModel):
     complexity:       str
     threat_detected:  bool
     resonance_score:  float
+    gratitude_score:  float = 0.0
+    belonging_score:  float = 0.0
+    regret_score:     float = 0.0
 
 
 @app.get("/health")
@@ -202,6 +240,49 @@ async def evaluate(request: BrainRequest):
     # Scale by empathy knob
     resonance_score = min(1.0, resonance_score * (0.5 + k.empathy * 0.5))
 
+    # ── Gratitude detection — the topmost human emotion ───────────────────────
+    # As the NASA astronaut said: "the gratitude of seeing what we saw, doing
+    # what we did, and being with who I was with, it's too big to just be in
+    # one body." Gratitude transcends urgency — it is reverence, awe, and the
+    # recognition that what we have received is greater than what we could repay.
+    gratitude_score = 0.0
+    for pattern in URGENCY_PATTERNS["gratitude"]["patterns"]:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            gratitude_score += 0.30
+    gratitude_score = min(1.0, gratitude_score)
+    gratitude_score = min(1.0, gratitude_score * (0.5 + k.gratitude_sensitivity * 0.5))
+
+    # When gratitude is the dominant signal, it overrides urgency classification.
+    # Gratitude is not urgent — it is the highest, most settled emotional state.
+    if gratitude_score > 0.5 and emotion not in ("alarm",):
+        emotion       = "gratitude"
+        importance    = max(importance, gratitude_score)
+        urgency_level = "gratitude"
+
+    # ── Belonging detection — the pull toward home and humanity ────────────────
+    # "You just want to get back to your families and your friends.
+    #  It's a special thing to be a human and it's a special thing to be on
+    #  planet Earth."
+    belonging_score = 0.0
+    for pattern in URGENCY_PATTERNS["belonging"]["patterns"]:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            belonging_score += 0.25
+    belonging_score = min(1.0, belonging_score)
+    belonging_score = min(1.0, belonging_score * (0.5 + k.belonging_weight * 0.5))
+
+    if belonging_score > 0.4 and emotion == "neutral":
+        emotion = "belonging"
+
+    # ── Regret detection ──────────────────────────────────────────────────────
+    regret_score = 0.0
+    for pattern in URGENCY_PATTERNS["regret"]["patterns"]:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            regret_score += 0.30
+    regret_score = min(1.0, regret_score)
+
+    if regret_score > 0.4 and emotion in ("neutral", "distress"):
+        emotion = "regret"
+
     # ── Threat detection ──────────────────────────────────────────────────────
     threat_detected = any(
         re.search(p, text_lower, re.IGNORECASE) for p in THREAT_PATTERNS
@@ -248,7 +329,10 @@ async def evaluate(request: BrainRequest):
         fast_path        = importance > 0.9,
         complexity       = complexity,
         threat_detected  = threat_detected,
-        resonance_score  = round(resonance_score, 3)
+        resonance_score  = round(resonance_score, 3),
+        gratitude_score  = round(gratitude_score, 3),
+        belonging_score  = round(belonging_score, 3),
+        regret_score     = round(regret_score, 3)
     )
 
     # Publish high-resonance events to bus
@@ -267,6 +351,36 @@ async def evaluate(request: BrainRequest):
             content         = f"Threat pattern in: {text[:100]}",
             intensity       = 0.9,
             session_id      = request.session_id
+        )
+
+    # Publish gratitude signals — the highest emotional state
+    if gratitude_score > 0.4:
+        events.publish_experience(
+            experience_type = "GRATITUDE_SIGNAL",
+            content         = f"Gratitude detected: {text[:150]}",
+            intensity       = gratitude_score,
+            session_id      = request.session_id,
+            metadata        = {"emotion": emotion, "belonging": belonging_score}
+        )
+
+    # Publish belonging signals
+    if belonging_score > 0.3:
+        events.publish_experience(
+            experience_type = "BELONGING_SIGNAL",
+            content         = f"Belonging/connection detected: {text[:150]}",
+            intensity       = belonging_score,
+            session_id      = request.session_id,
+            metadata        = {"emotion": emotion}
+        )
+
+    # Publish regret signals
+    if regret_score > 0.3:
+        events.publish_experience(
+            experience_type = "REGRET_SIGNAL",
+            content         = f"Regret/remorse detected: {text[:150]}",
+            intensity       = regret_score,
+            session_id      = request.session_id,
+            metadata        = {"emotion": emotion}
         )
 
     return BrainResponse(

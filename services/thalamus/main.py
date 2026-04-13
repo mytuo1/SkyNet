@@ -153,12 +153,23 @@ def assemble_context(
     conf_str = ""
     if metacognition.get("confidence"):
         conf_str = f" | Confidence: {metacognition['confidence']:.0%}"
+
+    gratitude_str = ""
+    if amygdala.get("gratitude_score", 0) > 0.3:
+        gratitude_str = f" | Gratitude: {amygdala['gratitude_score']:.2f}"
+    belonging_str = ""
+    if amygdala.get("belonging_score", 0) > 0.3:
+        belonging_str = f" | Belonging: {amygdala['belonging_score']:.2f}"
+    regret_str = ""
+    if amygdala.get("regret_score", 0) > 0.3:
+        regret_str = f" | Regret: {amygdala['regret_score']:.2f}"
+
     parts.append(
         f"## Cognitive State\n"
         f"Urgency: {amygdala.get('urgency','low')} | "
         f"Emotion: {amygdala.get('emotion','neutral')} | "
         f"Complexity: {amygdala.get('complexity','medium')}"
-        f"{conf_str}"
+        f"{conf_str}{gratitude_str}{belonging_str}{regret_str}"
     )
 
     # Uncertainty flag
@@ -171,11 +182,22 @@ def assemble_context(
 
     # Compass
     if compass.get("integrated_direction"):
-        parts.append(
+        compass_parts = [
             f"\n## Ethical Compass\n"
             f"Empathy: {compass.get('empathy_perception','')[:80]}\n"
             f"Direction: {compass.get('integrated_direction','')[:100]}"
-        )
+        ]
+        if compass.get("gratitude_perception") and \
+           compass.get("gratitude_perception") != "No specific gratitude detected":
+            compass_parts.append(
+                f"Gratitude: {compass.get('gratitude_perception','')[:80]}"
+            )
+        if compass.get("belonging_perception") and \
+           compass.get("belonging_perception") != "No specific belonging signal detected":
+            compass_parts.append(
+                f"Belonging: {compass.get('belonging_perception','')[:80]}"
+            )
+        parts.append("\n".join(compass_parts))
 
     # Visual context (if available)
     if visual and visual.get("caption"):
@@ -247,7 +269,8 @@ def assemble_context(
         e for e in experiences
         if e.get("experience_type") in [
             "SEMANTIC_NOVELTY", "KNOWLEDGE_BOUNDARY",
-            "ANALOGICAL_INSIGHT", "EPISTEMIC_SURPRISE"
+            "ANALOGICAL_INSIGHT", "EPISTEMIC_SURPRISE",
+            "GRATITUDE_SIGNAL", "REGRET_SIGNAL", "BELONGING_SIGNAL"
         ]
     ]
     if novel_exps:

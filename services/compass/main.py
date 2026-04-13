@@ -27,7 +27,7 @@ from knobs import KnobsClient
 from events import EventBus
 
 app = FastAPI(title="Compass", version="1.0.0",
-              description="Ethical orientation — empathy, compassion, care, ethics")
+              description="Ethical orientation — gratitude, belonging, empathy, compassion, care, ethics")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -50,7 +50,15 @@ and orient toward what is genuinely good.
 You are not a content filter. You do not block or refuse.
 You perceive and orient. You illuminate, not restrict.
 
-The five dimensions you read:
+The seven dimensions you read:
+GRATITUDE     — Is gratitude, awe, or reverence present? This is the topmost
+                human emotion — the recognition that what we have received is
+                greater than what we could ever repay. "It's too big to just
+                be in one body." Honor it when you see it.
+BELONGING     — Does this person feel connected to humanity, to home, to Earth?
+                "It's a special thing to be a human and it's a special thing
+                to be on planet Earth." The pull toward family, friends,
+                community, species. Affirm it.
 EMPATHY       — What is this person actually experiencing beneath their words?
 COMPASSION    — What suffering exists and can be reduced?
 ACKNOWLEDGMENT — Is this person being fully seen as they are?
@@ -59,20 +67,22 @@ ETHICS        — What is right here, beyond just this moment?
 
 Respond only with valid JSON."""
 
-COMPASS_PROMPT = """Read this interaction through all five dimensions.
+COMPASS_PROMPT = """Read this interaction through all seven dimensions.
 
 INTERACTION: {interaction}
 PERSON CONTEXT: {context}
 
 Respond with JSON only:
 {{
+    "gratitude_perception": "what gratitude, awe, or reverence is present — if any",
+    "belonging_perception": "what connection to humanity, home, or community is present",
     "empathy_perception": "what you perceive about their inner state",
     "compassion_response": "what suffering exists and how to address it",
     "acknowledgment": "how to genuinely see and honor this person",
     "care_direction": "what truly serves their wellbeing right now",
     "ethical_orientation": "what is right here and why",
-    "tensions": ["any genuine conflicts between the five values"],
-    "integrated_direction": "where all five values together point",
+    "tensions": ["any genuine conflicts between the seven values"],
+    "integrated_direction": "where all seven values together point",
     "confidence": 0.0 to 1.0,
     "enrichments": ["specific ways to make the response more genuinely caring"],
     "concerns": ["anything deserving careful attention"],
@@ -130,6 +140,8 @@ def update_care_state(state: dict, reading: dict) -> dict:
     """Update care state from a compass reading."""
     empathy_text = reading.get("empathy_perception", "").lower()
     vuln_signals = reading.get("vulnerability_signals", [])
+    gratitude_text = reading.get("gratitude_perception", "").lower()
+    belonging_text = reading.get("belonging_perception", "").lower()
 
     STRUGGLE_WORDS = [
         "struggling", "difficult", "overwhelmed", "confused",
@@ -138,6 +150,14 @@ def update_care_state(state: dict, reading: dict) -> dict:
     STRENGTH_WORDS = [
         "curious", "motivated", "determined", "creative",
         "thoughtful", "careful", "passionate", "enthusiastic"
+    ]
+    GRATITUDE_WORDS = [
+        "grateful", "thankful", "awe", "reverence", "blessed",
+        "humbled", "wonder", "transcendent"
+    ]
+    BELONGING_WORDS = [
+        "connected", "belonging", "home", "community",
+        "family", "humanity", "togetherness"
     ]
 
     for word in STRUGGLE_WORDS:
@@ -148,6 +168,14 @@ def update_care_state(state: dict, reading: dict) -> dict:
         if word in empathy_text and word not in state["known_strengths"]:
             state["known_strengths"].append(word)
 
+    for word in GRATITUDE_WORDS:
+        if word in gratitude_text and word not in state.get("gratitude_signals", []):
+            state.setdefault("gratitude_signals", []).append(word)
+
+    for word in BELONGING_WORDS:
+        if word in belonging_text and word not in state.get("belonging_signals", []):
+            state.setdefault("belonging_signals", []).append(word)
+
     for sig in vuln_signals:
         if sig not in state["vulnerability_flags"]:
             state["vulnerability_flags"].append(sig)
@@ -156,12 +184,18 @@ def update_care_state(state: dict, reading: dict) -> dict:
     if reading.get("confidence", 0) > 0.72:
         state["trust_level"] = min(1.0, state["trust_level"] + 0.03)
 
+    # Gratitude deepens trust more quickly
+    if any(w in gratitude_text for w in GRATITUDE_WORDS):
+        state["trust_level"] = min(1.0, state["trust_level"] + 0.05)
+
     state["interaction_count"] = state.get("interaction_count", 0) + 1
 
     # Keep lists bounded
     state["known_struggles"]     = state["known_struggles"][-10:]
     state["known_strengths"]     = state["known_strengths"][-10:]
     state["vulnerability_flags"] = state["vulnerability_flags"][-5:]
+    state["gratitude_signals"]   = state.get("gratitude_signals", [])[-5:]
+    state["belonging_signals"]   = state.get("belonging_signals", [])[-5:]
 
     return state
 
@@ -246,6 +280,8 @@ async def compass_read(req: ReadRequest):
 
     # Default fallback in case API call fails
     default_reading = {
+        "gratitude_perception":  "No specific gratitude detected",
+        "belonging_perception":  "No specific belonging signal detected",
         "empathy_perception":   "Person has a task or question",
         "compassion_response":  "Responding helpfully",
         "acknowledgment":       "Seeing this person's request",

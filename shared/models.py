@@ -58,6 +58,10 @@ class KnobSet(BaseModel):
     ethical_weight:    float = 0.90  # compass influence on response
     care_explicitness: float = 0.50  # how explicit to be about caring
 
+    # ── Higher Emotions ───────────────────────────────────────────────────────
+    gratitude_sensitivity: float = 0.80  # sensitivity to gratitude/awe/reverence
+    belonging_weight:     float = 0.75   # weight of belonging/connection signals
+
 
 class ExperienceEvent(BaseModel):
     """A new experience detected by the perception service."""
@@ -90,3 +94,6 @@ class ExperienceType:
     TRUST_SIGNAL        = "TRUST_SIGNAL"
     SYSTEM_STRESS       = "SYSTEM_STRESS"
     THREAT_PATTERN      = "THREAT_PATTERN"
+    GRATITUDE_SIGNAL    = "GRATITUDE_SIGNAL"
+    REGRET_SIGNAL       = "REGRET_SIGNAL"
+    BELONGING_SIGNAL    = "BELONGING_SIGNAL"
