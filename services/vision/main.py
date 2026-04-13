@@ -133,10 +133,11 @@ def _load_clip_sync():
         print("Vision service will use text-based fallback")
 
 
-def get_clip_embedding(image) -> list:
+def get_clip_embedding(image) -> Optional[list]:
     """Extract 512-dim CLIP visual embedding from a PIL Image."""
     if _clip_model is None or _clip_processor is None:
-        return [0.0] * 512
+        print("WARNING: CLIP model not loaded — cannot produce visual embedding")
+        return None
 
     import torch
     try:
@@ -148,7 +149,7 @@ def get_clip_embedding(image) -> list:
         return features[0].tolist()
     except Exception as e:
         print(f"CLIP embedding error: {e}")
-        return [0.0] * 512
+        return None
 
 
 async def get_text_embedding(text: str) -> list:
@@ -237,6 +238,7 @@ async def _process_image(image, session_id: str = "",
     # ── Step 1: CLIP embedding ────────────────────────────────────────────────
     loop         = asyncio.get_event_loop()
     clip_emb     = await loop.run_in_executor(None, get_clip_embedding, image)
+    has_clip     = clip_emb is not None
 
     # ── Step 2: Convert to base64 for captioning ──────────────────────────────
     buf = BytesIO()
@@ -368,9 +370,10 @@ async def _process_image(image, session_id: str = "",
         "session_id":     session_id,
         "source":         source,
         "frame_path":     frame_path,
-        "clip_embedding": clip_emb,
         "text_embedding": text_emb
     }
+    if has_clip:
+        doc["clip_embedding"] = clip_emb
 
     try:
         await es.index(index="visual_memories", document=doc)

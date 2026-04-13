@@ -1147,7 +1147,8 @@ async def _update_system_prompt(payload: dict, source: str) -> dict:
 
 
 def _restart_container(service_name: str) -> dict:
-    if not DOCKER_AVAILABLE:
+    if not DOCKER_AVAILABLE or docker_client is None:
+        print(f"Docker not available — cannot restart {service_name}")
         return {"restarted": False, "error": "Docker not available"}
     if not service_name:
         return {"restarted": False, "error": "No service name"}
@@ -1162,7 +1163,8 @@ def _restart_container(service_name: str) -> dict:
 
 
 def _build_and_start_container(name: str, path: str, port: int) -> dict:
-    if not DOCKER_AVAILABLE:
+    if not DOCKER_AVAILABLE or docker_client is None:
+        print(f"Docker not available — cannot build/start {name}")
         return {"deployed": False, "error": "Docker not available"}
     try:
         image, _ = docker_client.images.build(
