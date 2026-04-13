@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from models import BrainRequest, BrainResponse
 from knobs import KnobsClient
 from events import EventBus
+from llm_provider import complete_json, has_api_key
 
 app = FastAPI(title="CrossDomain", version="1.0.0",
               description="Structural analogy and cross-domain reasoning")
@@ -36,10 +37,8 @@ events = EventBus()
 http   = httpx.AsyncClient(timeout=60.0)
 
 NEOCORTEX_URL = os.getenv("NEOCORTEX_URL",    "http://neocortex:8004")
-ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",        "http://host.docker.internal:11434")
 EMBED_MODEL   = os.getenv("OLLAMA_EMBED_MODEL","nomic-embed-text")
-CLAUDE_MODEL  = os.getenv("FAST_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 # ── Pattern types ─────────────────────────────────────────────────────────────
 
@@ -140,10 +139,10 @@ def cosine_similarity(a: list, b: list) -> float:
 
 async def extract_pattern(content: str, domain: str) -> Optional[dict]:
     """
-    Use Claude to extract the abstract logical pattern from content.
+    Use LLM to extract the abstract logical pattern from content.
     Returns None if extraction fails or no API key.
     """
-    if not ANTHROPIC_KEY:
+    if not has_api_key():
         return None
 
     pattern_types = ", ".join([pt.value for pt in PatternType])
@@ -154,23 +153,10 @@ async def extract_pattern(content: str, domain: str) -> Optional[dict]:
     )
 
     try:
-        resp = await http.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json"
-            },
-            json={
-                "model":      CLAUDE_MODEL,
-                "max_tokens": 400,
-                "messages":   [{"role": "user", "content": prompt}]
-            }
-        )
-        text = resp.json()["content"][0]["text"].strip()
-        if "```" in text:
-            text = text.split("```")[1].lstrip("json").strip()
-        data = json.loads(text)
+        data = await complete_json(prompt=prompt, model_tier="fast", max_tokens=400)
+
+        if not data:
+            return None
 
         # Build abstract text representation for embedding
         abstract = " ".join([
