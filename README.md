@@ -126,7 +126,7 @@ The Vision service stores every processed frame in Elasticsearch's `visual_memor
 
 ## New experience perception on system level
 
-We humans perceive new experiences in a certain way and that is possible to be analogically adapted in a digital scenario:
+We humans perceive new experiences in a certain way and that is possible to be analogically adapted in a digital scenario. The system perceives 21 distinct experience types:
 
 ---------------------------------------------------------------------------------
 <pre>
@@ -195,14 +195,14 @@ Long-horizon Agency → Persistent goal store + hierarchical planner (Goals serv
 Continual Learning → Local model with LoRA + EWC + Replay buffer (Learner service)
 </pre>
 
-### System Services — Full List:
+### System Services — Full List (21 services):
 <pre>
 HUMAN BRAIN REGION          CODE EQUIVALENT              PURPOSE
 ─────────────────────────────────────────────────────────────────
 Thalamus                  →  Router / Orchestrator      Decides which brain
                                                          region handles what
 
-Prefrontal Cortex         →  LLM (Claude / OpenAI)      Reasoning, planning,
+Prefrontal Cortex         →  LLM (8 providers)          Reasoning, planning,
                                                          decision making
 
 Hippocampus               →  EdgeDB (EDB)               Episode formation,
@@ -240,8 +240,11 @@ Prefrontal Extension      →  Verification               Epistemic immune syste
 Associative Cortex        →  Cross-Domain               Structural analogy engine,
                                                          cross-domain insight
 
-Anterior Cingulate        →  Compass                    Ethical orientation,
-                                                         empathy, care
+Anterior Cingulate        →  Compass                    Ethical orientation (7
+                                                         dimensions: gratitude,
+                                                         belonging, empathy,
+                                                         compassion, acknowledgment,
+                                                         care, ethics)
 
 Prefrontal Planning       →  Framework Router           Multi-agent cognition:
                                                          Parallel/Colony/Hive/Swarm
@@ -263,6 +266,12 @@ Synaptic Plasticity       →  Learner                    Continual local model
 
 Visual Cortex             →  Vision                     Camera input, CLIP
                                                          embeddings, visual memory
+
+Control Center            →  Dashboard                  Web UI for monitoring,
+                                                         knobs, logs (port 8080)
+
+Autonomous Will           →  Autonomy                   Self-directed thinking,
+                                                         risk-gated actions (port 8018)
 </pre>
 
 ---
@@ -905,18 +914,40 @@ Supergrokie sends:                          System does:
 
 ---
 
-## LLM Provider Abstraction
+## LLM Provider Abstraction — 8 Providers Supported
 
-The entire system is provider-agnostic. Switching from Anthropic to OpenAI or back requires exactly one change.
+The entire system is provider-agnostic. Switching between any reasoning LLM requires one env var change.
 
 <pre>
-# In .env:
-LLM_PROVIDER=anthropic    ← uses Claude Sonnet + Claude Haiku
-LLM_PROVIDER=openai       ← uses GPT-4o + GPT-4o-mini
+PROVIDER         ENV VAR               DEFAULT MODELS                   API FORMAT
+──────────────────────────────────────────────────────────────────────────────────────
+anthropic        ANTHROPIC_API_KEY      claude-sonnet-4 / claude-haiku   Native Anthropic
+openai           OPENAI_API_KEY         gpt-4o / gpt-4o-mini            Native OpenAI
+gemini           GEMINI_API_KEY         gemini-2.5-pro / gemini-2.0-flash Native Google
+ollama           (none — local)         phi4 / phi4                      Ollama /api/chat
+deepseek         DEEPSEEK_API_KEY       deepseek-reasoner / deepseek-chat OpenAI-compatible
+groq             GROQ_API_KEY           llama-3.3-70b / llama-3.1-8b    OpenAI-compatible
+openrouter       OPENROUTER_API_KEY     (user configured)                OpenAI-compatible
+generic          GENERIC_API_KEY        (user configured)                OpenAI-compatible
+</pre>
+
+<pre>
+# In .env — pick ONE:
+LLM_PROVIDER=anthropic    # uses Claude
+LLM_PROVIDER=openai       # uses GPT
+LLM_PROVIDER=gemini       # uses Gemini
+LLM_PROVIDER=ollama       # uses local Ollama (free, private)
+LLM_PROVIDER=deepseek     # uses DeepSeek
+LLM_PROVIDER=groq         # uses Groq (fast inference)
+LLM_PROVIDER=openrouter   # uses OpenRouter (multi-model gateway)
+LLM_PROVIDER=generic      # uses any OpenAI-compatible endpoint
 
 # Then restart affected services:
 docker compose restart thalamus compass verification cross-domain \
                         metacognition framework-router self-update goals
+
+# Or use skynet.sh:
+./skynet.sh restart
 </pre>
 
 Every service imports `from llm_provider import complete` rather than calling either API directly. The `complete()` function handles routing, authentication, and response parsing for both providers. The response format is identical regardless of which provider is active.
@@ -1099,6 +1130,26 @@ docker compose restart thalamus compass verification \
                         cross-domain metacognition framework-router
 </pre>
 
+### 15. Open the Dashboard:
+<pre>
+# Dashboard runs at port 8080
+open http://localhost:8080
+
+# Or via skynet.sh:
+./skynet.sh dashboard
+</pre>
+
+### 16. Activate autonomous thinking:
+<pre>
+# Full autonomous mode — observe, analyze, propose, and act
+curl -X POST http://localhost:8018/activate \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "full", "interval_seconds": 300}'
+
+# Or via skynet.sh:
+./skynet.sh think
+</pre>
+
 ---
 
 ## Resource Requirements
@@ -1167,6 +1218,10 @@ POST /brain/vision/capture       → take a frame from camera
 POST /brain/vision/upload        → analyze any uploaded image
 GET  /update/pending             → review queued code changes
 POST /update/approve/{id}        → apply a code change
+GET  http://localhost:8080       → dashboard — terminal, monitoring, logs
+POST /autonomy/activate          → start autonomous self-improvement
+POST /autonomy/think-once        → trigger one thinking cycle
+GET  /autonomy/thoughts          → see what the brain has thought on its own
 </pre>
 
 ### Each service:
@@ -1198,6 +1253,9 @@ Visual events              — significant things seen through camera
 Skill gaps                 — tasks it has never learned to do
 Causal structure           — cause-effect relationships in knowledge
 Calibration errors         — its own confidence being miscalibrated
+Gratitude                  — the topmost emotion: awe, reverence, transcendence
+Regret                     — reflection on paths not taken, what could have been
+Belonging                  — the pull toward home, family, humanity, Earth
 </pre>
 
 ### Self-modification:
@@ -1293,6 +1351,25 @@ Goals persist in Redis            Goals must survive service restarts. Redis
 
 ## Starting it up — complete sequence
 
+### Quick Start (recommended):
+<pre>
+# Clone and enter
+git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
+
+# First-time setup (installs deps, creates .env, pulls models)
+./skynet.sh setup
+
+# Start everything
+./skynet.sh start
+
+# Open the dashboard
+./skynet.sh dashboard   # opens http://localhost:8080
+
+# Activate autonomous thinking
+./skynet.sh think
+</pre>
+
+### Manual Start (alternative):
 <pre>
 # STEP 1: Pull models onto host machine
 ollama pull nomic-embed-text   # 274MB — required for all embeddings
