@@ -495,11 +495,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>SkyNet Brain Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
-/* == Reset & Variables ================================================ */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#0a0e17;--surface:#141926;--surface2:#1b2236;--border:#232b42;
+  --bg:#0a0e17;--surface-solid:#141926;--surface:rgba(20,25,38,.85);--surface2:#1b2236;--border:#232b42;
   --text:#e0e6ed;--text-dim:#7b8a9e;--accent:#00d4ff;--accent-dim:#0097b8;
   --success:#00c853;--warning:#ffd600;--error:#ff1744;
   --emo-gratitude:#ffd700;--emo-belonging:#4fc3f7;--emo-regret:#ce93d8;
@@ -512,85 +512,111 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   --brain-cerebellum:#7d9e7d;--brain-neocortex:#7d8ea0;--brain-prefrontal:#9e8eb3;
   --brain-temporal:#b3a07d;--brain-parietal:#7da0b3;--brain-occipital:#8e7da0;
   --brain-brainstem:#a09e7d;
+  --glass-bg:rgba(20,25,38,.85);--glass-blur:12px;--glow-accent:rgba(0,212,255,.15);
 }
 html{font-size:14px}
-body{font-family:var(--font);background:var(--bg);color:var(--text);
-  min-height:100vh;line-height:1.5;overflow:hidden}
+body{font-family:var(--font);background:linear-gradient(135deg,#0a0e17 0%,#141926 50%,#1b2236 100%);
+  color:var(--text);min-height:100vh;line-height:1.5;overflow:hidden}
 a{color:var(--accent);text-decoration:none}
 ::-webkit-scrollbar{width:6px;height:6px}
-::-webkit-scrollbar-track{background:var(--surface)}
+::-webkit-scrollbar-track{background:var(--surface-solid)}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 button{font-family:var(--font)}
 
-/* == Layout =========================================================== */
 #app{display:grid;grid-template-rows:auto auto 1fr;height:100vh;overflow:hidden}
 .header{display:flex;align-items:center;gap:12px;padding:10px 20px;
-  background:var(--surface);border-bottom:1px solid var(--border);position:relative;z-index:20}
+  background:linear-gradient(135deg,rgba(10,14,23,.95),rgba(20,25,38,.9),rgba(27,34,54,.95));
+  backdrop-filter:blur(var(--glass-blur));border-bottom:1px solid var(--border);position:relative;z-index:20}
 .header h1{font-size:1.15rem;font-weight:700;background:linear-gradient(135deg,var(--accent),#a78bfa);
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:.5px;white-space:nowrap}
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:1px;white-space:nowrap}
 .pulse-dot{width:8px;height:8px;border-radius:50%;background:var(--success);
-  box-shadow:0 0 6px var(--success);animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  box-shadow:0 0 8px var(--success),0 0 16px rgba(0,200,83,.3);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 8px var(--success),0 0 16px rgba(0,200,83,.3)}50%{opacity:.4;box-shadow:0 0 4px var(--success)}}
 .header .meta-right{margin-left:auto;display:flex;align-items:center;gap:14px}
-.header .session{font-size:.75rem;color:var(--text-dim);font-family:var(--mono)}
-.header .global-status{font-size:.75rem;padding:3px 10px;border-radius:12px;font-weight:600}
+.header .session{font-size:.75rem;color:var(--text-dim);font-family:var(--mono);letter-spacing:.5px}
+.header .global-status{font-size:.75rem;padding:3px 10px;border-radius:12px;font-weight:600;letter-spacing:.3px}
 
-.nav{display:flex;gap:2px;padding:0 20px;background:var(--surface);border-bottom:1px solid var(--border)}
+.nav{display:flex;gap:2px;padding:0 20px;background:var(--glass-bg);
+  backdrop-filter:blur(var(--glass-blur));border-bottom:1px solid var(--border)}
 .nav-btn{padding:9px 20px;font-size:.82rem;font-weight:600;color:var(--text-dim);cursor:pointer;
-  border:none;background:none;border-bottom:2px solid transparent;transition:.2s}
-.nav-btn:hover{color:var(--text)}
+  border:none;background:none;border-bottom:2px solid transparent;transition:all .25s ease;letter-spacing:.3px}
+.nav-btn:hover{color:var(--text);text-shadow:0 0 8px var(--glow-accent)}
 .nav-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
 
 .main{overflow:hidden;position:relative}
-.page{display:none;position:absolute;inset:0;overflow-y:auto;padding:16px 20px}
-.page.active{display:flex;flex-direction:column}
+.page{display:none;position:absolute;inset:0;overflow-y:auto;padding:16px 20px;opacity:0;transition:opacity .3s ease}
+.page.active{display:flex;flex-direction:column;opacity:1}
 
-/* == Brain Schematic ================================================== */
-.brain-thumb{position:fixed;top:54px;right:12px;width:120px;height:100px;z-index:30;
-  cursor:pointer;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
-  padding:4px;transition:.2s;opacity:.9}
-.brain-thumb:hover{opacity:1;border-color:var(--accent)}
-.brain-thumb svg{width:100%;height:100%}
+/* == Emotion Panel ==================================================== */
+.emotion-panel{position:absolute;top:12px;left:12px;width:200px;z-index:10;
+  background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
+  border:1px solid var(--border);border-radius:var(--radius);padding:12px;
+  transition:all .3s ease;box-shadow:0 4px 20px rgba(0,0,0,.3)}
+.emotion-panel:hover{border-color:rgba(0,212,255,.25);box-shadow:0 4px 20px rgba(0,0,0,.3),0 0 15px var(--glow-accent)}
+.emotion-panel.expanded{width:320px;max-height:400px;overflow-y:auto}
+.emo-face-wrap{text-align:center;margin-bottom:8px}
+.emo-face-wrap canvas{border-radius:6px;image-rendering:pixelated}
+.emo-face-label{font-size:.7rem;color:var(--text-dim);margin-top:4px;letter-spacing:.5px;text-transform:uppercase}
+.emo-current{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.emo-current .emo-emoji{font-size:1.5rem}
+.emo-current .emo-name{font-weight:700;font-size:.85rem;letter-spacing:.3px}
+.emo-badge{font-size:.68rem;padding:2px 8px;border-radius:10px;font-weight:700;color:#111}
+.emo-mood{margin-bottom:8px}
+.emo-mood-label{font-size:.7rem;color:var(--text-dim);margin-bottom:4px;letter-spacing:.3px}
+.emo-mood-bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.emo-mood-bar-fill{height:100%;border-radius:3px;
+  background:linear-gradient(90deg,var(--error),var(--warning),var(--success));transition:width .5s ease}
+.emo-expand-btn{width:100%;padding:4px;border:none;background:none;color:var(--text-dim);
+  cursor:pointer;font-size:.75rem;transition:.2s}
+.emo-expand-btn:hover{color:var(--accent)}
+.emo-history{max-height:220px;overflow-y:auto}
+.emo-hist-item{display:flex;align-items:center;gap:6px;padding:4px 0;font-size:.72rem;
+  border-bottom:1px solid rgba(255,255,255,.04)}
+.emo-hist-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.emo-hist-ts{color:var(--text-dim);font-family:var(--mono);font-size:.68rem}
+.emo-hist-name{font-weight:600;flex:1}
+.emo-hist-conf{color:var(--text-dim);font-family:var(--mono)}
+
+/* == 3D Brain ========================================================= */
+.brain-thumb{position:fixed;top:54px;right:12px;width:180px;height:140px;z-index:30;
+  cursor:pointer;background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
+  border:1px solid var(--border);border-radius:var(--radius);
+  padding:4px;transition:all .25s ease;overflow:hidden}
+.brain-thumb:hover{border-color:rgba(0,212,255,.4);box-shadow:0 0 15px var(--glow-accent)}
+.brain-thumb canvas{width:100%;height:100%;display:block;border-radius:calc(var(--radius) - 4px)}
 .brain-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;
-  display:none;align-items:center;justify-content:center}
+  display:none;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
 .brain-modal-overlay.open{display:flex}
-.brain-modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;
-  padding:24px;width:540px;max-width:95vw;position:relative}
-.brain-modal svg{width:100%;height:auto}
+.brain-modal{background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
+  border:1px solid var(--border);border-radius:12px;padding:24px;width:650px;max-width:95vw;
+  position:relative;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+.brain-modal canvas{width:100%;height:auto;border-radius:8px;cursor:grab;display:block}
+.brain-modal canvas:active{cursor:grabbing}
 .brain-modal .close-btn{position:absolute;top:10px;right:14px;background:none;border:none;
-  color:var(--text-dim);font-size:1.4rem;cursor:pointer}
-.brain-modal h3{text-align:center;margin-bottom:12px;font-size:.95rem;color:var(--text-dim)}
-.brain-region{fill:rgba(255,255,255,.04);stroke:rgba(255,255,255,.12);stroke-width:1.2;
-  transition:fill .3s ease-in,opacity .3s;cursor:pointer}
-.brain-region:hover{stroke:rgba(255,255,255,.4)}
-.brain-region.active-thalamus{fill:var(--brain-thalamus);opacity:.85}
-.brain-region.active-amygdala{fill:var(--brain-amygdala);opacity:.85}
-.brain-region.active-hippocampus{fill:var(--brain-hippocampus);opacity:.85}
-.brain-region.active-cerebellum{fill:var(--brain-cerebellum);opacity:.85}
-.brain-region.active-neocortex{fill:var(--brain-neocortex);opacity:.85}
-.brain-region.active-prefrontal{fill:var(--brain-prefrontal);opacity:.85}
-.brain-region.active-temporal{fill:var(--brain-temporal);opacity:.85}
-.brain-region.active-parietal{fill:var(--brain-parietal);opacity:.85}
-.brain-region.active-occipital{fill:var(--brain-occipital);opacity:.85}
-.brain-region.active-brainstem{fill:var(--brain-brainstem);opacity:.85}
-.brain-label{font-size:7px;fill:rgba(255,255,255,.5);pointer-events:none;font-family:var(--font);text-anchor:middle}
+  color:var(--text-dim);font-size:1.4rem;cursor:pointer;transition:.2s}
+.brain-modal .close-btn:hover{color:var(--accent)}
+.brain-modal h3{text-align:center;margin-bottom:12px;font-size:.95rem;color:var(--text-dim);letter-spacing:.5px}
 .brain-tooltip{position:absolute;background:var(--surface2);border:1px solid var(--border);
   border-radius:6px;padding:6px 10px;font-size:.75rem;pointer-events:none;z-index:210;
-  white-space:nowrap;display:none;color:var(--text)}
+  white-space:nowrap;display:none;color:var(--text);box-shadow:0 2px 10px rgba(0,0,0,.3)}
 
 /* == Terminal ========================================================= */
-#page-terminal{gap:12px}
+#page-terminal{gap:12px;position:relative}
 .chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
-  padding:10px;background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);min-height:0}
-.msg{padding:10px 14px;border-radius:var(--radius);max-width:88%;word-wrap:break-word;font-size:.88rem}
-.msg.user{align-self:flex-end;background:var(--accent-dim);color:#fff}
-.msg.bot{align-self:flex-start;background:var(--surface2);border:1px solid var(--border)}
+  padding:10px;padding-left:224px;background:var(--glass-bg);backdrop-filter:blur(8px);
+  border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease}
+.chat-log:hover{border-color:rgba(0,212,255,.12)}
+.msg{padding:10px 14px;border-radius:var(--radius);max-width:88%;word-wrap:break-word;font-size:.88rem;
+  animation:msgFade .3s ease}
+@keyframes msgFade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.msg.user{align-self:flex-end;background:linear-gradient(135deg,var(--accent-dim),#0077a8);color:#fff}
+.msg.bot{align-self:flex-start;background:var(--glass-bg);backdrop-filter:blur(8px);border:1px solid var(--border)}
 .msg .meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;font-size:.73rem}
 .msg .meta span{padding:2px 8px;border-radius:12px;font-weight:600}
 .badge-emotion{color:#111}
-.badge-latency{background:var(--surface);color:var(--accent);border:1px solid var(--border)}
-.badge-confidence{background:var(--surface);color:var(--warning);border:1px solid var(--border)}
-.badge-path{background:var(--surface);color:var(--emo-curiosity);border:1px solid var(--border)}
+.badge-latency{background:var(--surface-solid);color:var(--accent);border:1px solid var(--border)}
+.badge-confidence{background:var(--surface-solid);color:var(--warning);border:1px solid var(--border)}
+.badge-path{background:var(--surface-solid);color:var(--emo-curiosity);border:1px solid var(--border)}
 .badge-urgency{color:#111}
 .msg .trace-toggle{display:inline-block;margin-top:6px;cursor:pointer;color:var(--accent);font-size:.73rem}
 .msg pre.trace{margin-top:6px;padding:8px;background:var(--bg);border-radius:4px;
@@ -598,16 +624,18 @@ button{font-family:var(--font)}
   max-height:240px;overflow-y:auto;border:1px solid var(--border)}
 .chat-controls{display:flex;gap:8px;align-items:center}
 .chat-controls input[type=text]{flex:1;padding:10px 14px;border-radius:var(--radius);border:1px solid var(--border);
-  background:var(--surface);color:var(--text);font-size:.9rem;outline:none;font-family:var(--font)}
-.chat-controls input:focus{border-color:var(--accent)}
+  background:var(--glass-bg);backdrop-filter:blur(8px);color:var(--text);font-size:.9rem;outline:none;
+  font-family:var(--font);transition:all .25s ease}
+.chat-controls input:focus{border-color:var(--accent);box-shadow:0 0 10px var(--glow-accent)}
 .chat-btn{padding:10px 20px;border:none;border-radius:var(--radius);
-  background:var(--accent);color:#0a0e17;font-weight:700;cursor:pointer;font-size:.88rem;transition:.15s}
-.chat-btn:hover{background:#33dfff}
+  background:linear-gradient(135deg,var(--accent),#0097b8);color:#0a0e17;font-weight:700;
+  cursor:pointer;font-size:.88rem;transition:all .2s ease;letter-spacing:.3px}
+.chat-btn:hover{background:linear-gradient(135deg,#33dfff,var(--accent));box-shadow:0 0 15px var(--glow-accent)}
 .chat-btn:disabled{opacity:.5;cursor:not-allowed}
 .media-btn{width:38px;height:38px;border-radius:var(--radius);border:1px solid var(--border);
-  background:var(--surface);color:var(--text-dim);cursor:pointer;font-size:1.1rem;
-  display:flex;align-items:center;justify-content:center;transition:.15s;position:relative}
-.media-btn:hover{border-color:var(--accent);color:var(--accent)}
+  background:var(--glass-bg);color:var(--text-dim);cursor:pointer;font-size:1.1rem;
+  display:flex;align-items:center;justify-content:center;transition:all .2s ease;position:relative}
+.media-btn:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 0 10px var(--glow-accent)}
 .media-btn.active-media{border-color:var(--error);color:var(--error)}
 .rec-dot{position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;
   background:var(--error);display:none;animation:pulse 1s infinite}
@@ -618,47 +646,51 @@ button{font-family:var(--font)}
 /* == Monitoring ======================================================= */
 #page-monitoring{gap:14px}
 .overview-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
-.ov-card{padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);text-align:center}
-.ov-card .ov-val{font-size:1.6rem;font-weight:800;font-family:var(--mono);color:var(--accent)}
-.ov-card .ov-label{font-size:.75rem;color:var(--text-dim);margin-top:4px;text-transform:uppercase;letter-spacing:.5px}
+.ov-card{padding:16px;background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
+  border:1px solid var(--border);border-radius:var(--radius);text-align:center;transition:all .25s ease}
+.ov-card:hover{border-color:rgba(0,212,255,.25);box-shadow:0 0 15px var(--glow-accent)}
+.ov-card .ov-val{font-size:1.6rem;font-weight:800;font-family:var(--mono);color:var(--accent);letter-spacing:.5px}
+.ov-card .ov-label{font-size:.75rem;color:var(--text-dim);margin-top:4px;text-transform:uppercase;letter-spacing:.8px}
 .time-range{display:flex;gap:4px;align-items:center}
 .time-range button{padding:4px 12px;border-radius:14px;border:1px solid var(--border);
-  background:var(--surface);color:var(--text-dim);font-size:.75rem;cursor:pointer;transition:.15s}
+  background:var(--glass-bg);color:var(--text-dim);font-size:.75rem;cursor:pointer;transition:all .2s ease}
 .time-range button:hover{border-color:var(--accent);color:var(--accent)}
-.time-range button.active{background:var(--accent);color:#0a0e17;border-color:var(--accent);font-weight:700}
+.time-range button.active{background:linear-gradient(135deg,var(--accent),#0097b8);color:#0a0e17;
+  border-color:var(--accent);font-weight:700}
 .mon-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
-.mon-header h2{font-size:1rem;font-weight:700}
+.mon-header h2{font-size:1rem;font-weight:700;letter-spacing:.3px}
 .svc-metrics-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;
   flex:1;overflow-y:auto;min-height:0}
-.svc-metric-card{padding:14px;background:var(--surface);border:1px solid var(--border);
-  border-radius:var(--radius);transition:.15s}
-.svc-metric-card:hover{border-color:var(--accent)}
-.svc-metric-card .svc-m-name{font-weight:700;font-size:.85rem;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.svc-metric-card{padding:14px;background:var(--glass-bg);backdrop-filter:blur(8px);
+  border:1px solid var(--border);border-radius:var(--radius);transition:all .25s ease}
+.svc-metric-card:hover{border-color:rgba(0,212,255,.25);box-shadow:0 0 15px var(--glow-accent)}
+.svc-metric-card .svc-m-name{font-weight:700;font-size:.85rem;margin-bottom:8px;display:flex;align-items:center;gap:6px;letter-spacing:.3px}
 .svc-metric-card .svc-m-name .dot-sm{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .svc-stats{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:.75rem;margin-bottom:8px}
 .svc-stats .stat-label{color:var(--text-dim)}
 .svc-stats .stat-val{font-family:var(--mono);text-align:right;color:var(--text)}
 .sparkline{height:28px;display:flex;align-items:flex-end;gap:1px}
-.sparkline .bar{flex:1;background:var(--accent);opacity:.5;border-radius:1px 1px 0 0;min-width:2px;transition:height .3s}
+.sparkline .bar{flex:1;background:linear-gradient(180deg,var(--accent),var(--accent-dim));opacity:.5;
+  border-radius:1px 1px 0 0;min-width:2px;transition:height .3s}
 .sparkline .bar:hover{opacity:1}
 
 /* == Logging ========================================================== */
 #page-logging{gap:10px}
 .log-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .log-toolbar select,.log-toolbar input{padding:6px 10px;border-radius:4px;
-  border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.82rem;outline:none}
-.log-toolbar select:focus,.log-toolbar input:focus{border-color:var(--accent)}
+  border:1px solid var(--border);background:var(--glass-bg);color:var(--text);font-size:.82rem;outline:none;transition:all .2s ease}
+.log-toolbar select:focus,.log-toolbar input:focus{border-color:var(--accent);box-shadow:0 0 8px var(--glow-accent)}
 .log-toolbar .ws-status{font-size:.75rem;display:flex;align-items:center;gap:4px;margin-left:auto}
 .log-toolbar .small-btn{padding:4px 10px;border-radius:4px;border:1px solid var(--border);
-  background:var(--surface);color:var(--text-dim);cursor:pointer;font-size:.75rem}
+  background:var(--glass-bg);color:var(--text-dim);cursor:pointer;font-size:.75rem;transition:all .2s ease}
 .log-toolbar .small-btn:hover{border-color:var(--accent);color:var(--accent)}
 .dot-sm{width:8px;height:8px;border-radius:50%;flex-shrink:0;display:inline-block}
 .dot-alive{background:var(--success);box-shadow:0 0 4px var(--success)}
 .dot-degraded{background:var(--warning);box-shadow:0 0 4px var(--warning)}
 .dot-unreachable{background:var(--error);box-shadow:0 0 4px var(--error)}
 .log-scroll{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:3px;
-  padding:8px;background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);
-  font-family:var(--mono);font-size:.76rem;min-height:0}
+  padding:8px;background:var(--glass-bg);backdrop-filter:blur(8px);border-radius:var(--radius);
+  border:1px solid var(--border);font-family:var(--mono);font-size:.76rem;min-height:0}
 .log-line{padding:5px 10px;border-radius:4px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
 .log-line.level-error{background:rgba(255,23,68,.08);border-left:3px solid var(--error)}
 .log-line.level-warn{border-left:3px solid var(--warning)}
@@ -673,23 +705,26 @@ button{font-family:var(--font)}
 .live-events{margin-top:8px}
 .live-events h3{font-size:.85rem;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:6px}
 .live-events-scroll{max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;
-  padding:8px;background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);
-  font-family:var(--mono);font-size:.74rem}
+  padding:8px;background:var(--glass-bg);backdrop-filter:blur(8px);border-radius:var(--radius);
+  border:1px solid var(--border);font-family:var(--mono);font-size:.74rem}
 .live-event{padding:4px 8px;border-radius:4px;background:var(--surface2)}
 .live-event .ev-ch{color:var(--accent);font-weight:600}
 .live-event .ev-ts{color:var(--text-dim);font-size:.68rem}
 
 /* == Controls ========================================================= */
 #page-controls{gap:14px}
-.ctrl-section{padding:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)}
-.ctrl-section h3{font-size:.9rem;font-weight:700;margin-bottom:10px;color:var(--accent)}
+.ctrl-section{padding:14px;background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
+  border:1px solid var(--border);border-radius:var(--radius);transition:all .25s ease}
+.ctrl-section:hover{border-color:rgba(0,212,255,.15)}
+.ctrl-section h3{font-size:.9rem;font-weight:700;margin-bottom:10px;color:var(--accent);letter-spacing:.3px}
 .knobs-presets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
 .knobs-presets button{padding:6px 14px;border-radius:16px;border:1px solid var(--border);
-  background:var(--surface2);color:var(--text);font-size:.78rem;cursor:pointer;transition:.15s}
-.knobs-presets button:hover{border-color:var(--accent);color:var(--accent)}
-.knobs-presets button.active-preset{background:var(--accent);color:#0a0e17;border-color:var(--accent);font-weight:700}
+  background:var(--surface2);color:var(--text);font-size:.78rem;cursor:pointer;transition:all .2s ease}
+.knobs-presets button:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 0 8px var(--glow-accent)}
+.knobs-presets button.active-preset{background:linear-gradient(135deg,var(--accent),#0097b8);
+  color:#0a0e17;border-color:var(--accent);font-weight:700}
 .knob-groups{display:flex;flex-direction:column;gap:16px}
-.knob-group h4{font-size:.82rem;font-weight:700;margin-bottom:8px;color:var(--text-dim)}
+.knob-group h4{font-size:.82rem;font-weight:700;margin-bottom:8px;color:var(--text-dim);letter-spacing:.3px}
 .knob-grid{display:flex;flex-wrap:wrap;gap:14px}
 .rotary-knob{display:flex;flex-direction:column;align-items:center;width:88px;cursor:grab;user-select:none}
 .rotary-knob:active{cursor:grabbing}
@@ -704,7 +739,8 @@ button{font-family:var(--font)}
   line-height:1.15;max-width:88px;word-break:break-word}
 .perc-list{display:flex;flex-direction:column;gap:8px}
 .perc-card{padding:10px 14px;border-radius:var(--radius);background:var(--surface2);
-  border:1px solid var(--border);display:flex;align-items:center;gap:12px}
+  border:1px solid var(--border);display:flex;align-items:center;gap:12px;transition:all .2s ease}
+.perc-card:hover{border-color:rgba(0,212,255,.2)}
 .perc-card .perc-icon{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;
   justify-content:center;font-size:1rem;flex-shrink:0}
 .perc-card .perc-body{flex:1}
@@ -717,8 +753,8 @@ button{font-family:var(--font)}
 .perc-empty{text-align:center;color:var(--text-dim);padding:30px;font-size:.85rem}
 .autonomy-ctrl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
 .autonomy-ctrl button{padding:6px 16px;border-radius:var(--radius);border:1px solid var(--border);
-  background:var(--surface2);color:var(--text);cursor:pointer;font-size:.8rem;transition:.15s}
-.autonomy-ctrl button:hover{border-color:var(--accent);color:var(--accent)}
+  background:var(--surface2);color:var(--text);cursor:pointer;font-size:.8rem;transition:all .2s ease}
+.autonomy-ctrl button:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 0 8px var(--glow-accent)}
 .autonomy-status{font-size:.78rem;color:var(--text-dim)}
 .thought-list{margin-top:8px;display:flex;flex-direction:column;gap:4px;max-height:160px;overflow-y:auto}
 .thought-item{font-size:.75rem;padding:4px 8px;background:var(--surface2);border-radius:4px;
@@ -726,15 +762,17 @@ button{font-family:var(--font)}
 
 /* == Shared =========================================================== */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;
-  align-items:center;justify-content:center;z-index:100}
+  align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(4px)}
 .modal-overlay.open{display:flex}
-.modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+.modal{background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
+  border:1px solid var(--border);border-radius:var(--radius);
   padding:20px;max-width:560px;width:90%;max-height:70vh;overflow-y:auto}
 .modal h3{margin-bottom:10px;font-size:1rem}
 .modal pre{font-family:var(--mono);font-size:.76rem;background:var(--bg);padding:12px;
   border-radius:4px;white-space:pre-wrap;overflow-x:auto;border:1px solid var(--border)}
 .modal .close-btn{float:right;cursor:pointer;color:var(--text-dim);font-size:1.2rem;
-  background:none;border:none;line-height:1}
+  background:none;border:none;line-height:1;transition:.2s}
+.modal .close-btn:hover{color:var(--accent)}
 .loading{display:inline-block;width:14px;height:14px;border:2px solid var(--border);
   border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -769,6 +807,23 @@ button{font-family:var(--font)}
 
 <!-- PAGE: Terminal -->
 <div class="page active" id="page-terminal">
+  <div class="emotion-panel" id="emotion-tracker">
+    <div class="emo-face-wrap">
+      <canvas id="pixel-face" width="80" height="80"></canvas>
+      <div class="emo-face-label" id="emo-face-label">neutral</div>
+    </div>
+    <div class="emo-current">
+      <span class="emo-emoji" id="emo-emoji">&#x1F610;</span>
+      <span class="emo-name" id="emo-name">neutral</span>
+    </div>
+    <div style="margin-bottom:6px"><span class="emo-badge" id="emo-badge" style="background:var(--emo-neutral)">neutral</span></div>
+    <div class="emo-mood">
+      <div class="emo-mood-label">Overall Mood</div>
+      <div class="emo-mood-bar"><div class="emo-mood-bar-fill" id="mood-bar-fill" style="width:50%"></div></div>
+    </div>
+    <button class="emo-expand-btn" id="emo-expand-btn">&#x25BC; History</button>
+    <div class="emo-history" id="emo-history"></div>
+  </div>
   <div class="chat-log" id="chat-log"></div>
   <div class="chat-controls">
     <button class="media-btn" id="btn-stt" title="Speech-to-Text" style="display:none">&#x1F3A4;<span class="rec-dot"></span></button>
@@ -854,54 +909,18 @@ button{font-family:var(--font)}
 </div><!-- /main -->
 </div><!-- /app -->
 
-<!-- == Brain Schematic (thumbnail) ==================================== -->
+<!-- == 3D Brain Thumbnail ============================================= -->
 <div class="brain-thumb" id="brain-thumb" title="Click to expand brain view">
-  <svg viewBox="0 0 200 160" xmlns="http://www.w3.org/2000/svg" id="brain-svg-sm">
-    <g id="brain-g-sm">
-      <path d="M40,130 C20,120 10,95 12,75 C14,55 25,35 50,22 C70,12 100,8 130,12 C155,16 175,30 183,50 C190,68 188,90 178,108 C170,122 155,132 135,136 C115,140 90,138 70,136 C55,134 45,133 40,130 Z" fill="none" stroke="rgba(255,255,255,.15)" stroke-width="1.5"/>
-      <ellipse class="brain-region" id="sm-neocortex" cx="100" cy="38" rx="55" ry="22"/>
-      <ellipse class="brain-region" id="sm-prefrontal" cx="45" cy="50" rx="22" ry="20"/>
-      <ellipse class="brain-region" id="sm-parietal" cx="110" cy="48" rx="24" ry="16"/>
-      <ellipse class="brain-region" id="sm-occipital" cx="165" cy="55" rx="18" ry="20"/>
-      <ellipse class="brain-region" id="sm-temporal" cx="60" cy="95" rx="28" ry="18"/>
-      <ellipse class="brain-region" id="sm-thalamus" cx="105" cy="78" rx="18" ry="14"/>
-      <ellipse class="brain-region" id="sm-amygdala" cx="82" cy="92" rx="12" ry="10"/>
-      <ellipse class="brain-region" id="sm-hippocampus" cx="120" cy="95" rx="16" ry="10"/>
-      <ellipse class="brain-region" id="sm-cerebellum" cx="160" cy="110" rx="22" ry="18"/>
-      <path class="brain-region" id="sm-brainstem" d="M100,105 C98,115 95,130 93,145 L107,145 C105,130 102,115 100,105 Z"/>
-    </g>
-  </svg>
+  <canvas id="brain-canvas-sm"></canvas>
 </div>
 
-<!-- == Brain Modal ===================================================== -->
+<!-- == 3D Brain Modal ================================================= -->
 <div class="brain-modal-overlay" id="brain-modal-overlay">
   <div class="brain-modal">
     <button class="close-btn" id="brain-modal-close">&times;</button>
     <h3>Cognitive Architecture</h3>
     <div style="position:relative" id="brain-modal-wrap">
-      <svg viewBox="0 0 400 320" xmlns="http://www.w3.org/2000/svg" id="brain-svg-lg">
-        <path d="M80,260 C40,240 20,190 24,150 C28,110 50,70 100,44 C140,24 200,16 260,24 C310,32 350,60 366,100 C380,136 376,180 356,216 C340,244 310,264 270,272 C230,280 180,276 140,272 C110,268 90,265 80,260 Z" fill="none" stroke="rgba(255,255,255,.15)" stroke-width="2"/>
-        <ellipse class="brain-region" id="lg-neocortex" cx="200" cy="76" rx="110" ry="44" data-name="Neocortex" data-svc="neocortex"/>
-        <ellipse class="brain-region" id="lg-prefrontal" cx="90" cy="100" rx="44" ry="40" data-name="Prefrontal Cortex" data-svc="compass"/>
-        <ellipse class="brain-region" id="lg-parietal" cx="220" cy="96" rx="48" ry="32" data-name="Parietal Lobe" data-svc="working-memory"/>
-        <ellipse class="brain-region" id="lg-occipital" cx="330" cy="110" rx="36" ry="40" data-name="Occipital Lobe" data-svc="vision"/>
-        <ellipse class="brain-region" id="lg-temporal" cx="120" cy="190" rx="56" ry="36" data-name="Temporal Lobe" data-svc="cross-domain"/>
-        <ellipse class="brain-region" id="lg-thalamus" cx="210" cy="156" rx="36" ry="28" data-name="Thalamus (Hub)" data-svc="thalamus"/>
-        <ellipse class="brain-region" id="lg-amygdala" cx="164" cy="184" rx="24" ry="20" data-name="Amygdala" data-svc="amygdala"/>
-        <ellipse class="brain-region" id="lg-hippocampus" cx="240" cy="190" rx="32" ry="20" data-name="Hippocampus" data-svc="hippocampus"/>
-        <ellipse class="brain-region" id="lg-cerebellum" cx="320" cy="220" rx="44" ry="36" data-name="Cerebellum" data-svc="cerebellum"/>
-        <path class="brain-region" id="lg-brainstem" d="M200,210 C196,230 190,260 186,290 L214,290 C210,260 204,230 200,210 Z" data-name="Brainstem" data-svc="framework-router"/>
-        <text class="brain-label" x="200" y="80">Neocortex</text>
-        <text class="brain-label" x="90" y="103">Prefrontal</text>
-        <text class="brain-label" x="220" y="100">Parietal</text>
-        <text class="brain-label" x="330" y="113">Occipital</text>
-        <text class="brain-label" x="120" y="193">Temporal</text>
-        <text class="brain-label" x="210" y="159">Thalamus</text>
-        <text class="brain-label" x="164" y="187">Amygdala</text>
-        <text class="brain-label" x="240" y="193">Hippocampus</text>
-        <text class="brain-label" x="320" y="223">Cerebellum</text>
-        <text class="brain-label" x="200" y="260">Brainstem</text>
-      </svg>
+      <canvas id="brain-canvas-lg" width="600" height="450"></canvas>
       <div class="brain-tooltip" id="brain-tooltip"></div>
     </div>
   </div>
@@ -956,37 +975,143 @@ var svcToRegion={thalamus:'thalamus',amygdala:'amygdala',hippocampus:'hippocampu
   'cross-domain':'temporal',perception:'temporal','working-memory':'parietal',
   vision:'occipital','framework-router':'brainstem',goals:'brainstem'};
 
-/* -- Brain Schematic -------------------------------------------------- */
-$('#brain-thumb').addEventListener('click',function(){$('#brain-modal-overlay').classList.add('open')});
-$('#brain-modal-close').addEventListener('click',function(){$('#brain-modal-overlay').classList.remove('open')});
-$('#brain-modal-overlay').addEventListener('click',function(e){if(e.target===e.currentTarget)e.currentTarget.classList.remove('open')});
+/* =====================================================================
+   Three.js 3D Brain
+   ===================================================================== */
+var brainDefs={
+  neocortex:{px:0,py:1.2,pz:0,sx:2.5,sy:1.0,sz:2.0,color:0x7d8ea0,name:'Neocortex',svc:'neocortex'},
+  prefrontal:{px:-1.0,py:0.8,pz:1.0,sx:0.9,sy:0.8,sz:0.8,color:0x9e8eb3,name:'Prefrontal Cortex',svc:'compass'},
+  parietal:{px:0.2,py:1.5,pz:-0.2,sx:1.0,sy:0.6,sz:1.0,color:0x7da0b3,name:'Parietal Lobe',svc:'working-memory'},
+  occipital:{px:0,py:0.8,pz:-1.5,sx:0.9,sy:0.8,sz:0.7,color:0x8e7da0,name:'Occipital Lobe',svc:'vision'},
+  temporal:{px:-1.4,py:-0.2,pz:0.4,sx:0.7,sy:0.6,sz:1.1,color:0xb3a07d,name:'Temporal Lobe',svc:'cross-domain'},
+  thalamus:{px:0,py:0.2,pz:0,sx:0.7,sy:0.5,sz:0.6,color:0xd4c5a9,name:'Thalamus (Hub)',svc:'thalamus'},
+  amygdala:{px:-0.5,py:-0.1,pz:0.3,sx:0.4,sy:0.35,sz:0.35,color:0xc47d7d,name:'Amygdala',svc:'amygdala'},
+  hippocampus:{px:0.6,py:-0.1,pz:0.3,sx:0.6,sy:0.3,sz:0.5,color:0x6d9e9e,name:'Hippocampus',svc:'hippocampus'},
+  cerebellum:{px:0,py:-0.8,pz:-1.0,sx:1.2,sy:0.7,sz:0.9,color:0x7d9e7d,name:'Cerebellum',svc:'cerebellum'},
+  brainstem:{px:0,py:-1.5,pz:-0.3,sx:0.35,sy:0.8,sz:0.35,color:0xa09e7d,name:'Brainstem',svc:'framework-router'}
+};
 
-$$('#brain-svg-lg .brain-region').forEach(function(el){
-  el.addEventListener('mouseenter',function(e){
-    var tip=$('#brain-tooltip');
-    var name=el.dataset.name||'';
-    var svc=el.dataset.svc||'';
-    tip.textContent=name+(svc?' ('+svc+')':'');
-    tip.style.display='block';
-    var r=$('#brain-modal-wrap').getBoundingClientRect();
-    tip.style.left=(e.clientX-r.left+10)+'px';
-    tip.style.top=(e.clientY-r.top-30)+'px';
+var brainScene,brainGroup,brainMeshes={};
+var thumbRenderer,thumbCamera,thumbAnimId;
+var modalRenderer,modalCamera,modalAnimId;
+var brainModalOpen=false;
+
+function initBrainScene(){
+  brainScene=new THREE.Scene();
+  brainScene.background=new THREE.Color(0x0a0e17);
+  brainScene.add(new THREE.AmbientLight(0x404060,0.6));
+  var pt1=new THREE.PointLight(0xffffff,0.8,20);pt1.position.set(3,3,5);brainScene.add(pt1);
+  var pt2=new THREE.PointLight(0x4488ff,0.3,15);pt2.position.set(-3,-2,3);brainScene.add(pt2);
+  brainGroup=new THREE.Group();
+  brainScene.add(brainGroup);
+  var keys=Object.keys(brainDefs);
+  for(var i=0;i<keys.length;i++){
+    var key=keys[i];var def=brainDefs[key];
+    var geom=new THREE.SphereGeometry(0.5,20,14);
+    geom.scale(def.sx,def.sy,def.sz);
+    var mat=new THREE.MeshPhongMaterial({
+      color:def.color,transparent:true,opacity:0.15,
+      emissive:def.color,emissiveIntensity:0.05,
+      shininess:30,specular:0x222222
+    });
+    var mesh=new THREE.Mesh(geom,mat);
+    mesh.position.set(def.px,def.py,def.pz);
+    mesh.userData={key:key,name:def.name,svc:def.svc,baseColor:def.color};
+    brainGroup.add(mesh);
+    brainMeshes[key]=mesh;
+  }
+}
+
+function initThumbRenderer(){
+  var canvas=$('#brain-canvas-sm');
+  var w=180,h=140;
+  thumbRenderer=new THREE.WebGLRenderer({canvas:canvas,antialias:true,alpha:false});
+  thumbRenderer.setSize(w,h);
+  thumbRenderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  thumbCamera=new THREE.PerspectiveCamera(38,w/h,0.1,100);
+  thumbCamera.position.set(0,0.5,6.5);
+  thumbCamera.lookAt(0,0,0);
+  function animate(){
+    thumbAnimId=requestAnimationFrame(animate);
+    if(!brainModalOpen){
+      brainGroup.rotation.y+=0.002;
+      thumbRenderer.render(brainScene,thumbCamera);
+    }
+  }
+  animate();
+}
+
+function initModalRenderer(){
+  var canvas=$('#brain-canvas-lg');
+  var w=600,h=450;
+  modalRenderer=new THREE.WebGLRenderer({canvas:canvas,antialias:true,alpha:false});
+  modalRenderer.setSize(w,h);
+  modalRenderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  modalCamera=new THREE.PerspectiveCamera(38,w/h,0.1,100);
+  modalCamera.position.set(0,0.5,6.5);
+  modalCamera.lookAt(0,0,0);
+
+  var isDrag=false,prevMX=0,prevMY=0;
+  canvas.addEventListener('mousedown',function(e){isDrag=true;prevMX=e.clientX;prevMY=e.clientY});
+  document.addEventListener('mousemove',function(e){
+    if(!isDrag||!brainModalOpen)return;
+    brainGroup.rotation.y+=(e.clientX-prevMX)*0.005;
+    brainGroup.rotation.x+=(e.clientY-prevMY)*0.005;
+    prevMX=e.clientX;prevMY=e.clientY;
   });
-  el.addEventListener('mousemove',function(e){
+  document.addEventListener('mouseup',function(){isDrag=false});
+
+  var raycaster=new THREE.Raycaster();
+  var mouse=new THREE.Vector2();
+  canvas.addEventListener('mousemove',function(e){
+    if(isDrag)return;
+    var rect=canvas.getBoundingClientRect();
+    mouse.x=((e.clientX-rect.left)/rect.width)*2-1;
+    mouse.y=-((e.clientY-rect.top)/rect.height)*2+1;
+    raycaster.setFromCamera(mouse,modalCamera);
+    var hits=raycaster.intersectObjects(brainGroup.children);
     var tip=$('#brain-tooltip');
-    var r=$('#brain-modal-wrap').getBoundingClientRect();
-    tip.style.left=(e.clientX-r.left+10)+'px';
-    tip.style.top=(e.clientY-r.top-30)+'px';
+    if(hits.length>0){
+      var obj=hits[0].object;
+      tip.textContent=obj.userData.name+' ('+obj.userData.svc+')';
+      tip.style.display='block';
+      var wr=$('#brain-modal-wrap').getBoundingClientRect();
+      tip.style.left=(e.clientX-wr.left+10)+'px';
+      tip.style.top=(e.clientY-wr.top-30)+'px';
+    }else{tip.style.display='none'}
   });
-  el.addEventListener('mouseleave',function(){$('#brain-tooltip').style.display='none'});
+  canvas.addEventListener('mouseleave',function(){$('#brain-tooltip').style.display='none'});
+
+  function animate(){
+    modalAnimId=requestAnimationFrame(animate);
+    if(brainModalOpen){
+      if(!isDrag)brainGroup.rotation.y+=0.002;
+      modalRenderer.render(brainScene,modalCamera);
+    }
+  }
+  animate();
+}
+
+/* -- Brain open/close ------------------------------------------------- */
+$('#brain-thumb').addEventListener('click',function(){
+  brainModalOpen=true;
+  $('#brain-modal-overlay').classList.add('open');
+});
+$('#brain-modal-close').addEventListener('click',function(){
+  brainModalOpen=false;$('#brain-modal-overlay').classList.remove('open');
+});
+$('#brain-modal-overlay').addEventListener('click',function(e){
+  if(e.target===e.currentTarget){brainModalOpen=false;e.currentTarget.classList.remove('open')}
 });
 
+/* -- Light region (3D) ------------------------------------------------ */
 function lightRegion(regionKey,duration){
-  var cls='active-'+regionKey;
-  ['sm-','lg-'].forEach(function(prefix){
-    var el=$('#'+prefix+regionKey);
-    if(el){el.classList.add(cls);setTimeout(function(){el.classList.remove(cls)},duration||1600)}
-  });
+  var mesh=brainMeshes[regionKey];
+  if(!mesh)return;
+  var mat=mesh.material;
+  mat.opacity=0.85;
+  mat.emissiveIntensity=0.4;
+  setTimeout(function(){mat.opacity=0.15;mat.emissiveIntensity=0.05},duration||1600);
 }
 
 function animateBrainPipeline(cogPath){
@@ -1000,6 +1125,136 @@ function animateBrainPipeline(cogPath){
     });
   }
 }
+
+/* =====================================================================
+   Pixelated Face
+   ===================================================================== */
+var currentEmotion='neutral';
+var faceGrid=[
+  [0,0,0,1,1,1,1,0,0,0],
+  [0,0,1,1,1,1,1,1,0,0],
+  [0,1,1,1,1,1,1,1,1,0],
+  [0,1,1,1,1,1,1,1,1,0],
+  [0,1,1,1,1,1,1,1,1,0],
+  [0,1,1,1,1,1,1,1,1,0],
+  [0,1,1,1,1,1,1,1,1,0],
+  [0,0,1,1,1,1,1,1,0,0],
+  [0,0,0,1,1,1,1,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0]
+];
+
+function drawPixelFace(emotion){
+  var cv=$('#pixel-face');if(!cv)return;
+  var ctx=cv.getContext('2d');
+  var s=8;
+  var schemes={
+    neutral:{bg:'#0d1117',face:'#2a2e3a',eye:'#8899aa',mouth:'#6a7080'},
+    joy:{bg:'#1a1800',face:'#3a3520',eye:'#ffd700',mouth:'#ffcc00'},
+    gratitude:{bg:'#1a1800',face:'#3a3520',eye:'#ffd700',mouth:'#ffcc00'},
+    curiosity:{bg:'#0a1a1a',face:'#1a3535',eye:'#26c6da',mouth:'#20a0b0'},
+    alarm:{bg:'#1a0808',face:'#3a1515',eye:'#ff4444',mouth:'#ff3333'},
+    urgency:{bg:'#1a0808',face:'#3a1515',eye:'#ff4444',mouth:'#ff3333'},
+    regret:{bg:'#150a18',face:'#2a1535',eye:'#ce93d8',mouth:'#b070c0'},
+    distress:{bg:'#150a18',face:'#2a1535',eye:'#ce93d8',mouth:'#b070c0'},
+    belonging:{bg:'#081018',face:'#152030',eye:'#4fc3f7',mouth:'#3aa0d0'}
+  };
+  var sc=schemes[emotion]||schemes.neutral;
+  ctx.fillStyle=sc.bg;ctx.fillRect(0,0,80,80);
+  ctx.fillStyle=sc.face;
+  for(var r=0;r<10;r++)for(var c=0;c<10;c++)if(faceGrid[r][c])ctx.fillRect(c*s,r*s,s,s);
+  ctx.fillStyle=sc.eye;
+  if(emotion==='alarm'||emotion==='urgency'){
+    ctx.fillRect(2*s,3*s,2*s,2*s);ctx.fillRect(6*s,3*s,2*s,2*s);
+  }else if(emotion==='curiosity'){
+    ctx.fillRect(2*s,2*s,2*s,s);ctx.fillRect(2*s,3*s,2*s,2*s);ctx.fillRect(6*s,3*s,s,s);
+  }else if(emotion==='regret'||emotion==='distress'){
+    ctx.fillRect(2*s,4*s,2*s,s);ctx.fillRect(6*s,4*s,2*s,s);
+  }else if(emotion==='belonging'){
+    ctx.fillRect(3*s,3*s,s,s);ctx.fillRect(6*s,3*s,s,s);
+    ctx.globalAlpha=0.3;ctx.fillRect(2*s,3*s,s,s);ctx.fillRect(7*s,3*s,s,s);ctx.globalAlpha=1;
+  }else{
+    ctx.fillRect(3*s,3*s,s,s);ctx.fillRect(6*s,3*s,s,s);
+  }
+  ctx.fillStyle=sc.mouth;
+  if(emotion==='joy'||emotion==='gratitude'){
+    ctx.fillRect(3*s,6*s,s,s);ctx.fillRect(4*s,7*s,2*s,s);ctx.fillRect(6*s,6*s,s,s);
+  }else if(emotion==='alarm'||emotion==='urgency'){
+    ctx.fillRect(4*s,6*s,2*s,2*s);
+  }else if(emotion==='regret'||emotion==='distress'){
+    ctx.fillRect(3*s,7*s,s,s);ctx.fillRect(4*s,6*s,2*s,s);ctx.fillRect(6*s,7*s,s,s);
+  }else if(emotion==='belonging'){
+    ctx.fillRect(3*s,6*s,4*s,s);ctx.fillRect(4*s,7*s,2*s,s);
+  }else if(emotion==='curiosity'){
+    ctx.fillRect(4*s,6*s,2*s,s);
+  }else{
+    ctx.fillRect(3*s,6*s,4*s,s);
+  }
+  $('#emo-face-label').textContent=emotion;
+}
+
+/* =====================================================================
+   Emotion Tracker
+   ===================================================================== */
+var emotionHistory=[];
+var emotionExpanded=false;
+
+function updateEmotionTracker(emotion,confidence){
+  emotionHistory.unshift({emotion:emotion,confidence:confidence,timestamp:new Date().toLocaleTimeString()});
+  if(emotionHistory.length>20)emotionHistory.length=20;
+  currentEmotion=emotion;
+  drawPixelFace(emotion);
+  renderEmotionTracker();
+}
+
+function renderEmotionTracker(){
+  var emojiMap={neutral:'\uD83D\uDE10',joy:'\uD83D\uDE0A',gratitude:'\uD83D\uDE4F',
+    curiosity:'\uD83E\uDD14',alarm:'\uD83D\uDEA8',urgency:'\u26A0',
+    regret:'\uD83D\uDE14',distress:'\uD83D\uDE1F',belonging:'\uD83D\uDC9C'};
+  var emoji=emojiMap[currentEmotion]||emojiMap.neutral;
+  $('#emo-emoji').textContent=emoji;
+  $('#emo-name').textContent=currentEmotion;
+  var badgeEl=$('#emo-badge');
+  badgeEl.style.background=emotionColor(currentEmotion);
+  badgeEl.textContent=currentEmotion;
+
+  var valence={joy:0.9,gratitude:0.85,belonging:0.7,curiosity:0.6,
+    neutral:0.5,alarm:0.3,urgency:0.25,regret:0.2,distress:0.15};
+  var recent=emotionHistory.slice(0,10);
+  var avgVal=0.5;
+  if(recent.length>0){
+    var sum=0;for(var i=0;i<recent.length;i++)sum+=(valence[recent[i].emotion]||0.5);
+    avgVal=sum/recent.length;
+  }
+  $('#mood-bar-fill').style.width=(avgVal*100)+'%';
+
+  if(emotionExpanded){
+    var h='';
+    for(var j=0;j<emotionHistory.length;j++){
+      var e=emotionHistory[j];
+      h+='<div class="emo-hist-item">';
+      h+='<span class="emo-hist-dot" style="background:'+emotionColor(e.emotion)+'"></span>';
+      h+='<span class="emo-hist-ts">'+esc(e.timestamp)+'</span>';
+      h+='<span class="emo-hist-name">'+esc(e.emotion)+'</span>';
+      h+='<span class="emo-hist-conf">'+(e.confidence?Math.round(e.confidence*100)+'%':'')+'</span>';
+      h+='</div>';
+    }
+    $('#emo-history').innerHTML=h;
+  }
+}
+
+$('#emo-expand-btn').addEventListener('click',function(){
+  emotionExpanded=!emotionExpanded;
+  var panel=$('#emotion-tracker');
+  if(emotionExpanded){
+    panel.classList.add('expanded');
+    this.textContent='\u25B2 Hide';
+    renderEmotionTracker();
+  }else{
+    panel.classList.remove('expanded');
+    this.textContent='\u25BC History';
+    $('#emo-history').innerHTML='';
+  }
+});
 
 /* -- Chat / Terminal -------------------------------------------------- */
 var busy=false;
@@ -1052,10 +1307,12 @@ function appendBotMsg(d,latency){
   meta+='</div>';
   var trace='';
   if(d.trace){
-    trace='<span class="trace-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">\u25B6 trace</span>';
+    trace='<span class="trace-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">';
+    trace+='\u25B6 trace</span>';
     trace+='<pre class="trace">'+esc(JSON.stringify(d.trace,null,2))+'</pre>';
   }
   appendMsg('bot',esc(text)+meta+trace);
+  updateEmotionTracker(emotion,confidence||null);
 }
 
 /* -- Speech-to-Text --------------------------------------------------- */
@@ -1145,7 +1402,7 @@ function renderServiceMetrics(services){
     var maxReq=Math.max.apply(null,buckets.map(function(b){return b.requests||0}).concat([1]));
     var bars=buckets.map(function(b){
       var h=Math.max(Math.round((b.requests||0)/maxReq*100),2);
-      return '<div class="bar" style="height:'+h+'%" title="'+(b.hour||'')+': '+(b.requests||0)+' reqs"></div>';
+      return '<div class="bar" style="height:'+h+'%"></div>';
     }).join('');
     return '<div class="svc-metric-card"><div class="svc-m-name"><span class="dot-sm '+dotCls+'"></span>'+esc(name)+'</div>'+
       '<div class="svc-stats"><span class="stat-label">Requests</span><span class="stat-val">'+s.total_requests+'</span>'+
@@ -1244,7 +1501,7 @@ function loadKnobs(){
 function renderPresets(presets){
   var c=$('#knobs-presets');
   var names=Array.isArray(presets)?presets:Object.keys(presets||{});
-  c.innerHTML=names.map(function(n){return '<button onclick="applyPreset(\''+esc(n)+'\')">'+esc(n)+'</button>'}).join('')+
+  c.innerHTML=names.map(function(n){return '<button onclick="applyPreset(\''+esc(n)+'\')">' +esc(n)+'</button>'}).join('')+
     '<button onclick="resetKnobs()">\u21BA Reset</button>';
 }
 function applyPreset(name){fetch('/api/knobs/preset/'+encodeURIComponent(name),{method:'POST'}).then(function(){loadKnobs()})}
@@ -1265,7 +1522,6 @@ function renderKnobs(knobs){
 
 /* ---- Rotary Knob SVG builder ---------------------------------------- */
 function buildRotaryKnob(name,val){
-  // Arc from 225deg (min) to -45deg (max) = 270deg sweep
   var pct=Math.max(0,Math.min(1,val));
   var id='rk-'+name.replace(/[^a-zA-Z0-9]/g,'_');
   return '<div class="rotary-knob" data-knob="'+esc(name)+'" data-value="'+pct+'" id="'+id+'">'
@@ -1304,7 +1560,7 @@ function initRotaryKnobs(){
       if(!dragging)return;
       e.preventDefault();
       var curY=(e.touches?e.touches[0].clientY:e.clientY);
-      var delta=(startY-curY)/150;  // 150px drag = full range
+      var delta=(startY-curY)/150;
       var nv=Math.max(0,Math.min(1,startVal+delta));
       updateDial(el,nv);
     }
@@ -1320,7 +1576,6 @@ function initRotaryKnobs(){
     svg.addEventListener('mousedown',onDown);
     svg.addEventListener('touchstart',onDown,{passive:false});
 
-    // Scroll wheel support
     svg.addEventListener('wheel',function(e){
       e.preventDefault();
       var cur=parseFloat(el.dataset.value)||0;
@@ -1402,6 +1657,11 @@ $('#modal-close').addEventListener('click',function(){$('#modal-overlay').classL
 $('#modal-overlay').addEventListener('click',function(e){if(e.target===e.currentTarget)e.currentTarget.classList.remove('open')});
 
 /* -- Init ------------------------------------------------------------- */
+initBrainScene();
+initThumbRenderer();
+initModalRenderer();
+drawPixelFace('neutral');
+
 fetch('/api/health').then(function(r){
   if(!r.ok)throw new Error('offline');
   $('#global-status').style.background='var(--success)';$('#global-status').style.color='#111';$('#global-status').textContent='Online';
