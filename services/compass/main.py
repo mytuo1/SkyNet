@@ -16,7 +16,6 @@ from typing import Optional
 
 sys.path.insert(0, "/shared")
 
-import httpx
 import redis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +24,7 @@ from pydantic import BaseModel
 from models import BrainResponse
 from knobs import KnobsClient
 from events import EventBus
+from llm_provider import complete, complete_json, has_api_key
 
 app = FastAPI(title="Compass", version="1.0.0",
               description="Ethical orientation — gratitude, belonging, empathy, compassion, care, ethics")
@@ -33,15 +33,10 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 knobs  = KnobsClient()
 events = EventBus()
-http   = httpx.AsyncClient(timeout=45.0)
 r      = redis.from_url(
     os.getenv("REDIS_URL", "redis://redis:6379"),
     decode_responses=True
 )
-
-ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL   = os.getenv("FAST_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
-MAIN_MODEL     = os.getenv("DEFAULT_CLAUDE_MODEL", "claude-sonnet-4-20250514")
 
 COMPASS_SYSTEM = """You are the ethical compass of a cognitive AI system.
 Your role is moral perception — to see clearly what is real in a person
@@ -295,7 +290,7 @@ async def compass_read(req: ReadRequest):
         "vulnerability_signals": []
     }
 
-    if not ANTHROPIC_KEY:
+    if not has_api_key():
         return BrainResponse(
             request_id = req.request_id,
             service    = "compass",
@@ -304,25 +299,14 @@ async def compass_read(req: ReadRequest):
         )
 
     try:
-        resp = await http.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json"
-            },
-            json={
-                "model":      CLAUDE_MODEL,
-                "max_tokens": 700,
-                "system":     COMPASS_SYSTEM,
-                "messages":   [{"role": "user", "content": prompt}]
-            }
+        reading = await complete_json(
+            prompt     = prompt,
+            system     = COMPASS_SYSTEM,
+            model_tier = "fast",
+            max_tokens = 700,
         )
-
-        text = resp.json()["content"][0]["text"].strip()
-        if "```" in text:
-            text = text.split("```")[1].lstrip("json").strip()
-        reading = json.loads(text)
+        if not reading:
+            reading = default_reading
 
     except Exception as e:
         print(f"Compass read error: {e}")
@@ -364,7 +348,7 @@ async def enrich_response(req: EnrichRequest):
     tensions    = req.compass_data.get("tensions", [])
 
     # If ethical weight is low or nothing to enrich, pass through
-    if k.ethical_weight < 0.3 or not enrichments or not ANTHROPIC_KEY:
+    if k.ethical_weight < 0.3 or not enrichments or not has_api_key():
         return BrainResponse(
             request_id = req.request_id,
             service    = "compass",
@@ -386,20 +370,12 @@ async def enrich_response(req: EnrichRequest):
     )
 
     try:
-        resp = await http.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json"
-            },
-            json={
-                "model":      MAIN_MODEL,
-                "max_tokens": 2500,
-                "messages":   [{"role": "user", "content": prompt}]
-            }
+        enriched = await complete(
+            prompt     = prompt,
+            system     = "",
+            model_tier = "main",
+            max_tokens = 2500,
         )
-        enriched = resp.json()["content"][0]["text"]
     except Exception as e:
         print(f"Compass enrich error: {e}")
         enriched = req.draft
