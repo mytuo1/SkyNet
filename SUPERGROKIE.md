@@ -1,4 +1,4 @@
-# Brain System — Architecture Guide for claw
+# Brain System — Architecture Guide for supergrokie
 
 This repository contains a 19-service cognitive AI architecture.
 Each service is a FastAPI microservice in a Docker container.

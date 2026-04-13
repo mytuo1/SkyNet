@@ -67,7 +67,7 @@ nano .env   # or your editor of choice
 ANTHROPIC_API_KEY=sk-ant-...   # OR
 OPENAI_API_KEY=sk-...          # set LLM_PROVIDER=openai if using OpenAI
 LLM_PROVIDER=anthropic
-OPENCLAW_WEBHOOK_SECRET=<32+ random chars>
+SUPERGROKIE_WEBHOOK_SECRET=<32+ random chars>
 ```
 
 **To switch to OpenAI (any time, no code changes):**
@@ -181,13 +181,13 @@ curl -X POST http://localhost:8000/brain/vision/search \
   -d '{"query": "whiteboard with diagrams", "top_k": 5}'
 ```
 
-### Connect OpenClaw:
+### Connect Supergrokie:
 ```bash
-# In OpenClaw, set webhook URL to:
-http://your-host:8000/update/webhook/openclaw
+# In Supergrokie, set webhook URL to:
+http://your-host:8000/update/webhook/supergrokie
 
-# OpenClaw secret must match OPENCLAW_WEBHOOK_SECRET in .env
-# OpenClaw can then say:
+# Supergrokie secret must match SUPERGROKIE_WEBHOOK_SECRET in .env
+# Supergrokie can then say:
 # "Make the brain warmer and more empathetic"
 # "Create a service that monitors the weather API"
 # "The verification service is too slow, optimize it"
@@ -394,7 +394,7 @@ kubectl apply -f .
 # 1. Set strong passwords in .env
 REDIS_PASSWORD=$(openssl rand -hex 32)
 ELASTICSEARCH_PASSWORD=$(openssl rand -hex 32)
-OPENCLAW_WEBHOOK_SECRET=$(openssl rand -hex 32)
+SUPERGROKIE_WEBHOOK_SECRET=$(openssl rand -hex 32)
 
 # 2. Enable Redis password auth
 # In databases/redis/redis.conf, uncomment:

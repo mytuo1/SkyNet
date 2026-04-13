@@ -1,6 +1,6 @@
 # SkyNet Concept
 
-Given the technological advancements in recent years with the creation of word2vec, tokenization and compute neurons, AI agents, OpenClaw, Claude Code, it has become possible to create an analogical copy of what we know the human brain actually does in order to form a personality and experiences, and mirror it in an analogical way in a digital environment comprised out of 'regions' that do specific tasks when there is a 'sensory' input incoming. The concept is for a solution that will be able to learn from past experiences and specialize in a narrow pathway 'career'.
+Given the technological advancements in recent years with the creation of word2vec, tokenization and compute neurons, AI agents, Supergrokie, Claude Code, it has become possible to create an analogical copy of what we know the human brain actually does in order to form a personality and experiences, and mirror it in an analogical way in a digital environment comprised out of 'regions' that do specific tasks when there is a 'sensory' input incoming. The concept is for a solution that will be able to learn from past experiences and specialize in a narrow pathway 'career'.
 
 ---
 
@@ -891,9 +891,9 @@ POST /update/approve/{change_id} → builds image, starts container
 ```
 </pre>
 
-### OpenClaw integration examples:
+### Supergrokie integration examples:
 <pre>
-OpenClaw sends:                          System does:
+Supergrokie sends:                          System does:
 ────────────────────────────────────────────────────────────────────────
 "Make the brain warmer and less formal"  Adjusts warmth +0.2, formality -0.3
 "Add an endpoint that returns stats"     Generates stats endpoint, queues review
@@ -961,7 +961,7 @@ ANTHROPIC_API_KEY=sk-ant-your-key-here
 # OPENAI_API_KEY=sk-your-key-here
 
 # Security
-OPENCLAW_WEBHOOK_SECRET=minimum-32-characters-random-string
+SUPERGROKIE_WEBHOOK_SECRET=minimum-32-characters-random-string
 GITHUB_TOKEN=ghp_your-token-if-using-github
 
 # Local model (downloads automatically on first start)
@@ -1072,12 +1072,12 @@ curl -X POST http://localhost:8000/brain/vision/search \
   -d '{"query": "whiteboard with architecture diagrams", "top_k": 5}'
 </pre>
 
-### 12. OpenClaw webhook — configure OpenClaw to POST here:
+### 12. Supergrokie webhook — configure Supergrokie to POST here:
 <pre>
-http://your-host:8000/update/webhook/openclaw
+http://your-host:8000/update/webhook/supergrokie
 </pre>
 
-OpenClaw message: "Make the brain more formal and skeptical"
+Supergrokie message: "Make the brain more formal and skeptical"
 → Self-update interprets and applies knob changes automatically
 
 ### 13. Review and approve pending code changes:
@@ -1158,7 +1158,7 @@ docker compose up -d
 POST /brain/process              → full 15-step cognitive pipeline
 PATCH /knobs/adjust              → tune any behavior live, instantly
 POST /knobs/preset/{name}        → switch full personality presets
-POST /update/webhook/openclaw    → OpenClaw controls the brain
+POST /update/webhook/supergrokie    → Supergrokie controls the brain
 POST /update/self-analyze        → brain improves itself
 POST /update/modify-code         → Claude writes new functions
 POST /update/generate-service    → Claude writes new microservices
@@ -1202,7 +1202,7 @@ Calibration errors         — its own confidence being miscalibrated
 
 ### Self-modification:
 <pre>
-Level 1 (Knobs)     — OpenClaw sends natural language → interpreted → applied
+Level 1 (Knobs)     — Supergrokie sends natural language → interpreted → applied
                       Low-risk changes auto-applied when confidence > 0.72
 
 Level 2 (Functions) — Claude Code calls /update/modify-code directly
@@ -1301,7 +1301,7 @@ ollama pull phi4               # 9GB   — optional, used by Learner locally
 # STEP 2: Configure
 cp .env.example .env
 # Edit .env: fill in ANTHROPIC_API_KEY (or OPENAI_API_KEY + LLM_PROVIDER=openai)
-# Edit .env: fill in OPENCLAW_WEBHOOK_SECRET
+# Edit .env: fill in SUPERGROKIE_WEBHOOK_SECRET
 # Edit .env: set VISION_ENABLED=true if you have a camera
 
 # STEP 3: Build
@@ -1330,7 +1330,7 @@ curl -X POST http://localhost:8000/brain/process \
   -H "Content-Type: application/json" \
   -d '{"session_id": "first", "user_input": "Hello, what can you do?"}'
 
-# STEP 9: Point OpenClaw at the webhook
-# In OpenClaw settings → webhook → http://your-host:8000/update/webhook/openclaw
-# Secret must match OPENCLAW_WEBHOOK_SECRET in .env
+# STEP 9: Point Supergrokie at the webhook
+# In Supergrokie settings → webhook → http://your-host:8000/update/webhook/supergrokie
+# Secret must match SUPERGROKIE_WEBHOOK_SECRET in .env
 </pre>

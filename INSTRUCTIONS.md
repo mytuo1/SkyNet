@@ -20,7 +20,7 @@ Read this once fully before touching anything.
 7. [Redeployment Procedures](#7-redeployment-procedures)
 8. [Updating Individual Services](#8-updating-individual-services)
 9. [Code Changes That Require Extra Steps](#9-code-changes-that-require-extra-steps)
-10. [claw Integration — Build and Maintain](#10-claw-integration--build-and-maintain)
+10. [supergrokie Integration — Build and Maintain](#10-supergrokie-integration--build-and-maintain)
 11. [Local Model — First Download and Updates](#11-local-model--first-download-and-updates)
 12. [Vision Service — Camera Setup](#12-vision-service--camera-setup)
 13. [Common Errors and Fixes](#13-common-errors-and-fixes)
@@ -79,7 +79,7 @@ Your brain directory must look exactly like this before deployment:
 brain/
 ├── .env                          ← you create this from .env.example
 ├── docker-compose.yml
-├── CLAW.md                       ← claw architecture context (do not delete)
+├── SUPERGROKIE.md                  ← supergrokie architecture context (do not delete)
 ├── nginx/
 │   └── nginx.conf
 ├── shared/
@@ -240,36 +240,36 @@ OLLAMA_LOCAL_MODEL=phi4
 The Ollama inference model used as a fallback. Pull with `ollama pull phi4`.
 Optional — the main reasoning is done by the LLM provider, not Ollama.
 
-### claw Code Modification Engine
+### supergrokie Code Modification Engine
 
 ```
-CLAW_BINARY_PATH=/usr/local/bin/claw
+SUPERGROKIE_PATH=/usr/local/bin/supergrokie
 ```
-Path to the claw binary inside the self-update container. Built during
+Path to supergrokie inside the self-update container. Installed during
 Docker image build. Do not change unless you are mounting the binary
 from the host instead of building it.
 
 ```
-CLAW_GIT_REF=main
+SUPERGROKIE_GIT_REF=main
 ```
-Which git ref to build claw from. Options:
+Which git ref to install supergrokie from. Options:
 - `main`          — latest (may include breaking changes)
 - `<commit-sha>`  — pinned to a specific commit (recommended for production)
 
-To pin: run `git log --oneline` in the claw-code repo, copy the hash,
-set `CLAW_GIT_REF=a3f91b2` (or whatever the hash is).
+To pin: run `git log --oneline` in the supergrokie repo, copy the hash,
+set `SUPERGROKIE_GIT_REF=a3f91b2` (or whatever the hash is).
 
-### Self-Update / OpenClaw
+### Self-Update / Supergrokie
 
 ```
-OPENCLAW_WEBHOOK_SECRET=change-this-to-a-random-secret-min-32-chars
+SUPERGROKIE_WEBHOOK_SECRET=change-this-to-a-random-secret-min-32-chars
 ```
-**REQUIRED.** The HMAC secret that OpenClaw uses to sign webhook payloads.
+**REQUIRED.** The HMAC secret that Supergrokie uses to sign webhook payloads.
 Must be at least 32 characters. Generate with:
 ```bash
 openssl rand -hex 32
 ```
-This value must match what you configure in OpenClaw's webhook settings.
+This value must match what you configure in Supergrokie's webhook settings.
 
 ```
 GITHUB_TOKEN=ghp_...
@@ -283,7 +283,7 @@ AUTO_APPLY_CODE_CHANGES=false
 ```
 - `false` — all code changes go to a pending queue. You approve them manually
   with `POST /update/approve/{id}`. Recommended.
-- `true`  — claw-generated code is applied immediately without review.
+- `true`  — supergrokie-generated code is applied immediately without review.
   Only use this if you trust the system completely.
 
 ```
@@ -415,16 +415,16 @@ The services directory is mounted from `./services` on the host.
 2. New Token → Read access
 3. Format: `hf_...`
 
-### OpenClaw Webhook Secret (`OPENCLAW_WEBHOOK_SECRET`)
-**Required for OpenClaw integration**
-**Not required if you don't use OpenClaw**
+### Supergrokie Webhook Secret (`SUPERGROKIE_WEBHOOK_SECRET`)
+**Required for Supergrokie integration**
+**Not required if you don't use Supergrokie**
 Generate locally — this is not obtained from a third party:
 ```bash
 openssl rand -hex 32
 ```
 This value must be set identically in:
-1. Your `.env` file (`OPENCLAW_WEBHOOK_SECRET=...`)
-2. OpenClaw's webhook configuration panel
+1. Your `.env` file (`SUPERGROKIE_WEBHOOK_SECRET=...`)
+2. Supergrokie's webhook configuration panel
 
 ### GitHub Token (`GITHUB_TOKEN`)
 **Optional — only needed if self-update commits code to GitHub**
@@ -452,7 +452,7 @@ cp .env.example .env
 Open `.env` and fill in every **REQUIRED** value:
 ```
 ANTHROPIC_API_KEY=sk-ant-...        ← your real key
-OPENCLAW_WEBHOOK_SECRET=<32+ chars> ← generate with: openssl rand -hex 32
+SUPERGROKIE_WEBHOOK_SECRET=<32+ chars> ← generate with: openssl rand -hex 32
 ```
 
 Set your Ollama URL correctly for your OS (see Section 3).
@@ -481,10 +481,10 @@ docker compose build
 ```
 
 This builds every service image. Expected duration:
-- Without claw (if self-update is excluded): 5-10 minutes
-- With claw (Rust compilation): 15-25 minutes on first build
+- Without supergrokie (if self-update is excluded): 5-10 minutes
+- With supergrokie: 5-15 minutes on first build
 
-The claw Rust compilation is the slowest part. It only runs once — the
+Supergrokie installation only runs once — the
 Docker layer cache preserves it on all subsequent builds.
 
 Watch for errors. If any service fails to build, fix it before proceeding.
@@ -605,14 +605,14 @@ curl -s -X POST http://localhost:8000/brain/process \
 Expected: a `response` field with actual text, `cognitive_path` showing
 how the brain processed it, `execution_ms` showing total time.
 
-### Check 6: claw available
+### Check 6: supergrokie available
 ```bash
-curl -s http://localhost:8000/update/claw-status
+curl -s http://localhost:8000/update/supergrokie-status
 ```
 Expected: `"available": true` with a version string.
-If `"available": false`: claw binary was not built. Check self-update logs:
+If `"available": false`: supergrokie was not installed. Check self-update logs:
 ```bash
-docker compose logs self-update | grep -i claw
+docker compose logs self-update | grep -i supergrokie
 ```
 
 ### Check 7: Ollama embedding working
@@ -679,7 +679,7 @@ you do `docker compose up`. All init scripts are written to be safe:
 
 ### Type 2: Full rebuild (dependency changes, Dockerfile changes)
 
-Use when: you changed requirements.txt, Dockerfile, or the claw Dockerfile.
+Use when: you changed requirements.txt, Dockerfile, or the supergrokie Dockerfile.
 
 ```bash
 docker compose build --no-cache
@@ -690,7 +690,7 @@ docker compose up -d
 steps. Slower, but guarantees a clean state. Use this when you suspect a
 stale layer is causing problems.
 
-**Warning**: `--no-cache` will re-compile the claw Rust binary (15-25 min).
+**Warning**: `--no-cache` will re-install supergrokie.
 Only use it when you actually changed the Dockerfile, not for routine deploys.
 
 ---
@@ -972,11 +972,11 @@ docker exec brain_gateway nginx -t
 
 ---
 
-## 10. claw Integration — Build and Maintain
+## 10. supergrokie Integration — Build and Maintain
 
-### What claw is and why it's in the build
+### What supergrokie is and why it's in the build
 
-claw (github.com/ultraworkers/claw-code) is a Rust-based coding agent that
+supergrokie (github.com/mytuo1/supergrokie) is a claude-code equivalent coding agent that
 the self-update service uses to read existing service files, understand their
 context, and make precise edits. It is compiled from source during the
 Docker build of the self-update service.
@@ -987,18 +987,18 @@ The self-update Dockerfile has two stages:
 
 ```
 Stage 1 (rust:1.78-slim):
-  git clone github.com/ultraworkers/claw-code
+  git clone https://github.com/mytuo1/supergrokie
   cd rust && cargo build --release
-  → produces: target/release/claw (binary)
+  → produces: supergrokie (installed)
 
 Stage 2 (python:3.12-slim):
-  COPY --from=stage1 .../claw /usr/local/bin/claw
+  installs supergrokie into /usr/local/bin/supergrokie
   pip install requirements.txt
-  → produces: final image with both claw and Python runtime
+  → produces: final image with both supergrokie and Python runtime
 ```
 
 The Rust compilation only runs once and is cached by Docker. Subsequent
-builds skip the Rust compilation unless you change CLAW_GIT_REF.
+builds skip re-installation unless you change SUPERGROKIE_GIT_REF.
 
 ### First build (slow):
 ```bash
@@ -1013,30 +1013,30 @@ docker compose build self-update
 # Expected time: 30-60 seconds (cached layers)
 ```
 
-### Pinning claw to a specific version
+### Pinning supergrokie to a specific version
 
-The claw repo is new and active. `main` may have breaking changes.
+The supergrokie repo is new and active. `main` may have breaking changes.
 Once the project cuts a stable release, pin to it:
 
 ```bash
 # Find a stable commit
-git clone https://github.com/ultraworkers/claw-code /tmp/claw-check
-cd /tmp/claw-check && git log --oneline | head -10
+git clone https://github.com/mytuo1/supergrokie supergrokie-check
+cd supergrokie-check && git log --oneline | head -10
 # Find the last known-good commit hash, e.g. a3f91b2
 
 # Set in .env
-CLAW_GIT_REF=a3f91b2
+SUPERGROKIE_GIT_REF=a3f91b2
 
 # Rebuild self-update with the pinned version
 docker compose build --no-cache self-update
 docker compose up -d --no-deps self-update
 ```
 
-### If the claw repo moves, renames, or disappears
+### If the supergrokie repo moves, renames, or disappears
 
 The Dockerfile clones from:
 ```
-https://github.com/ultraworkers/claw-code
+https://github.com/mytuo1/supergrokie
 ```
 
 If this URL changes (the repo is mid-ownership-transfer as of this writing):
@@ -1045,21 +1045,21 @@ If this URL changes (the repo is mid-ownership-transfer as of this writing):
 3. Update to the new URL
 4. Rebuild: `docker compose build --no-cache self-update`
 
-If claw becomes unavailable entirely, the self-update service falls back to
+If supergrokie becomes unavailable entirely, the self-update service falls back to
 direct API code generation automatically. The brain continues to function.
 
-### Verify claw is working after any rebuild
+### Verify supergrokie is working after any rebuild
 
 ```bash
-curl -s http://localhost:8000/update/claw-status | python3 -m json.tool
+curl -s http://localhost:8000/update/supergrokie-status | python3 -m json.tool
 ```
 
 Expected:
 ```json
 {
   "available": true,
-  "path": "/usr/local/bin/claw",
-  "version": "claw 0.1.x ..."
+  "path": "/usr/local/bin/supergrokie",
+  "version": "supergrokie ..."
 }
 ```
 
@@ -1233,11 +1233,11 @@ LOCAL_MODEL_NAME=Qwen/Qwen2.5-1.5B-Instruct
 docker compose up -d --no-deps learner
 ```
 
-### claw binary not found after build
+### supergrokie not found after build
 
 ```bash
 # Check if the binary was built
-docker compose exec self-update ls -la /usr/local/bin/claw
+docker compose exec self-update ls -la /usr/local/bin/supergrokie
 
 # If missing, force rebuild of self-update
 docker compose build --no-cache self-update
@@ -1256,12 +1256,12 @@ Or re-run the init (reseeds only if key is missing):
 docker compose up db-init
 ```
 
-### OpenClaw webhook returns 401
+### Supergrokie webhook returns 401
 
 The signature check is failing. Verify:
-1. `OPENCLAW_WEBHOOK_SECRET` in `.env` matches OpenClaw's webhook secret exactly
+1. `SUPERGROKIE_WEBHOOK_SECRET` in `.env` matches Supergrokie's webhook secret exactly
 2. No trailing spaces or newlines in the secret value
-3. The webhook URL is correct: `http://your-host:8000/update/webhook/openclaw`
+3. The webhook URL is correct: `http://your-host:8000/update/webhook/supergrokie`
 
 ### "embedding dimension mismatch" in Elasticsearch
 
@@ -1308,7 +1308,7 @@ Before going to production, complete every item on this list.
 
 ```
 [ ] ANTHROPIC_API_KEY set to real key (not example value)
-[ ] OPENCLAW_WEBHOOK_SECRET is 32+ random characters (openssl rand -hex 32)
+[ ] SUPERGROKIE_WEBHOOK_SECRET is 32+ random characters (openssl rand -hex 32)
 [ ] REDIS_PASSWORD set to strong password
 [ ] ELASTICSEARCH_PASSWORD set to strong password
 [ ] .env file is NOT committed to git (add .env to .gitignore)
@@ -1337,7 +1337,7 @@ docker compose up -d --no-deps redis
 ```
 [ ] AUTO_APPLY_CODE_CHANGES=false
 [ ] CODE_REVIEW_REQUIRED=true
-[ ] CLAW_GIT_REF pinned to a specific commit hash (not "main")
+[ ] SUPERGROKIE_GIT_REF pinned to a specific commit hash (not "main")
 ```
 
 ### Resource limits
@@ -1456,7 +1456,7 @@ curl -X POST http://localhost:8000/brain/process \
   -d '{"session_id": "s1", "user_input": "Your question here"}'
 ```
 
-### Review pending code changes (from claw/self-update)
+### Review pending code changes (from supergrokie/self-update)
 ```bash
 curl http://localhost:8000/update/pending
 curl -X POST http://localhost:8000/update/approve/<change_id>
