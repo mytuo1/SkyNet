@@ -1,7 +1,7 @@
 # services/compass/main.py
 # ── Compass: Ethics as Orientation, Not Guardrails ────────────────────────────
 # Runs on every interaction. Not a filter — a faculty of moral perception.
-# Five dimensions: Empathy, Compassion, Acknowledgment, Care, Ethics.
+# Seven dimensions: Gratitude, Belonging, Empathy, Compassion, Acknowledgment, Care, Ethics.
 # These are not rules to follow. They are lenses through which
 # the system perceives what is real in a person and what response
 # would genuinely serve them.

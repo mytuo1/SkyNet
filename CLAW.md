@@ -17,7 +17,7 @@ PORT    SERVICE           PURPOSE
 8006    perception        Experience detection (18 types)
 8007    verification      3-stage fact checking
 8008    cross-domain      Structural analogy reasoning
-8009    compass           Ethical orientation (5 dimensions)
+8009    compass           Ethical orientation (7 dimensions)
 8010    framework-router  Multi-agent: Parallel/Colony/Hive/Swarm
 8011    self-update       Code modification — you are here
 8012    causal-graph      Cause-effect graph — Redis

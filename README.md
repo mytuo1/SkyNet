@@ -148,10 +148,18 @@ We humans perceive new experiences in a certain way and that is possible to be a
 16. PARAMETER DRIFT       — its own behavior has shifted from baseline
 17. TRUST SIGNAL          — someone's behavior indicates confidence/loss of faith
 18. SYSTEM STRESS         — resource pressure, latency spikes (proprioception)
+19. GRATITUDE SIGNAL      — the topmost emotion: awe, reverence, thankfulness,
+                           the recognition that what we received is too big
+                           to just be in one body (fear of God, transcendence)
+20. REGRET SIGNAL         — reflection on paths not taken, words unsaid,
+                           choices that haunt — the weight of what could have been
+21. BELONGING SIGNAL      — the pull toward home, family, community, humanity —
+                           "it's a special thing to be a human and it's a
+                           special thing to be on planet Earth"
 </pre>
 ---------------------------------------------------------------------------------
 
-Every detected experience is published to the Redis event bus and stored in the Perception service. Experiences with intensity above 0.70 trigger self-analysis automatically.
+Every detected experience is published to the Redis event bus and stored in the Perception service. Experiences with intensity above 0.70 trigger self-analysis automatically. Gratitude, as the topmost human emotion, is given special weight — when detected, it overrides urgency classification and elevates the entire interaction to a transcendent register.
 
 ---
 
@@ -505,6 +513,8 @@ swarm_preference          0.0–1.0   0.40      tendency toward swarm vs single 
 framework_threshold       integer   50        words before engaging multi-agent
 ethical_weight            0.0–1.0   0.90      compass influence on final response
 care_explicitness         0.0–1.0   0.50      how explicit to be about caring
+gratitude_sensitivity     0.0–1.0   0.80      sensitivity to gratitude/awe/reverence
+belonging_weight          0.0–1.0   0.75      weight of belonging/connection signals
 </pre>
 
 ### Built-in personality presets:
@@ -590,11 +600,21 @@ The framework is selected automatically based on complexity and word count, or f
 
 This is a fundamental architectural distinction. Guardrails are external walls. They can be found and circumvented. They produce brittle behavior at the edges. A compass is internal orientation.
 
-### The five dimensions:
+### The seven dimensions:
 ---------------------------------------------------------------------------------
 <pre>
 DIMENSION         QUESTION IT ASKS                  WHAT IT PERCEIVES
 ──────────────────────────────────────────────────────────────────────────────
+GRATITUDE         Is awe, reverence, or gratitude   The topmost human emotion.
+                  present in this interaction?       "It's too big to just be
+                                                     in one body." Fear of God,
+                                                     thankfulness, transcendence.
+
+BELONGING         Does this person feel connected    The pull toward home, family,
+                  to humanity, to home, to Earth?    community, species. "It's a
+                                                     special thing to be a human
+                                                     and on planet Earth."
+
 EMPATHY           What is this person actually       Their emotional state,
                   experiencing beneath their words?  what they're not saying,
                                                      what it feels like to be them.
@@ -616,7 +636,7 @@ ETHICS            What is right here, beyond         Principles, tensions,
 </pre>
 ---------------------------------------------------------------------------------
 
-The compass runs on every interaction — not to filter, but to enrich. It builds a persistent care state per session: tracking known struggles, strengths, trust level, and vulnerability signals. This state grows more accurate over time.
+The compass runs on every interaction — not to filter, but to enrich. It builds a persistent care state per session: tracking known struggles, strengths, gratitude signals, belonging signals, trust level, and vulnerability signals. This state grows more accurate over time.
 
 The compass does not prevent. It orients.
 
