@@ -168,10 +168,16 @@ THREAT_PATTERNS = [
 ]
 
 
+class EmotionScore(BaseModel):
+    emotion:    str
+    score:      float
+    category:   str = ""   # GoEmotions category: positive / negative / ambiguous
+
 class AmygdalaResult(BaseModel):
     urgency:          str
     importance:       float
-    emotion:          str
+    emotion:          str            # dominant emotion
+    emotions:         list = []      # mixed emotions — list of {emotion, score, category}
     required_regions: list
     needs_memory:     bool
     fast_path:        bool
@@ -181,6 +187,77 @@ class AmygdalaResult(BaseModel):
     gratitude_score:  float = 0.0
     belonging_score:  float = 0.0
     regret_score:     float = 0.0
+    learned_emotions: list = []      # newly learned / custom emotions detected
+
+
+# ── GoEmotions Taxonomy ──────────────────────────────────────────────────────
+# Based on Google's GoEmotions dataset (27 emotions + neutral).
+# Each emotion has regex patterns, a valence category, and a base score.
+# The system detects MULTIPLE simultaneous emotions (mixed feelings).
+
+GOEMOTIONS = {
+    # ── Positive ─────────────────────────────────────────────────────
+    "admiration":    {"cat":"positive","score":0.6,"patterns":[r"\b(admire|admiration|impressive|respect|amazing|brilliant|genius)\b"]},
+    "amusement":     {"cat":"positive","score":0.5,"patterns":[r"\b(funny|hilarious|lol|haha|lmao|amusing|comedy|joke|laugh)\b"]},
+    "approval":      {"cat":"positive","score":0.5,"patterns":[r"\b(agree|approved|good job|well done|nice|correct|right|exactly)\b"]},
+    "caring":        {"cat":"positive","score":0.6,"patterns":[r"\b(care|caring|worry about you|hope you|take care|be safe|gentle)\b"]},
+    "desire":        {"cat":"positive","score":0.5,"patterns":[r"\b(want|wish|desire|crave|long for|yearning|hope to|dream of)\b"]},
+    "excitement":    {"cat":"positive","score":0.7,"patterns":[r"\b(excited|exciting|thrilling|can't wait|pumped|stoked|hyped)\b"]},
+    "gratitude":     {"cat":"positive","score":0.9,"patterns":[r"\b(thank|thanks|grateful|gratitude|appreciate|blessed|thankful)\b"]},
+    "joy":           {"cat":"positive","score":0.8,"patterns":[r"\b(happy|joy|joyful|delighted|wonderful|great|love it|fantastic)\b"]},
+    "love":          {"cat":"positive","score":0.8,"patterns":[r"\b(love|adore|cherish|devotion|affection|sweetheart|darling)\b"]},
+    "optimism":      {"cat":"positive","score":0.6,"patterns":[r"\b(optimistic|hopeful|bright future|looking forward|positive|gonna be)\b"]},
+    "pride":         {"cat":"positive","score":0.6,"patterns":[r"\b(proud|pride|accomplished|achievement|nailed it|crushed it)\b"]},
+    "relief":        {"cat":"positive","score":0.6,"patterns":[r"\b(relieved|relief|finally|at last|glad it's over|weight off)\b"]},
+    # ── Negative ─────────────────────────────────────────────────────
+    "anger":         {"cat":"negative","score":0.8,"patterns":[r"\b(angry|furious|rage|mad|pissed|livid|infuriating|outraged)\b"]},
+    "annoyance":     {"cat":"negative","score":0.5,"patterns":[r"\b(annoying|annoyed|irritating|bothering|ugh|stop it|get on my nerves)\b"]},
+    "disappointment":{"cat":"negative","score":0.6,"patterns":[r"\b(disappointed|disappointing|let down|expected more|not what I)\b"]},
+    "disapproval":   {"cat":"negative","score":0.5,"patterns":[r"\b(disagree|wrong|bad|dislike|disapprove|not good|poor|no way)\b"]},
+    "disgust":       {"cat":"negative","score":0.7,"patterns":[r"\b(disgusting|gross|revolting|nasty|repulsive|vile|sick)\b"]},
+    "embarrassment": {"cat":"negative","score":0.5,"patterns":[r"\b(embarrass|awkward|cringe|shame|humiliat|blush|mortif)\b"]},
+    "fear":          {"cat":"negative","score":0.7,"patterns":[r"\b(afraid|scared|terrified|frightened|fear|dread|horror|panic)\b"]},
+    "grief":         {"cat":"negative","score":0.8,"patterns":[r"\b(grief|grieving|mourning|loss|died|death|passed away|funeral)\b"]},
+    "nervousness":   {"cat":"negative","score":0.5,"patterns":[r"\b(nervous|anxious|anxiety|jittery|tense|uneasy|worried)\b"]},
+    "remorse":       {"cat":"negative","score":0.7,"patterns":[r"\b(sorry|regret|remorse|apologize|my fault|shouldn't have|wish I hadn't)\b"]},
+    "sadness":       {"cat":"negative","score":0.7,"patterns":[r"\b(sad|sadness|depressed|miserable|heartbroken|crying|tears|lonely)\b"]},
+    # ── Ambiguous ────────────────────────────────────────────────────
+    "confusion":     {"cat":"ambiguous","score":0.5,"patterns":[r"\b(confused|confusing|don't understand|what do you mean|huh|lost|unclear)\b"]},
+    "curiosity":     {"cat":"ambiguous","score":0.6,"patterns":[r"\b(curious|wonder|interesting|fascin|how does|what if|tell me more)\b"]},
+    "realization":   {"cat":"ambiguous","score":0.5,"patterns":[r"\b(realize|realized|oh I see|now I get|aha|eureka|it hit me|dawned on)\b"]},
+    "surprise":      {"cat":"ambiguous","score":0.6,"patterns":[r"\b(surprise|surprised|shocking|unexpected|wow|omg|no way|whoa|unbelievable)\b"]},
+    "neutral":       {"cat":"ambiguous","score":0.2,"patterns":[]},
+}
+
+# Runtime storage for learned/custom emotions (persisted in memory)
+_learned_emotions = {}
+
+def detect_mixed_emotions(text_lower):
+    """
+    Detect all matching emotions from GoEmotions taxonomy.
+    Returns sorted list of (emotion, score, category) tuples — highest first.
+    Supports mixed/simultaneous emotions.
+    """
+    hits = []
+    for emo, cfg in GOEMOTIONS.items():
+        if emo == "neutral":
+            continue
+        for pattern in cfg["patterns"]:
+            if re.search(pattern, text_lower, re.IGNORECASE):
+                hits.append({"emotion": emo, "score": cfg["score"], "category": cfg["cat"]})
+                break
+    # Check learned emotions
+    learned = []
+    for emo, cfg in _learned_emotions.items():
+        for pattern in cfg.get("patterns", []):
+            if re.search(pattern, text_lower, re.IGNORECASE):
+                learned.append(emo)
+                hits.append({"emotion": emo, "score": cfg.get("score", 0.5), "category": "learned"})
+                break
+    if not hits:
+        hits.append({"emotion": "neutral", "score": 0.2, "category": "ambiguous"})
+    hits.sort(key=lambda x: x["score"], reverse=True)
+    return hits, learned
 
 
 @app.get("/health")
@@ -218,6 +295,9 @@ async def evaluate(request: BrainRequest):
                     emotion       = config["emotion"]
                     urgency_level = level
                 break
+
+    # ── GoEmotions mixed-emotion detection ────────────────────────────────────
+    mixed_emotions, learned_hits = detect_mixed_emotions(text_lower)
 
     # Apply skepticism knob — higher skepticism raises urgency threshold
     if k.skepticism > 0.7:
@@ -320,10 +400,17 @@ async def evaluate(request: BrainRequest):
         ))
     )
 
+    # If GoEmotions found a stronger signal than the urgency patterns, use it
+    if mixed_emotions and mixed_emotions[0]["emotion"] != "neutral":
+        top_emo = mixed_emotions[0]
+        if top_emo["score"] >= importance and emotion == "neutral":
+            emotion = top_emo["emotion"]
+
     result = AmygdalaResult(
         urgency          = urgency_level,
         importance       = round(importance, 3),
         emotion          = emotion,
+        emotions         = mixed_emotions,
         required_regions = list(required_regions),
         needs_memory     = needs_memory,
         fast_path        = importance > 0.9,
@@ -332,7 +419,8 @@ async def evaluate(request: BrainRequest):
         resonance_score  = round(resonance_score, 3),
         gratitude_score  = round(gratitude_score, 3),
         belonging_score  = round(belonging_score, 3),
-        regret_score     = round(regret_score, 3)
+        regret_score     = round(regret_score, 3),
+        learned_emotions = learned_hits
     )
 
     # Publish high-resonance events to bus
@@ -389,3 +477,36 @@ async def evaluate(request: BrainRequest):
         latency_ms = round((time.time() - start) * 1000, 2),
         data       = result.dict()
     )
+
+
+# ── Learn New Emotion Endpoint ─────────────────────────────────────────────────
+class LearnEmotionRequest(BaseModel):
+    name:     str
+    patterns: list   # list of regex pattern strings
+    score:    float = 0.5
+    category: str   = "learned"
+
+@app.post("/learn-emotion")
+async def learn_emotion(req: LearnEmotionRequest):
+    """
+    Teach the amygdala a new emotion it hasn't seen before.
+    This enables the synthetic human to grow its emotional vocabulary over time.
+    Patterns are regex strings that trigger the emotion.
+    """
+    name = req.name.lower().strip().replace(" ", "_")
+    if not name or not req.patterns:
+        return {"error": "name and patterns are required"}
+    _learned_emotions[name] = {
+        "patterns": req.patterns,
+        "score": max(0.1, min(1.0, req.score)),
+        "category": req.category,
+    }
+    return {"ok": True, "emotion": name, "total_learned": len(_learned_emotions)}
+
+
+@app.get("/emotions")
+async def list_emotions():
+    """Return the full emotion taxonomy including learned emotions."""
+    base = {k: {"category": v["cat"], "score": v["score"]} for k, v in GOEMOTIONS.items() if k != "neutral"}
+    learned = {k: {"category": v.get("category", "learned"), "score": v.get("score", 0.5)} for k, v in _learned_emotions.items()}
+    return {"base_emotions": base, "learned_emotions": learned, "total": len(base) + len(learned)}
