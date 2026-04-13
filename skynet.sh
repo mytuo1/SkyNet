@@ -139,7 +139,7 @@ cmd_setup() {
         else
             info "Creating minimal .env file..."
             cat > .env <<'ENVEOF'
-# LLM Provider — choose one: anthropic, openai, gemini, ollama, deepseek, groq, openrouter, generic
+# LLM Provider — choose one: anthropic, openai, gemini, ollama, deepseek, groq, xai, openrouter, generic
 LLM_PROVIDER=anthropic
 
 # API Keys (set the one matching your LLM_PROVIDER)
@@ -148,6 +148,7 @@ OPENAI_API_KEY=
 GEMINI_API_KEY=
 DEEPSEEK_API_KEY=
 GROQ_API_KEY=
+XAI_API_KEY=
 OPENROUTER_API_KEY=
 GENERIC_API_KEY=
 GENERIC_BASE_URL=

@@ -1,7 +1,7 @@
 # shared/llm_provider.py
 # ── LLM Provider Abstraction ──────────────────────────────────────────────────
 # Universal provider layer: Anthropic, OpenAI, Gemini, Ollama, DeepSeek,
-# Groq, OpenRouter, or any OpenAI-compatible endpoint.
+# Groq, xAI (Grok), OpenRouter, or any OpenAI-compatible endpoint.
 # All services import from here — never call APIs directly.
 # Set LLM_PROVIDER env var to switch providers.
 
@@ -25,6 +25,7 @@ OPENAI_KEY      = os.getenv("OPENAI_API_KEY", "")
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
 DEEPSEEK_API_KEY   = os.getenv("DEEPSEEK_API_KEY", "")
 GROQ_API_KEY       = os.getenv("GROQ_API_KEY", "")
+XAI_API_KEY        = os.getenv("XAI_API_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 GENERIC_API_KEY    = os.getenv("GENERIC_API_KEY", "")
 GENERIC_BASE_URL   = os.getenv("GENERIC_BASE_URL", "")
@@ -43,8 +44,8 @@ MODELS = {
         "fast": os.getenv("ANTHROPIC_FAST_MODEL", "claude-haiku-4-5-20251001"),
     },
     "openai": {
-        "main": os.getenv("OPENAI_MAIN_MODEL", "gpt-4o"),
-        "fast": os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini"),
+        "main": os.getenv("OPENAI_MAIN_MODEL", "gpt-5.4-mini"),
+        "fast": os.getenv("OPENAI_FAST_MODEL", "gpt-5.4-nano"),
     },
     "gemini": {
         "main": os.getenv("GEMINI_MAIN_MODEL", "gemini-2.5-pro"),
@@ -55,12 +56,16 @@ MODELS = {
         "fast": os.getenv("OLLAMA_LLM_MODEL", "phi4"),
     },
     "deepseek": {
-        "main": os.getenv("DEEPSEEK_MAIN_MODEL", "deepseek-reasoner"),
+        "main": os.getenv("DEEPSEEK_MAIN_MODEL", "deepseek-r1"),
         "fast": os.getenv("DEEPSEEK_FAST_MODEL", "deepseek-chat"),
     },
     "groq": {
         "main": os.getenv("GROQ_MAIN_MODEL", "llama-3.3-70b-versatile"),
         "fast": os.getenv("GROQ_FAST_MODEL", "llama-3.1-8b-instant"),
+    },
+    "xai": {
+        "main": os.getenv("XAI_MAIN_MODEL", "grok-4-20"),
+        "fast": os.getenv("XAI_FAST_MODEL", "grok-3-mini-fast"),
     },
     "openrouter": {
         "main": os.getenv("OPENROUTER_MAIN_MODEL", ""),
@@ -77,6 +82,7 @@ _OPENAI_COMPAT_PROVIDERS = {
     "openai":     lambda: (OPENAI_KEY, "https://api.openai.com/v1"),
     "deepseek":   lambda: (DEEPSEEK_API_KEY, "https://api.deepseek.com/v1"),
     "groq":       lambda: (GROQ_API_KEY, "https://api.groq.com/openai/v1"),
+    "xai":        lambda: (XAI_API_KEY, "https://api.x.ai/v1"),
     "openrouter": lambda: (OPENROUTER_API_KEY, "https://openrouter.ai/api/v1"),
     "generic":    lambda: (GENERIC_API_KEY, GENERIC_BASE_URL),
 }
@@ -88,6 +94,7 @@ _API_KEY_MAP = {
     "ollama":     lambda: True,  # no key needed
     "deepseek":   lambda: DEEPSEEK_API_KEY,
     "groq":       lambda: GROQ_API_KEY,
+    "xai":        lambda: XAI_API_KEY,
     "openrouter": lambda: OPENROUTER_API_KEY,
     "generic":    lambda: GENERIC_API_KEY,
 }
