@@ -44,7 +44,8 @@ db: Optional[edgedb.AsyncIOClient] = None
 async def startup():
     global db
     dsn = os.getenv("EDGEDB_DSN", "edgedb://edgedb/main")
-    db  = edgedb.create_async_client(dsn=dsn)
+    tls = os.getenv("EDGEDB_CLIENT_TLS_SECURITY", "insecure")
+    db  = edgedb.create_async_client(dsn=dsn, tls_security=tls)
     # Run migrations if needed
     try:
         await db.query("SELECT 1")

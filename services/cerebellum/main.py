@@ -51,7 +51,8 @@ _cache_ready: bool  = False
 @app.on_event("startup")
 async def startup():
     global db
-    db = edgedb.create_async_client(dsn=EDGEDB_DSN)
+    tls = os.getenv("EDGEDB_CLIENT_TLS_SECURITY", "insecure")
+    db = edgedb.create_async_client(dsn=EDGEDB_DSN, tls_security=tls)
     await load_skill_cache()
 
 

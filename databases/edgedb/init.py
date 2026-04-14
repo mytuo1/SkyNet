@@ -9,13 +9,14 @@ import sys
 import time
 
 EDGEDB_DSN = os.getenv("EDGEDB_DSN", "edgedb://edgedb/main")
+EDGEDB_TLS = os.getenv("EDGEDB_CLIENT_TLS_SECURITY", "insecure")
 
 
 async def wait_for_edgedb(max_retries: int = 40):
     import edgedb
     for i in range(max_retries):
         try:
-            client = edgedb.create_async_client(dsn=EDGEDB_DSN)
+            client = edgedb.create_async_client(dsn=EDGEDB_DSN, tls_security=EDGEDB_TLS)
             await client.query_single("SELECT 1")
             await client.aclose()
             print(f"EdgeDB connected after {i+1} attempts")
@@ -50,7 +51,7 @@ def run_migrations():
 async def seed_data():
     """Seed initial data if database is empty."""
     import edgedb
-    client = edgedb.create_async_client(dsn=EDGEDB_DSN)
+    client = edgedb.create_async_client(dsn=EDGEDB_DSN, tls_security=EDGEDB_TLS)
 
     try:
         count = await client.query_single("SELECT count(Episode)")
