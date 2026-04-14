@@ -4,13 +4,19 @@
 
 import asyncio
 import os
+import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 EDGEDB_DSN = os.getenv("EDGEDB_DSN", "edgedb://edgedb/main")
 EDGEDB_TLS = os.getenv("EDGEDB_CLIENT_TLS_SECURITY", "insecure")
+
+# Schema file location — /init/edgedb/schema/schema.esdl inside the container
+# (databases/ is mounted at /init/)
+SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
 
 
 def _base_dsn(dsn: str) -> str:
@@ -21,7 +27,6 @@ def _base_dsn(dsn: str) -> str:
 
 def _db_name(dsn: str) -> str:
     """Extract the database name from a DSN (path component without leading /)."""
-    import re
     name = urlparse(dsn).path.lstrip("/") or "main"
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
         raise ValueError(f"Invalid database name in DSN: {name!r}")
@@ -83,24 +88,64 @@ async def wait_for_edgedb(max_retries: int = 40):
 
 
 def run_migrations():
-    """Run EdgeDB migrations."""
+    """Run EdgeDB migrations via CLI if available."""
     print("Running EdgeDB migrations...")
     try:
         result = subprocess.run(
-            ["edgedb", "migrate", "--dsn", EDGEDB_DSN],
+            ["edgedb", "migrate", "--dsn", EDGEDB_DSN,
+             "--tls-security", EDGEDB_TLS],
             capture_output=True, text=True, timeout=60
         )
         if result.returncode == 0:
             print("Migrations applied successfully")
             print(result.stdout)
+            return True
         else:
             print(f"Migration output: {result.stdout}")
             print(f"Migration stderr: {result.stderr}")
-            # Not fatal — might already be up to date
+            return False
     except subprocess.TimeoutExpired:
         print("Migration timed out — may already be running")
+        return False
     except FileNotFoundError:
-        print("edgedb CLI not found — skipping migration (run manually)")
+        print("edgedb CLI not found — will apply schema via Python SDK")
+        return False
+
+
+async def apply_schema_via_sdk():
+    """Apply schema.esdl programmatically when the edgedb CLI is not available."""
+    import edgedb
+
+    schema_file = SCHEMA_DIR / "schema.esdl"
+    if not schema_file.exists():
+        print(f"Schema file not found at {schema_file} — skipping schema apply")
+        return
+
+    schema_sdl = schema_file.read_text()
+    print(f"Applying schema from {schema_file} via Python SDK...")
+
+    client = edgedb.create_async_client(dsn=EDGEDB_DSN, tls_security=EDGEDB_TLS)
+    try:
+        # Check if schema is already applied by testing for a known type
+        try:
+            await client.query_single("SELECT count(default::Episode)")
+            print("Schema already applied — skipping")
+            return
+        except edgedb.errors.InvalidReferenceError:
+            pass  # Type doesn't exist yet — apply schema
+
+        await client.execute(f"""
+            START MIGRATION TO {{
+                {schema_sdl}
+            }};
+            POPULATE MIGRATION;
+            COMMIT MIGRATION;
+        """)
+        print("Schema applied successfully via Python SDK")
+    except Exception as e:
+        print(f"Schema apply error: {e}")
+    finally:
+        await client.aclose()
 
 
 async def seed_data():
@@ -138,7 +183,9 @@ async def seed_data():
 
 async def main():
     await wait_for_edgedb()
-    run_migrations()
+    cli_ok = run_migrations()
+    if not cli_ok:
+        await apply_schema_via_sdk()
     await seed_data()
     print("EdgeDB initialization complete")
 
