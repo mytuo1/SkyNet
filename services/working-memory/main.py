@@ -96,9 +96,13 @@ async def handle_context(req: ContextRequest):
 
         # Include thought stream
         raw_thoughts = r.lrange(f"wm:{sid}:thought_stream", 0, -1)
-        context["thought_stream"] = [
-            json.loads(t) for t in raw_thoughts
-        ]
+        thoughts = []
+        for t in raw_thoughts:
+            try:
+                thoughts.append(json.loads(t))
+            except (json.JSONDecodeError, TypeError):
+                thoughts.append({"raw": t, "parse_error": True})
+        context["thought_stream"] = thoughts
         result = context
 
     # ── GET ────────────────────────────────────────────────────────────────────
@@ -107,7 +111,14 @@ async def handle_context(req: ContextRequest):
         val      = r.get(full_key)
         if val:
             r.expire(full_key, DEFAULT_TTL)  # refresh TTL on access
-        result = {"value": json.loads(val) if val else None}
+        if val:
+            try:
+                parsed = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                parsed = {"raw": val, "parse_error": True}
+        else:
+            parsed = None
+        result = {"value": parsed}
 
     # ── SET ────────────────────────────────────────────────────────────────────
     elif req.action == "set":
@@ -134,7 +145,13 @@ async def handle_context(req: ContextRequest):
     elif req.action == "get_thoughts":
         key     = f"wm:{sid}:thought_stream"
         raw     = r.lrange(key, 0, -1)
-        result  = {"thoughts": [json.loads(t) for t in raw]}
+        parsed_thoughts = []
+        for t in raw:
+            try:
+                parsed_thoughts.append(json.loads(t))
+            except (json.JSONDecodeError, TypeError):
+                parsed_thoughts.append({"raw": t, "parse_error": True})
+        result  = {"thoughts": parsed_thoughts}
 
     # ── CLEAR THOUGHTS ────────────────────────────────────────────────────────
     elif req.action == "clear_thoughts":
@@ -214,7 +231,7 @@ async def handle_context(req: ContextRequest):
 
     # ── MEMORY PRESSURE ───────────────────────────────────────────────────────
     elif req.action == "pressure":
-        count    = len(r.keys(f"wm:{sid}:*"))
+        count    = sum(1 for _ in r.scan_iter(f"wm:{sid}:*"))
         pressure = min(1.0, count / (MAX_THOUGHTS * 3))
         result   = {"pressure": round(pressure, 3), "item_count": count}
 

@@ -19,13 +19,13 @@ from typing import Optional
 
 sys.path.insert(0, "/shared")
 
-import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from models import BrainResponse
 from knobs import KnobsClient
+from llm_provider import complete, has_api_key
 
 app = FastAPI(title="FrameworkRouter", version="1.0.0",
               description="Multi-agent frameworks: Parallel, Colony, Hive, Swarm")
@@ -33,11 +33,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
 knobs = KnobsClient()
-http  = httpx.AsyncClient(timeout=120.0)
-
-ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-MAIN_MODEL    = os.getenv("DEFAULT_CLAUDE_MODEL", "claude-sonnet-4-20250514")
-FAST_MODEL    = os.getenv("FAST_CLAUDE_MODEL",    "claude-haiku-4-5-20251001")
 
 
 class FrameworkRequest(BaseModel):
@@ -47,31 +42,6 @@ class FrameworkRequest(BaseModel):
     amygdala_result: dict = {}
     context:         str  = ""
     framework:       Optional[str] = None   # force a specific framework
-
-
-async def claude(prompt: str, system: str = "", model: str = None,
-                 max_tokens: int = 800) -> str:
-    """Single Claude call helper."""
-    if not ANTHROPIC_KEY:
-        return f"[No API key] Would process: {prompt[:100]}"
-    try:
-        resp = await http.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json"
-            },
-            json={
-                "model":      model or FAST_MODEL,
-                "max_tokens": max_tokens,
-                "system":     system or "You are a helpful, precise assistant.",
-                "messages":   [{"role": "user", "content": prompt}]
-            }
-        )
-        return resp.json()["content"][0]["text"]
-    except Exception as e:
-        return f"[Error: {str(e)[:60]}]"
 
 
 def select_framework(task: str, amygdala: dict, k) -> str:
@@ -126,7 +96,7 @@ async def run_parallel(task: str, context: str, k) -> dict:
 
     async def agent_think(role: str, instruction: str) -> str:
         prompt = f"{instruction}\n\nCONTEXT:\n{context}\n\nTASK: {task}"
-        return await claude(prompt, system=f"You are {role}. {instruction}")
+        return await complete(prompt, system=f"You are {role}. {instruction}")
 
     tasks         = [agent_think(r, i) for r, i in lenses[:n_agents]]
     perspectives  = await asyncio.gather(*tasks)
@@ -150,7 +120,7 @@ Synthesize into a unified response that:
 3. Integrates the strongest insights
 4. Reaches a better conclusion than any single perspective"""
 
-    synthesis = await claude(synthesis_prompt, model=MAIN_MODEL, max_tokens=1500)
+    synthesis = await complete(synthesis_prompt, model_tier="main", max_tokens=1500)
 
     return {
         "framework":    "parallel",
@@ -173,13 +143,13 @@ async def run_colony(task: str, context: str) -> dict:
     """
     # Phase 1: Scout (explore the territory)
     scout1, scout2 = await asyncio.gather(
-        claude(
+        complete(
             f"CONTEXT: {context}\n\nTASK: {task}\n\n"
             f"You are a scout. Map what we need to know: "
             f"key concepts, relevant facts, important questions to answer.",
             system="You are an explorer. Find what matters for this task."
         ),
-        claude(
+        complete(
             f"CONTEXT: {context}\n\nTASK: {task}\n\n"
             f"You are a second scout with a different angle. "
             f"What gaps, assumptions, or hidden aspects need exploring?",
@@ -191,12 +161,12 @@ async def run_colony(task: str, context: str) -> dict:
 
     # Phase 2: Analyze (structure the findings)
     analyst1, analyst2 = await asyncio.gather(
-        claude(
+        complete(
             f"TASK: {task}\n\nSCOUTED INFORMATION:\n{scout_output}\n\n"
             f"Structure and analyze these findings. Find patterns and key insights.",
             system="You are an analyst. Structure findings, find patterns."
         ),
-        claude(
+        complete(
             f"TASK: {task}\n\nSCOUTED INFORMATION:\n{scout_output}\n\n"
             f"From a different angle, what is the most important insight?",
             system="You are an analyst focused on core insights."
@@ -206,7 +176,7 @@ async def run_colony(task: str, context: str) -> dict:
     analysis_output = f"Analysis 1:\n{analyst1}\n\nAnalysis 2:\n{analyst2}"
 
     # Phase 3: Verify (check quality)
-    verification = await claude(
+    verification = await complete(
         f"TASK: {task}\n\nANALYSIS:\n{analysis_output}\n\n"
         f"Verify this analysis. Find: errors, unsupported claims, "
         f"gaps, and what still needs addressing.",
@@ -214,12 +184,12 @@ async def run_colony(task: str, context: str) -> dict:
     )
 
     # Phase 4: Synthesize (final output)
-    synthesis = await claude(
+    synthesis = await complete(
         f"TASK: {task}\n\nANALYSIS:\n{analysis_output}\n\n"
         f"VERIFICATION NOTES:\n{verification}\n\n"
         f"Produce the final comprehensive response.",
         system="You are a synthesizer. Produce the definitive final output.",
-        model=MAIN_MODEL,
+        model_tier="main",
         max_tokens=2000
     )
 
@@ -267,7 +237,7 @@ async def run_hive(task: str, context: str, iterations: int = 3) -> dict:
 
         # 5 agents contribute simultaneously
         contribute_tasks = [
-            claude(
+            complete(
                 f"TASK: {task}\n\nCOLLECTIVE KNOWLEDGE:\n{hive_state}\n\n"
                 f"Contribute what is missing. Correct what is wrong. "
                 f"Do not repeat established facts.\n\n"
@@ -285,10 +255,24 @@ async def run_hive(task: str, context: str, iterations: int = 3) -> dict:
 
         # Integrate all contributions
         for contrib_text in contributions:
+            contrib = None
             try:
                 if "```" in contrib_text:
                     contrib_text = contrib_text.split("```")[1].lstrip("json").strip()
                 contrib = json.loads(contrib_text)
+            except (json.JSONDecodeError, IndexError):
+                # Try to extract JSON object from response
+                match = re.search(r'\{.*\}', contrib_text, re.DOTALL)
+                if match:
+                    try:
+                        contrib = json.loads(match.group())
+                    except json.JSONDecodeError:
+                        pass
+                if not contrib:
+                    print(f"[Hive] Warning: could not parse contribution: "
+                          f"{contrib_text[:120]}")
+
+            if contrib:
                 for fact in contrib.get("add_facts", []):
                     if fact and fact not in hive_mind["established_facts"]:
                         hive_mind["established_facts"].append(fact)
@@ -298,14 +282,12 @@ async def run_hive(task: str, context: str, iterations: int = 3) -> dict:
                 for h in contrib.get("add_hypotheses", []):
                     if h and h not in hive_mind["working_hypotheses"]:
                         hive_mind["working_hypotheses"].append(h)
-            except Exception:
-                pass
 
     # Crystallize final output
-    final = await claude(
+    final = await complete(
         f"TASK: {task}\n\nCOLLECTIVE KNOWLEDGE:\n{format_hive()}\n\n"
         f"Synthesize this collective knowledge into a final comprehensive answer.",
-        model=MAIN_MODEL,
+        model_tier="main",
         max_tokens=2000
     )
 
@@ -356,7 +338,7 @@ async def run_swarm(task: str, context: str, iterations: int = 3) -> dict:
 
         # All agents explore simultaneously
         explore_tasks = [
-            claude(
+            complete(
                 f"You are one agent in a decentralized swarm.\n\n"
                 f"TASK: {task}\n"
                 f"CONTEXT: {context}\n"
@@ -408,11 +390,11 @@ async def run_swarm(task: str, context: str, iterations: int = 3) -> dict:
 
     # Synthesize best discoveries
     top_results = sorted(all_results, key=lambda x: x["strength"], reverse=True)[:3]
-    synthesis   = await claude(
+    synthesis   = await complete(
         f"TASK: {task}\n\nBEST DISCOVERIES FROM SWARM:\n" +
         "\n\n".join([r["result"][:400] for r in top_results]) +
         "\n\nSynthesize the strongest insights into a final answer.",
-        model=MAIN_MODEL,
+        model_tier="main",
         max_tokens=1500
     )
 

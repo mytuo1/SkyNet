@@ -1,6 +1,6 @@
 # SkyNet Concept
 
-Given the technological advancements in recent years with the creation of word2vec, tokenization and compute neurons, AI agents, OpenClaw, Claude Code, it has become possible to create an analogical copy of what we know the human brain actually does in order to form a personality and experiences, and mirror it in an analogical way in a digital environment comprised out of 'regions' that do specific tasks when there is a 'sensory' input incoming. The concept is for a solution that will be able to learn from past experiences and specialize in a narrow pathway 'career'.
+Given the technological advancements in recent years with the creation of word2vec, tokenization and compute neurons, AI agents, Supergrokie, Claude Code, it has become possible to create an analogical copy of what we know the human brain actually does in order to form a personality and experiences, and mirror it in an analogical way in a digital environment comprised out of 'regions' that do specific tasks when there is a 'sensory' input incoming. The concept is for a solution that will be able to learn from past experiences and specialize in a narrow pathway 'career'.
 
 ---
 
@@ -126,7 +126,7 @@ The Vision service stores every processed frame in Elasticsearch's `visual_memor
 
 ## New experience perception on system level
 
-We humans perceive new experiences in a certain way and that is possible to be analogically adapted in a digital scenario:
+We humans perceive new experiences in a certain way and that is possible to be analogically adapted in a digital scenario. The system perceives 21 distinct experience types:
 
 ---------------------------------------------------------------------------------
 <pre>
@@ -148,10 +148,18 @@ We humans perceive new experiences in a certain way and that is possible to be a
 16. PARAMETER DRIFT       — its own behavior has shifted from baseline
 17. TRUST SIGNAL          — someone's behavior indicates confidence/loss of faith
 18. SYSTEM STRESS         — resource pressure, latency spikes (proprioception)
+19. GRATITUDE SIGNAL      — the topmost emotion: awe, reverence, thankfulness,
+                           the recognition that what we received is too big
+                           to just be in one body (fear of God, transcendence)
+20. REGRET SIGNAL         — reflection on paths not taken, words unsaid,
+                           choices that haunt — the weight of what could have been
+21. BELONGING SIGNAL      — the pull toward home, family, community, humanity —
+                           "it's a special thing to be a human and it's a
+                           special thing to be on planet Earth"
 </pre>
 ---------------------------------------------------------------------------------
 
-Every detected experience is published to the Redis event bus and stored in the Perception service. Experiences with intensity above 0.70 trigger self-analysis automatically.
+Every detected experience is published to the Redis event bus and stored in the Perception service. Experiences with intensity above 0.70 trigger self-analysis automatically. Gratitude, as the topmost human emotion, is given special weight — when detected, it overrides urgency classification and elevates the entire interaction to a transcendent register.
 
 ---
 
@@ -187,14 +195,14 @@ Long-horizon Agency → Persistent goal store + hierarchical planner (Goals serv
 Continual Learning → Local model with LoRA + EWC + Replay buffer (Learner service)
 </pre>
 
-### System Services — Full List:
+### System Services — Full List (21 services):
 <pre>
 HUMAN BRAIN REGION          CODE EQUIVALENT              PURPOSE
 ─────────────────────────────────────────────────────────────────
 Thalamus                  →  Router / Orchestrator      Decides which brain
                                                          region handles what
 
-Prefrontal Cortex         →  LLM (Claude / OpenAI)      Reasoning, planning,
+Prefrontal Cortex         →  LLM (8 providers)          Reasoning, planning,
                                                          decision making
 
 Hippocampus               →  EdgeDB (EDB)               Episode formation,
@@ -232,8 +240,11 @@ Prefrontal Extension      →  Verification               Epistemic immune syste
 Associative Cortex        →  Cross-Domain               Structural analogy engine,
                                                          cross-domain insight
 
-Anterior Cingulate        →  Compass                    Ethical orientation,
-                                                         empathy, care
+Anterior Cingulate        →  Compass                    Ethical orientation (7
+                                                         dimensions: gratitude,
+                                                         belonging, empathy,
+                                                         compassion, acknowledgment,
+                                                         care, ethics)
 
 Prefrontal Planning       →  Framework Router           Multi-agent cognition:
                                                          Parallel/Colony/Hive/Swarm
@@ -255,6 +266,12 @@ Synaptic Plasticity       →  Learner                    Continual local model
 
 Visual Cortex             →  Vision                     Camera input, CLIP
                                                          embeddings, visual memory
+
+Control Center            →  Dashboard                  Web UI for monitoring,
+                                                         knobs, logs (port 8080)
+
+Autonomous Will           →  Autonomy                   Self-directed thinking,
+                                                         risk-gated actions (port 8018)
 </pre>
 
 ---
@@ -505,6 +522,8 @@ swarm_preference          0.0–1.0   0.40      tendency toward swarm vs single 
 framework_threshold       integer   50        words before engaging multi-agent
 ethical_weight            0.0–1.0   0.90      compass influence on final response
 care_explicitness         0.0–1.0   0.50      how explicit to be about caring
+gratitude_sensitivity     0.0–1.0   0.80      sensitivity to gratitude/awe/reverence
+belonging_weight          0.0–1.0   0.75      weight of belonging/connection signals
 </pre>
 
 ### Built-in personality presets:
@@ -590,11 +609,21 @@ The framework is selected automatically based on complexity and word count, or f
 
 This is a fundamental architectural distinction. Guardrails are external walls. They can be found and circumvented. They produce brittle behavior at the edges. A compass is internal orientation.
 
-### The five dimensions:
+### The seven dimensions:
 ---------------------------------------------------------------------------------
 <pre>
 DIMENSION         QUESTION IT ASKS                  WHAT IT PERCEIVES
 ──────────────────────────────────────────────────────────────────────────────
+GRATITUDE         Is awe, reverence, or gratitude   The topmost human emotion.
+                  present in this interaction?       "It's too big to just be
+                                                     in one body." Fear of God,
+                                                     thankfulness, transcendence.
+
+BELONGING         Does this person feel connected    The pull toward home, family,
+                  to humanity, to home, to Earth?    community, species. "It's a
+                                                     special thing to be a human
+                                                     and on planet Earth."
+
 EMPATHY           What is this person actually       Their emotional state,
                   experiencing beneath their words?  what they're not saying,
                                                      what it feels like to be them.
@@ -616,7 +645,7 @@ ETHICS            What is right here, beyond         Principles, tensions,
 </pre>
 ---------------------------------------------------------------------------------
 
-The compass runs on every interaction — not to filter, but to enrich. It builds a persistent care state per session: tracking known struggles, strengths, trust level, and vulnerability signals. This state grows more accurate over time.
+The compass runs on every interaction — not to filter, but to enrich. It builds a persistent care state per session: tracking known struggles, strengths, gratitude signals, belonging signals, trust level, and vulnerability signals. This state grows more accurate over time.
 
 The compass does not prevent. It orients.
 
@@ -871,9 +900,9 @@ POST /update/approve/{change_id} → builds image, starts container
 ```
 </pre>
 
-### OpenClaw integration examples:
+### Supergrokie integration examples:
 <pre>
-OpenClaw sends:                          System does:
+Supergrokie sends:                          System does:
 ────────────────────────────────────────────────────────────────────────
 "Make the brain warmer and less formal"  Adjusts warmth +0.2, formality -0.3
 "Add an endpoint that returns stats"     Generates stats endpoint, queues review
@@ -885,18 +914,40 @@ OpenClaw sends:                          System does:
 
 ---
 
-## LLM Provider Abstraction
+## LLM Provider Abstraction — 8 Providers Supported
 
-The entire system is provider-agnostic. Switching from Anthropic to OpenAI or back requires exactly one change.
+The entire system is provider-agnostic. Switching between any reasoning LLM requires one env var change.
 
 <pre>
-# In .env:
-LLM_PROVIDER=anthropic    ← uses Claude Sonnet + Claude Haiku
-LLM_PROVIDER=openai       ← uses GPT-4o + GPT-4o-mini
+PROVIDER         ENV VAR               DEFAULT MODELS                   API FORMAT
+──────────────────────────────────────────────────────────────────────────────────────
+anthropic        ANTHROPIC_API_KEY      claude-sonnet-4 / claude-haiku   Native Anthropic
+openai           OPENAI_API_KEY         gpt-4o / gpt-4o-mini            Native OpenAI
+gemini           GEMINI_API_KEY         gemini-2.5-pro / gemini-2.0-flash Native Google
+ollama           (none — local)         phi4 / phi4                      Ollama /api/chat
+deepseek         DEEPSEEK_API_KEY       deepseek-reasoner / deepseek-chat OpenAI-compatible
+groq             GROQ_API_KEY           llama-3.3-70b / llama-3.1-8b    OpenAI-compatible
+openrouter       OPENROUTER_API_KEY     (user configured)                OpenAI-compatible
+generic          GENERIC_API_KEY        (user configured)                OpenAI-compatible
+</pre>
+
+<pre>
+# In .env — pick ONE:
+LLM_PROVIDER=anthropic    # uses Claude
+LLM_PROVIDER=openai       # uses GPT
+LLM_PROVIDER=gemini       # uses Gemini
+LLM_PROVIDER=ollama       # uses local Ollama (free, private)
+LLM_PROVIDER=deepseek     # uses DeepSeek
+LLM_PROVIDER=groq         # uses Groq (fast inference)
+LLM_PROVIDER=openrouter   # uses OpenRouter (multi-model gateway)
+LLM_PROVIDER=generic      # uses any OpenAI-compatible endpoint
 
 # Then restart affected services:
 docker compose restart thalamus compass verification cross-domain \
                         metacognition framework-router self-update goals
+
+# Or use skynet.sh:
+./skynet.sh restart
 </pre>
 
 Every service imports `from llm_provider import complete` rather than calling either API directly. The `complete()` function handles routing, authentication, and response parsing for both providers. The response format is identical regardless of which provider is active.
@@ -941,7 +992,7 @@ ANTHROPIC_API_KEY=sk-ant-your-key-here
 # OPENAI_API_KEY=sk-your-key-here
 
 # Security
-OPENCLAW_WEBHOOK_SECRET=minimum-32-characters-random-string
+SUPERGROKIE_WEBHOOK_SECRET=minimum-32-characters-random-string
 GITHUB_TOKEN=ghp_your-token-if-using-github
 
 # Local model (downloads automatically on first start)
@@ -1052,12 +1103,12 @@ curl -X POST http://localhost:8000/brain/vision/search \
   -d '{"query": "whiteboard with architecture diagrams", "top_k": 5}'
 </pre>
 
-### 12. OpenClaw webhook — configure OpenClaw to POST here:
+### 12. Supergrokie webhook — configure Supergrokie to POST here:
 <pre>
-http://your-host:8000/update/webhook/openclaw
+http://your-host:8000/update/webhook/supergrokie
 </pre>
 
-OpenClaw message: "Make the brain more formal and skeptical"
+Supergrokie message: "Make the brain more formal and skeptical"
 → Self-update interprets and applies knob changes automatically
 
 ### 13. Review and approve pending code changes:
@@ -1077,6 +1128,26 @@ curl -X DELETE http://localhost:8000/update/pending/{change_id}
 # Edit .env: LLM_PROVIDER=openai
 docker compose restart thalamus compass verification \
                         cross-domain metacognition framework-router
+</pre>
+
+### 15. Open the Dashboard:
+<pre>
+# Dashboard runs at port 8080
+open http://localhost:8080
+
+# Or via skynet.sh:
+./skynet.sh dashboard
+</pre>
+
+### 16. Activate autonomous thinking:
+<pre>
+# Full autonomous mode — observe, analyze, propose, and act
+curl -X POST http://localhost:8018/activate \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "full", "interval_seconds": 300}'
+
+# Or via skynet.sh:
+./skynet.sh think
 </pre>
 
 ---
@@ -1138,7 +1209,7 @@ docker compose up -d
 POST /brain/process              → full 15-step cognitive pipeline
 PATCH /knobs/adjust              → tune any behavior live, instantly
 POST /knobs/preset/{name}        → switch full personality presets
-POST /update/webhook/openclaw    → OpenClaw controls the brain
+POST /update/webhook/supergrokie    → Supergrokie controls the brain
 POST /update/self-analyze        → brain improves itself
 POST /update/modify-code         → Claude writes new functions
 POST /update/generate-service    → Claude writes new microservices
@@ -1147,6 +1218,10 @@ POST /brain/vision/capture       → take a frame from camera
 POST /brain/vision/upload        → analyze any uploaded image
 GET  /update/pending             → review queued code changes
 POST /update/approve/{id}        → apply a code change
+GET  http://localhost:8080       → dashboard — terminal, monitoring, logs
+POST /autonomy/activate          → start autonomous self-improvement
+POST /autonomy/think-once        → trigger one thinking cycle
+GET  /autonomy/thoughts          → see what the brain has thought on its own
 </pre>
 
 ### Each service:
@@ -1178,11 +1253,14 @@ Visual events              — significant things seen through camera
 Skill gaps                 — tasks it has never learned to do
 Causal structure           — cause-effect relationships in knowledge
 Calibration errors         — its own confidence being miscalibrated
+Gratitude                  — the topmost emotion: awe, reverence, transcendence
+Regret                     — reflection on paths not taken, what could have been
+Belonging                  — the pull toward home, family, humanity, Earth
 </pre>
 
 ### Self-modification:
 <pre>
-Level 1 (Knobs)     — OpenClaw sends natural language → interpreted → applied
+Level 1 (Knobs)     — Supergrokie sends natural language → interpreted → applied
                       Low-risk changes auto-applied when confidence > 0.72
 
 Level 2 (Functions) — Claude Code calls /update/modify-code directly
@@ -1273,6 +1351,25 @@ Goals persist in Redis            Goals must survive service restarts. Redis
 
 ## Starting it up — complete sequence
 
+### Quick Start (recommended):
+<pre>
+# Clone and enter
+git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
+
+# First-time setup (installs deps, creates .env, pulls models)
+./skynet.sh setup
+
+# Start everything
+./skynet.sh start
+
+# Open the dashboard
+./skynet.sh dashboard   # opens http://localhost:8080
+
+# Activate autonomous thinking
+./skynet.sh think
+</pre>
+
+### Manual Start (alternative):
 <pre>
 # STEP 1: Pull models onto host machine
 ollama pull nomic-embed-text   # 274MB — required for all embeddings
@@ -1281,7 +1378,7 @@ ollama pull phi4               # 9GB   — optional, used by Learner locally
 # STEP 2: Configure
 cp .env.example .env
 # Edit .env: fill in ANTHROPIC_API_KEY (or OPENAI_API_KEY + LLM_PROVIDER=openai)
-# Edit .env: fill in OPENCLAW_WEBHOOK_SECRET
+# Edit .env: fill in SUPERGROKIE_WEBHOOK_SECRET
 # Edit .env: set VISION_ENABLED=true if you have a camera
 
 # STEP 3: Build
@@ -1310,7 +1407,7 @@ curl -X POST http://localhost:8000/brain/process \
   -H "Content-Type: application/json" \
   -d '{"session_id": "first", "user_input": "Hello, what can you do?"}'
 
-# STEP 9: Point OpenClaw at the webhook
-# In OpenClaw settings → webhook → http://your-host:8000/update/webhook/openclaw
-# Secret must match OPENCLAW_WEBHOOK_SECRET in .env
+# STEP 9: Point Supergrokie at the webhook
+# In Supergrokie settings → webhook → http://your-host:8000/update/webhook/supergrokie
+# Secret must match SUPERGROKIE_WEBHOOK_SECRET in .env
 </pre>

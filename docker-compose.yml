@@ -49,7 +49,7 @@ volumes:
   models-volume:
     driver: local
 
-  # Shared workspace — training logs, replay buffer, claw staging, pending changes
+  # Shared workspace — training logs, replay buffer, supergrokie staging, pending changes
   workspace-volume:
     driver: local
 
@@ -365,20 +365,20 @@ services:
       test: ["CMD", "curl", "-sf", "http://localhost:8090/health"]
       <<: *common-healthcheck
 
-  # ── Self-Update (claw-powered code modification) ───────────────────────────
-  # IMPORTANT: First build takes 5-15 minutes (Rust compilation for claw).
+  # ── Self-Update (supergrokie-powered code modification) ──────────────────────
+  # IMPORTANT: First build takes 5-15 minutes.
   # Use build cache: docker compose build self-update (not --no-cache) to reuse.
-  # To pin claw version: set CLAW_GIT_REF=<commit-sha> in .env
+  # To pin supergrokie version: set SUPERGROKIE_GIT_REF=<commit-sha> in .env
   self-update:
     build:
       context: .
       dockerfile: services/self-update/Dockerfile
       args:
-        # Reproducible builds: pin this to a commit SHA once claw stabilises
-        CLAW_GIT_REF: ${CLAW_GIT_REF:-main}
+        # Reproducible builds: pin this to a commit SHA once supergrokie stabilises
+        SUPERGROKIE_GIT_REF: ${SUPERGROKIE_GIT_REF:-main}
     container_name: brain_self_update
     environment:
-      - CLAW_BINARY_PATH=${CLAW_BINARY_PATH:-/usr/local/bin/claw}
+      - SUPERGROKIE_PATH=${SUPERGROKIE_PATH:-/usr/local/bin/supergrokie}
       - SERVICES_DIR=/services
       - WORKSPACE_PATH=/workspace
       - REDIS_URL=${REDIS_URL}
@@ -387,21 +387,21 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - LLM_PROVIDER=${LLM_PROVIDER}
-      - OPENCLAW_WEBHOOK_SECRET=${OPENCLAW_WEBHOOK_SECRET}
+      - SUPERGROKIE_WEBHOOK_SECRET=${SUPERGROKIE_WEBHOOK_SECRET}
       - AUTO_APPLY_CODE_CHANGES=${AUTO_APPLY_CODE_CHANGES:-false}
       - CODE_REVIEW_REQUIRED=${CODE_REVIEW_REQUIRED:-true}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GITHUB_REPO=${GITHUB_REPO}
     volumes:
-      # Persistent workspace: training logs, pending changes, claw staging
+      # Persistent workspace: training logs, pending changes, supergrokie staging
       - workspace-volume:/workspace
       # Docker socket: allows self-update to restart containers after code changes
       - /var/run/docker.sock:/var/run/docker.sock
-      # Mount services directory: claw reads and writes actual service files
-      # rw because claw will write the modified code back here
+      # Mount services directory: supergrokie reads and writes actual service files
+      # rw because supergrokie will write the modified code back here
       - ./services:/services:rw
-      # Root CLAW.md: architecture context available at filesystem root
-      - ./CLAW.md:/CLAW.md:ro
+      # Root SUPERGROKIE.md: architecture context available at filesystem root
+      - ./SUPERGROKIE.md:/SUPERGROKIE.md:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -559,6 +559,62 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+
+  # ── Dashboard (monitoring & control UI) ─────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: services/dashboard/Dockerfile
+    container_name: brain_dashboard
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
+    environment:
+      - THALAMUS_URL=http://thalamus:8000
+      - KNOBS_URL=http://knobs:8090
+      - REDIS_URL=${REDIS_URL}
+    <<: [*common-network, *common-restart]
+    depends_on:
+      redis:
+        condition: service_healthy
+      thalamus:
+        condition: service_healthy
+      knobs:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      <<: *common-healthcheck
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # AUTONOMY — Self-Reflective Thinking and Continuous Improvement
+  # ═══════════════════════════════════════════════════════════════════════════
+  autonomy:
+    build:
+      context: .
+      dockerfile: services/autonomy/Dockerfile
+    container_name: brain_autonomy
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - THALAMUS_URL=${THALAMUS_URL}
+      - KNOBS_URL=${KNOBS_URL}
+      - SELF_UPDATE_URL=${SELF_UPDATE_URL}
+      - AUTONOMY_MAX_RISK=${AUTONOMY_MAX_RISK:-low}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - ANTHROPIC_MAIN_MODEL=${ANTHROPIC_MAIN_MODEL:-claude-sonnet-4-20250514}
+      - ANTHROPIC_FAST_MODEL=${ANTHROPIC_FAST_MODEL:-claude-haiku-4-5-20251001}
+      - OPENAI_MAIN_MODEL=${OPENAI_MAIN_MODEL:-gpt-4o}
+      - OPENAI_FAST_MODEL=${OPENAI_FAST_MODEL:-gpt-4o-mini}
+      - OLLAMA_URL=${OLLAMA_URL}
+    depends_on:
+      redis:
+        condition: service_healthy
+      knobs:
+        condition: service_healthy
+    <<: [*common-network, *common-restart]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8018/health"]
+      <<: *common-healthcheck
 
   # ═══════════════════════════════════════════════════════════════════════════
   # THALAMUS — Master Orchestrator (starts last, depends on everything)

@@ -10,7 +10,6 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import sys
 import time
 from enum import Enum
@@ -20,6 +19,7 @@ sys.path.insert(0, "/shared")
 
 import httpx
 import numpy as np
+import redis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from models import BrainRequest, BrainResponse
 from knobs import KnobsClient
 from events import EventBus
+from llm_provider import complete, complete_json, has_api_key
 
 app = FastAPI(title="Verification", version="1.0.0",
               description="Epistemic immune system — fact checking and coherence")
@@ -39,9 +40,7 @@ http   = httpx.AsyncClient(timeout=45.0)
 
 NEOCORTEX_URL = os.getenv("NEOCORTEX_URL",    "http://neocortex:8004")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",        "http://host.docker.internal:11434")
-ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 EMBED_MODEL   = os.getenv("OLLAMA_EMBED_MODEL","nomic-embed-text")
-CLAUDE_MODEL  = os.getenv("FAST_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 # ── Verification result types ─────────────────────────────────────────────────
 
@@ -53,9 +52,38 @@ class VerificationStatus(str, Enum):
     REFUTED    = "refuted"     # contradicted by higher-confidence source
     UNVERIFIED = "unverified"  # never checked
 
-# ── In-memory verification cache ──────────────────────────────────────────────
-_cache: dict = {}   # claim_hash → {result, timestamp}
+# ── Redis verification cache ──────────────────────────────────────────────────
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 CACHE_TTL = 3600    # 1 hour
+
+try:
+    _redis = redis.from_url(REDIS_URL, decode_responses=True)
+    _redis.ping()
+except Exception:
+    _redis = None
+
+
+def _cache_get(key: str) -> Optional[dict]:
+    """Retrieve a cached verification result from Redis."""
+    if _redis is None:
+        return None
+    try:
+        raw = _redis.get(f"verify:{key}")
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return None
+
+
+def _cache_set(key: str, result: dict) -> None:
+    """Store a verification result in Redis with TTL."""
+    if _redis is None:
+        return
+    try:
+        _redis.setex(f"verify:{key}", CACHE_TTL, json.dumps(result))
+    except Exception:
+        pass
 
 
 class VerifyRequest(BaseModel):
@@ -185,11 +213,11 @@ async def check_corroboration(claim: str, domain: str) -> dict:
 
 async def check_logical_coherence(claim: str, context: str) -> dict:
     """
-    Stage 3: Use Claude to check logical coherence.
+    Stage 3: Use LLM to check logical coherence.
     Is this claim internally consistent? Does it violate known principles?
     No external search — pure reasoning.
     """
-    if not ANTHROPIC_KEY:
+    if not has_api_key():
         return {
             "is_coherent":       True,
             "coherence_score":   0.6,
@@ -209,7 +237,7 @@ Check:
 2. Does it violate any known logical or physical principles?
 3. Are there hidden assumptions that may be false?
 
-Respond with JSON only (no markdown):
+Respond with JSON only:
 {{
     "is_coherent": true or false,
     "coherence_score": 0.0 to 1.0,
@@ -220,23 +248,22 @@ Respond with JSON only (no markdown):
 }}"""
 
     try:
-        resp = await http.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json"
-            },
-            json={
-                "model":      CLAUDE_MODEL,
-                "max_tokens": 300,
-                "messages":   [{"role": "user", "content": prompt}]
-            }
+        result = await complete_json(
+            prompt=prompt,
+            system="You are a logical coherence checker. Evaluate claims for internal consistency and logical validity.",
+            model_tier="fast",
+            max_tokens=300,
         )
-        text = resp.json()["content"][0]["text"].strip()
-        if "```" in text:
-            text = text.split("```")[1].lstrip("json").strip()
-        return json.loads(text)
+        if result:
+            return result
+        return {
+            "is_coherent":       True,
+            "coherence_score":   0.55,
+            "logical_issues":    [],
+            "hidden_assumptions": [],
+            "is_falsifiable":    True,
+            "reasoning":         "Coherence check returned empty result"
+        }
     except Exception as e:
         return {
             "is_coherent":       True,
@@ -260,15 +287,14 @@ async def verify(req: VerifyRequest):
 
     # Check cache first
     cache_key = hashlib.md5(req.claim.encode()).hexdigest()
-    if cache_key in _cache:
-        cached = _cache[cache_key]
-        if time.time() - cached["timestamp"] < CACHE_TTL:
-            return BrainResponse(
-                request_id = req.request_id,
-                service    = "verification",
-                latency_ms = round((time.time() - start) * 1000, 2),
-                data       = {**cached["result"], "from_cache": True}
-            )
+    cached = _cache_get(cache_key)
+    if cached:
+        return BrainResponse(
+            request_id = req.request_id,
+            service    = "verification",
+            latency_ms = round((time.time() - start) * 1000, 2),
+            data       = {**cached, "from_cache": True}
+        )
 
     # Run all three checks in parallel
     consistency_task    = asyncio.create_task(
@@ -350,7 +376,7 @@ async def verify(req: VerifyRequest):
     }
 
     # Cache result
-    _cache[cache_key] = {"result": result, "timestamp": time.time()}
+    _cache_set(cache_key, result)
 
     # Publish contested claims to event bus
     if status == VerificationStatus.CONTESTED:
@@ -371,14 +397,28 @@ async def verify(req: VerifyRequest):
 @app.delete("/cache")
 async def clear_cache():
     """Clear the verification cache."""
-    count = len(_cache)
-    _cache.clear()
-    return {"cleared": count}
+    if _redis is None:
+        return {"cleared": 0}
+    try:
+        keys = _redis.keys("verify:*")
+        count = len(keys)
+        if keys:
+            _redis.delete(*keys)
+        return {"cleared": count}
+    except Exception:
+        return {"cleared": 0}
 
 
 @app.get("/cache/stats")
 async def cache_stats():
+    count = 0
+    if _redis is not None:
+        try:
+            count = len(_redis.keys("verify:*"))
+        except Exception:
+            pass
     return {
-        "cached_items": len(_cache),
-        "ttl_seconds":  CACHE_TTL
+        "cached_items": count,
+        "ttl_seconds":  CACHE_TTL,
+        "backend":      "redis" if _redis is not None else "none"
     }

@@ -289,6 +289,70 @@ async def perceive(data: PerceptionInput):
                                   "occurrences": len(prefixes)}
                 ))
 
+    # ── SENSE 12: Gratitude (The Topmost Emotion) ─────────────────────────────
+    # "The gratitude of seeing what we saw, doing what we did, and being with
+    #  who I was with, it's too big to just be in one body."
+    # Gratitude is not just thankfulness — it is awe, reverence, and the
+    # recognition that existence itself is a gift.
+    gratitude = float(data.amygdala_result.get("gratitude_score", 0))
+    if gratitude > 0.3:
+        experiences.append(ExperienceEvent(
+            experience_type = ExperienceType.GRATITUDE_SIGNAL,
+            content = (
+                f"Gratitude/awe detected: "
+                f"{data.amygdala_result.get('emotion', 'neutral')}. "
+                f"Gratitude score: {gratitude:.3f}. "
+                f"The topmost human emotion — transcendent awareness."
+            ),
+            intensity  = round(min(1.0, gratitude * 1.2), 3),
+            session_id = data.session_id,
+            metadata   = {
+                "emotion": data.amygdala_result.get("emotion"),
+                "gratitude_score": gratitude,
+                "belonging_score": float(data.amygdala_result.get("belonging_score", 0))
+            }
+        ))
+
+    # ── SENSE 13: Regret ──────────────────────────────────────────────────────
+    # The weight of what could have been — paths not taken, words not said.
+    regret = float(data.amygdala_result.get("regret_score", 0))
+    if regret > 0.3:
+        experiences.append(ExperienceEvent(
+            experience_type = ExperienceType.REGRET_SIGNAL,
+            content = (
+                f"Regret/remorse detected. "
+                f"Regret score: {regret:.3f}. "
+                f"The person is reflecting on what might have been."
+            ),
+            intensity  = round(regret, 3),
+            session_id = data.session_id,
+            metadata   = {
+                "emotion": data.amygdala_result.get("emotion"),
+                "regret_score": regret
+            }
+        ))
+
+    # ── SENSE 14: Belonging ───────────────────────────────────────────────────
+    # "It's a special thing to be a human and it's a special thing to be on
+    #  planet Earth." — The deep pull toward home, family, community, species.
+    belonging = float(data.amygdala_result.get("belonging_score", 0))
+    if belonging > 0.3:
+        experiences.append(ExperienceEvent(
+            experience_type = ExperienceType.BELONGING_SIGNAL,
+            content = (
+                f"Belonging/connection signal detected. "
+                f"Belonging score: {belonging:.3f}. "
+                f"The person feels or yearns for connection to "
+                f"humanity, home, or community."
+            ),
+            intensity  = round(belonging, 3),
+            session_id = data.session_id,
+            metadata   = {
+                "emotion": data.amygdala_result.get("emotion"),
+                "belonging_score": belonging
+            }
+        ))
+
     # ── Publish all high-intensity experiences to event bus ───────────────────
     for exp in experiences:
         if exp.intensity > 0.6:

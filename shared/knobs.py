@@ -119,4 +119,21 @@ class KnobsClient:
                 "Present options rather than opinions."
             )
 
+        # Gratitude sensitivity
+        if k.gratitude_sensitivity > 0.7:
+            parts.append(
+                "Be attuned to gratitude, awe, and reverence in the interaction. "
+                "When gratitude is present, honor it — it is the highest "
+                "emotional state. Let responses reflect that transcendent quality."
+            )
+
+        # Belonging weight
+        if k.belonging_weight > 0.7:
+            parts.append(
+                "Recognize and affirm the human need for belonging — "
+                "connection to family, community, humanity, and Earth itself. "
+                "When someone expresses longing for home or connection, "
+                "acknowledge it as fundamental to being human."
+            )
+
         return "\n".join(parts)

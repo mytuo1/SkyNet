@@ -55,12 +55,37 @@ class EventBus:
                 except Exception as e:
                     print(f"EventBus handler error: {e}")
 
+    async def publish_async(self, channel: str, data: dict):
+        """Non-blocking publish for use from async endpoints."""
+        import asyncio
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(
+                None, lambda: self._pub.publish(channel, json.dumps(data))
+            )
+        except Exception as e:
+            print(f"EventBus async publish error on {channel}: {e}")
+
     def publish_experience(self, experience_type: str, content: str,
                            intensity: float, session_id: str,
                            metadata: dict = None):
         """Convenience method for publishing experience events."""
         import time
         self.publish("experience.new", {
+            "experience_type": experience_type,
+            "content":         content,
+            "intensity":       intensity,
+            "session_id":      session_id,
+            "timestamp":       time.time(),
+            "metadata":        metadata or {}
+        })
+
+    async def publish_experience_async(self, experience_type: str, content: str,
+                                       intensity: float, session_id: str,
+                                       metadata: dict = None):
+        """Non-blocking convenience method for publishing experience events."""
+        import time
+        await self.publish_async("experience.new", {
             "experience_type": experience_type,
             "content":         content,
             "intensity":       intensity,

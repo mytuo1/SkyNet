@@ -5,6 +5,7 @@
 # Enables predictive reasoning: "if X then Y" queries.
 # Integrates with neocortex and verification services.
 
+import asyncio
 import json
 import os
 import sys
@@ -147,7 +148,11 @@ async def _store_edge(cause: str, effect: str, mechanism: str,
     existing  = r.get(edge_key)
 
     if existing:
-        data         = json.loads(existing)
+        try:
+            data = json.loads(existing)
+        except (json.JSONDecodeError, TypeError):
+            data = {"cause": cause, "effect": effect, "strength": strength,
+                    "domain": domain, "evidence": 0, "updated": time.time()}
         ev           = data.get("evidence", 1) + 1
         new_strength = (data["strength"] * (ev - 1) + strength) / ev
         data.update({
@@ -163,11 +168,14 @@ async def _store_edge(cause: str, effect: str, mechanism: str,
             "embedding": emb, "created": time.time(), "updated": time.time()
         }
 
-    r.set(edge_key, json.dumps(data))
-    r.sadd(f"cg:causes:{cause}", effect)
-    r.sadd(f"cg:effects:{effect}", cause)
-    r.sadd("cg:nodes", cause)
-    r.sadd("cg:nodes", effect)
+    loop = asyncio.get_event_loop()
+    def _redis_write():
+        r.set(edge_key, json.dumps(data))
+        r.sadd(f"cg:causes:{cause}", effect)
+        r.sadd(f"cg:effects:{effect}", cause)
+        r.sadd("cg:nodes", cause)
+        r.sadd("cg:nodes", effect)
+    await loop.run_in_executor(None, _redis_write)
 
 
 @app.post("/add-edge")

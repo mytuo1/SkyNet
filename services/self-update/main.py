@@ -1,26 +1,26 @@
 # services/self-update/main.py
-# ── Self-Update: Autonomous Code Modification via claw ────────────────────────
+# ── Self-Update: Autonomous Code Modification via supergrokie ────────────────────────
 #
-# claw (from github.com/ultraworkers/claw-code) is the primary code engine.
+# supergrokie (from github.com/mytuo1/supergrokie) is the primary code engine.
 # It replaces the "generate string → append to file" approach with a full
 # agentic tool loop: read existing code → understand context → edit precisely
 # → verify → done. Handles multi-file changes in a single session.
 #
 # MODIFICATION LEVELS:
 #   Level 1  Knob adjustment     — Redis write, instant, no code
-#   Level 2  Code modification   — claw edits existing service files
-#   Level 3  New service         — claw generates full service from description
+#   Level 2  Code modification   — supergrokie edits existing service files
+#   Level 3  New service         — supergrokie generates full service from description
 #
 # FALLBACK:
-#   If claw binary is not found or fails, every level falls back to the
+#   If supergrokie is not found or fails, every level falls back to the
 #   direct API approach via llm_provider.complete(). The brain keeps working.
 #
-# FLOW (OpenClaw → Level 2 example):
-#   OpenClaw: "Add a /stats endpoint to thalamus"
+# FLOW (Supergrokie → Level 2 example):
+#   Supergrokie: "Add a /stats endpoint to thalamus"
 #       ↓ webhook → _interpret_instruction()
-#       ↓ → _modify_with_claw("thalamus", "Add a /stats endpoint...")
-#       ↓ → claw reads services/thalamus/main.py via CLAW.md context
-#       ↓ → claw writes the endpoint directly into the file
+#       ↓ → _modify_with_supergrokie("thalamus", "Add a /stats endpoint...")
+#       ↓ → supergrokie reads services/thalamus/main.py via SUPERGROKIE.md context
+#       ↓ → supergrokie writes the endpoint directly into the file
 #       ↓ → result queued for human review (CODE_REVIEW_REQUIRED=true)
 #       ↓ → POST /approve/{id} → docker restart thalamus
 
@@ -55,7 +55,7 @@ from llm_provider import complete, complete_json
 app = FastAPI(
     title     = "SelfUpdate",
     version   = "3.0.0",
-    description = "claw-powered autonomous code modification"
+    description = "supergrokie-powered autonomous code modification"
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
@@ -64,8 +64,8 @@ events = EventBus()
 http   = httpx.AsyncClient(timeout=120.0)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-CLAW_BINARY      = os.getenv("CLAW_BINARY_PATH",       "/usr/local/bin/claw")
-OPENCLAW_SECRET  = os.getenv("OPENCLAW_WEBHOOK_SECRET", "")
+SUPERGROKIE_CMD      = os.getenv("SUPERGROKIE_PATH",       "/usr/local/bin/supergrokie")
+SUPERGROKIE_SECRET  = os.getenv("SUPERGROKIE_WEBHOOK_SECRET", "")
 KNOBS_URL        = os.getenv("KNOBS_URL",               "http://knobs:8090")
 CEREBELLUM_URL   = os.getenv("CEREBELLUM_URL",          "http://cerebellum:8003")
 AUTO_APPLY       = os.getenv("AUTO_APPLY_CODE_CHANGES", "false").lower() == "true"
@@ -86,8 +86,8 @@ except Exception:
     docker_client    = None
     DOCKER_AVAILABLE = False
 
-# ── Verify claw is available ──────────────────────────────────────────────────
-CLAW_AVAILABLE = os.path.exists(CLAW_BINARY) and os.access(CLAW_BINARY, os.X_OK)
+# ── Verify supergrokie is available ──────────────────────────────────────────────────
+SUPERGROKIE_AVAILABLE = os.path.exists(SUPERGROKIE_CMD) and os.access(SUPERGROKIE_CMD, os.X_OK)
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ class CodeChangeRequest(BaseModel):
     description:  str
     change_type:  str  = "modify"   # modify | add_endpoint | add_function | rewrite
     auto_apply:   bool = False
-    use_claw:     bool = True        # prefer claw over direct API call
+    use_supergrokie:     bool = True        # prefer supergrokie over direct API call
 
 
 class GenerateServiceRequest(BaseModel):
@@ -123,7 +123,7 @@ class GenerateServiceRequest(BaseModel):
     auto_deploy:  bool = False
 
 
-# ── CLAW.md Templates ─────────────────────────────────────────────────────────
+# ── SUPERGROKIE.md Templates ─────────────────────────────────────────────────────────
 
 BRAIN_ARCHITECTURE_CONTEXT = """# Brain System — Architecture Context
 
@@ -195,11 +195,11 @@ All services MUST follow these patterns exactly:
 """
 
 
-def write_claw_md(target_dir: str, service_name: str,
+def write_supergrokie_md(target_dir: str, service_name: str,
                    extra_context: str = "") -> str:
     """
-    Write a CLAW.md instruction file to a directory.
-    claw reads this before every session to understand the workspace.
+    Write a SUPERGROKIE.md instruction file to a directory.
+    supergrokie reads this before every session to understand the workspace.
     """
     content = f"""# {service_name} — Brain Service
 
@@ -227,27 +227,27 @@ After making any change:
 - Add a brief comment above new functions explaining what they do
 - Do not add __main__ blocks
 """
-    claw_md_path = os.path.join(target_dir, "CLAW.md")
-    with open(claw_md_path, "w") as f:
+    supergrokie_md_path = os.path.join(target_dir, "SUPERGROKIE.md")
+    with open(supergrokie_md_path, "w") as f:
         f.write(content)
-    return claw_md_path
+    return supergrokie_md_path
 
 
-# ── claw Integration ──────────────────────────────────────────────────────────
+# ── supergrokie Integration ──────────────────────────────────────────────────────────
 
-async def run_claw(prompt: str, working_dir: str,
+async def run_supergrokie(prompt: str, working_dir: str,
                    timeout: int = 120) -> dict:
     """
-    Invoke the claw binary in one-shot prompt mode.
-    claw reads the workspace, understands context via CLAW.md,
+    Invoke the supergrokie in one-shot prompt mode.
+    supergrokie reads the workspace, understands context via SUPERGROKIE.md,
     uses its own tool loop (file read → edit → verify), and exits.
 
     Returns dict with success, stdout, stderr, and any file changes.
     """
-    if not CLAW_AVAILABLE:
+    if not SUPERGROKIE_AVAILABLE:
         return {
             "success":  False,
-            "error":    f"claw binary not found at {CLAW_BINARY}",
+            "error":    f"supergrokie not found at {SUPERGROKIE_CMD}",
             "fallback": True
         }
 
@@ -255,11 +255,11 @@ async def run_claw(prompt: str, working_dir: str,
         **os.environ,
         "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
         "OPENAI_API_KEY":    os.getenv("OPENAI_API_KEY", ""),
-        # Tell claw which provider to use based on our LLM_PROVIDER setting
+        # Tell supergrokie which provider to use based on our LLM_PROVIDER setting
         "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
     }
 
-    # Remove empty keys — claw may behave differently with empty API keys
+    # Remove empty keys — supergrokie may behave differently with empty API keys
     env = {k: v for k, v in env.items() if v}
 
     try:
@@ -268,7 +268,7 @@ async def run_claw(prompt: str, working_dir: str,
             loop.run_in_executor(
                 None,
                 lambda: subprocess.run(
-                    [CLAW_BINARY, "prompt", prompt],
+                    [SUPERGROKIE_CMD, "prompt", prompt],
                     cwd            = working_dir,
                     env            = env,
                     capture_output = True,
@@ -284,25 +284,25 @@ async def run_claw(prompt: str, working_dir: str,
             "stdout":    result.stdout[:3000],
             "stderr":    result.stderr[:500] if result.returncode != 0 else "",
             "exit_code": result.returncode,
-            "tool":      "claw",
+            "tool":      "supergrokie",
         }
 
     except asyncio.TimeoutError:
-        return {"success": False, "error": f"claw timed out after {timeout}s",
-                "tool": "claw"}
+        return {"success": False, "error": f"supergrokie timed out after {timeout}s",
+                "tool": "supergrokie"}
     except Exception as e:
-        return {"success": False, "error": str(e), "tool": "claw"}
+        return {"success": False, "error": str(e), "tool": "supergrokie"}
 
 
-async def modify_with_claw(service: str, description: str,
+async def modify_with_supergrokie(service: str, description: str,
                             change_type: str = "modify") -> dict:
     """
-    Use claw to modify an existing service file.
+    Use supergrokie to modify an existing service file.
 
     Process:
     1. Copy current service file to workspace staging area
-    2. Write CLAW.md with architecture context
-    3. Run claw prompt — it reads file, edits, verifies
+    2. Write SUPERGROKIE.md with architecture context
+    3. Run supergrokie prompt — it reads file, edits, verifies
     4. Return result (queued for review if CODE_REVIEW_REQUIRED)
     """
     # Resolve service file path (mounted from docker-compose)
@@ -322,26 +322,26 @@ async def modify_with_claw(service: str, description: str,
         # Fall back to generating without reading existing file
         return await _generate_code_direct(service, description)
 
-    # Stage: copy service to workspace for claw to work on
-    stage_dir = Path(f"{WORKSPACE}/claw-staging/{service}")
+    # Stage: copy service to workspace for supergrokie to work on
+    stage_dir = Path(f"{WORKSPACE}/supergrokie-staging/{service}")
     stage_dir.mkdir(parents=True, exist_ok=True)
     stage_file = stage_dir / "main.py"
     shutil.copy2(source_path, stage_file)
 
-    # Write CLAW.md
-    write_claw_md(str(stage_dir), service, f"Change requested: {description}")
+    # Write SUPERGROKIE.md
+    write_supergrokie_md(str(stage_dir), service, f"Change requested: {description}")
 
-    # Build the claw prompt — precise instruction for one-shot mode
+    # Build the supergrokie prompt — precise instruction for one-shot mode
     prompt_map = {
         "add_endpoint":  f"Add a new FastAPI endpoint to main.py: {description}",
         "add_function":  f"Add a new function to main.py: {description}",
         "modify":        f"Modify main.py as follows: {description}",
         "rewrite":       f"Rewrite main.py to: {description}. Keep all existing endpoints.",
     }
-    claw_prompt = prompt_map.get(change_type, f"Modify main.py: {description}")
+    supergrokie_prompt = prompt_map.get(change_type, f"Modify main.py: {description}")
 
-    # Run claw
-    result = await run_claw(claw_prompt, str(stage_dir))
+    # Run supergrokie
+    result = await run_supergrokie(supergrokie_prompt, str(stage_dir))
 
     if result.get("success") and stage_file.exists():
         # Read the modified file
@@ -354,8 +354,8 @@ async def modify_with_claw(service: str, description: str,
             "description":  description,
             "source_file":  str(source_path),
             "staged_file":  str(stage_file),
-            "tool":         "claw",
-            "claw_output":  result.get("stdout", "")[:500],
+            "tool":         "supergrokie",
+            "supergrokie_output":  result.get("stdout", "")[:500],
             "timestamp":    time.time(),
             "preview":      modified_code[:600]
         }
@@ -368,10 +368,10 @@ async def modify_with_claw(service: str, description: str,
             _log_change({**change, "applied": True, "backup": str(backup)})
             return {
                 "applied":     True,
-                "tool":        "claw",
+                "tool":        "supergrokie",
                 "service":     service,
                 "backup":      str(backup),
-                "claw_output": result.get("stdout", "")[:500]
+                "supergrokie_output": result.get("stdout", "")[:500]
             }
         else:
             # Queue for human review
@@ -380,33 +380,33 @@ async def modify_with_claw(service: str, description: str,
                 "applied":    False,
                 "change_id":  change["id"],
                 "review_url": f"POST /approve/{change['id']}",
-                "tool":       "claw",
+                "tool":       "supergrokie",
                 "preview":    modified_code[:600],
-                "message":    "Queued for review. claw has written the code — inspect and approve."
+                "message":    "Queued for review. supergrokie has written the code — inspect and approve."
             }
     else:
-        # claw failed or binary not available — fall back to direct API
-        print(f"[self-update] claw failed: {result.get('error', result.get('stderr', ''))}")
+        # supergrokie failed — fall back to direct API — fall back to direct API
+        print(f"[self-update] supergrokie failed: {result.get('error', result.get('stderr', ''))}")
         print("[self-update] Falling back to direct API code generation")
         return await _generate_code_direct(service, description)
 
 
-async def generate_service_with_claw(req: GenerateServiceRequest) -> dict:
+async def generate_service_with_supergrokie(req: GenerateServiceRequest) -> dict:
     """
-    Use claw to generate a complete new service.
+    Use supergrokie to generate a complete new service.
 
     Process:
     1. Create a scaffold in workspace with the port and service name
-    2. Write a minimal main.py stub and CLAW.md with full spec
-    3. claw reads the stub + CLAW.md, writes the complete service
+    2. Write a minimal main.py stub and SUPERGROKIE.md with full spec
+    3. supergrokie reads the stub + SUPERGROKIE.md, writes the complete service
     4. Result queued for review before deployment
     """
-    stage_dir = Path(f"{WORKSPACE}/claw-new-services/{req.service_name}")
+    stage_dir = Path(f"{WORKSPACE}/supergrokie-new-services/{req.service_name}")
     stage_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write a minimal stub so claw has something to expand
+    # Write a minimal stub so supergrokie has something to expand
     stub = f'''# services/{req.service_name}/main.py
-# SCAFFOLD — claw will complete this
+# SCAFFOLD — supergrokie will complete this
 
 import sys
 import time
@@ -432,11 +432,11 @@ async def health():
 async def get_knobs():
     return knobs.get().dict()
 
-# TODO: claw will add the service-specific endpoints below
+# TODO: supergrokie will add the service-specific endpoints below
 '''
     (stage_dir / "main.py").write_text(stub)
 
-    # Write CLAW.md with full service specification
+    # Write SUPERGROKIE.md with full service specification
     depends_str = ", ".join(req.depends_on) if req.depends_on else "none"
     extra = f"""## Service Specification
 
@@ -456,7 +456,7 @@ Use httpx.AsyncClient for HTTP calls to other services.
 The service URLs for dependencies come from environment variables:
   {chr(10).join(f"  {dep.upper().replace('-','_')}_URL = os.getenv('{dep.upper().replace('-','_')}_URL')" for dep in req.depends_on)}
 """
-    write_claw_md(str(stage_dir), req.service_name, extra)
+    write_supergrokie_md(str(stage_dir), req.service_name, extra)
 
     # Write Dockerfile
     dockerfile = f"""FROM python:3.12-slim
@@ -478,11 +478,11 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{req.port}", "--work
         "httpx==0.27.0\npydantic==2.7.0\nredis==5.0.4\n"
     )
 
-    # Run claw to complete the main.py
-    result = await run_claw(
+    # Run supergrokie to complete the main.py
+    result = await run_supergrokie(
         f"Complete main.py to implement: {req.description}. "
         f"Expand from the scaffold. Make it production-ready. "
-        f"Follow CLAW.md exactly.",
+        f"Follow SUPERGROKIE.md exactly.",
         str(stage_dir),
         timeout=180
     )
@@ -497,9 +497,9 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{req.port}", "--work
         "port":         req.port,
         "description":  req.description,
         "stage_dir":    str(stage_dir),
-        "claw_output":  result.get("stdout", "")[:500],
-        "claw_success": result.get("success", False),
-        "tool":         "claw",
+        "supergrokie_output":  result.get("stdout", "")[:500],
+        "supergrokie_success": result.get("success", False),
+        "tool":         "supergrokie",
         "timestamp":    time.time(),
         "files": {
             "main.py":          len(main_py),
@@ -511,7 +511,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{req.port}", "--work
     _log_pending(change)
 
     if not result.get("success"):
-        print("[self-update] claw did not fully complete service — "
+        print("[self-update] supergrokie did not fully complete service — "
               "stub is in stage_dir for manual completion")
 
     return {
@@ -519,23 +519,23 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{req.port}", "--work
         "deployed":   False,
         "change_id":  change_id,
         "stage_dir":  str(stage_dir),
-        "tool":       "claw",
-        "claw_ok":    result.get("success", False),
+        "tool":       "supergrokie",
+        "supergrokie_ok":    result.get("success", False),
         "files":      change["files"],
         "review_cmd": f"POST /approve/{change_id}",
         "preview":    main_py[:800],
         "message": (
-            f"Service '{req.service_name}' generated by claw. "
+            f"Service '{req.service_name}' generated by supergrokie. "
             f"Review at {stage_dir} then approve to deploy."
         )
     }
 
 
-# ── Direct API fallback (when claw unavailable or fails) ──────────────────────
+# ── Direct API fallback (when supergrokie unavailable or fails) ──────────────────────
 
 async def _generate_code_direct(service: str, description: str) -> dict:
     """
-    Direct API code generation — fallback when claw is not available.
+    Direct API code generation — fallback when supergrokie is not available.
     Same as original approach: generate string, queue for review.
     """
     generated = await complete(
@@ -576,7 +576,7 @@ async def _generate_code_direct(service: str, description: str) -> dict:
         "change_id":  change_id,
         "tool":       "direct_api",
         "preview":    generated[:600],
-        "message":    "Generated via direct API (claw fallback). Review and approve."
+        "message":    "Generated via direct API (supergrokie fallback). Review and approve."
     }
 
 
@@ -628,8 +628,8 @@ async def health():
         "status":           "alive",
         "service":          "self-update",
         "version":          "3.0.0",
-        "claw_available":   CLAW_AVAILABLE,
-        "claw_path":        CLAW_BINARY,
+        "supergrokie_available":   SUPERGROKIE_AVAILABLE,
+        "supergrokie_path":        SUPERGROKIE_CMD,
         "docker_available": DOCKER_AVAILABLE,
         "auto_apply":       AUTO_APPLY,
         "code_review":      CODE_REVIEW_REQD,
@@ -648,39 +648,39 @@ async def get_knobs():
     return {}
 
 
-@app.get("/claw-status")
-async def claw_status():
-    """Check claw binary version and availability."""
-    if not CLAW_AVAILABLE:
+@app.get("/supergrokie-status")
+async def supergrokie_status():
+    """Check supergrokie version and availability."""
+    if not SUPERGROKIE_AVAILABLE:
         return {
             "available": False,
-            "path":      CLAW_BINARY,
-            "message":   "Binary not found. Build: cd claw-code/rust && cargo build --release"
+            "path":      SUPERGROKIE_CMD,
+            "message":   "Binary not found. Build: cd mytuo1/supergrokie and install"
         }
     try:
         result = subprocess.run(
-            [CLAW_BINARY, "--version"],
+            [SUPERGROKIE_CMD, "--version"],
             capture_output = True,
             text           = True,
             timeout        = 5
         )
         return {
             "available": True,
-            "path":      CLAW_BINARY,
+            "path":      SUPERGROKIE_CMD,
             "version":   result.stdout.strip() or result.stderr.strip()
         }
     except Exception as e:
         return {"available": False, "error": str(e)}
 
 
-@app.post("/webhook/openclaw")
-async def openclaw_webhook(request: Request,
+@app.post("/webhook/supergrokie")
+async def supergrokie_webhook(request: Request,
                             background: BackgroundTasks):
     """
-    OpenClaw sends natural language instructions here.
-    claw handles the code changes, not just regex interpretation.
+    Supergrokie sends natural language instructions here.
+    supergrokie handles the code changes, not just regex interpretation.
 
-    Examples OpenClaw can send:
+    Examples Supergrokie can send:
       "Add endpoint /stats to thalamus showing session count and avg latency"
       "The verification service needs a cache clear endpoint"
       "Create a service that monitors Redis memory usage on port 8018"
@@ -688,10 +688,10 @@ async def openclaw_webhook(request: Request,
     """
     body = await request.body()
 
-    if OPENCLAW_SECRET:
-        sig      = request.headers.get("X-OpenClaw-Signature", "")
+    if SUPERGROKIE_SECRET:
+        sig      = request.headers.get("X-Supergrokie-Signature", "")
         expected = "sha256=" + hmac.new(
-            OPENCLAW_SECRET.encode(), body, hashlib.sha256
+            SUPERGROKIE_SECRET.encode(), body, hashlib.sha256
         ).hexdigest()
         if not hmac.compare_digest(sig, expected):
             raise HTTPException(401, "Invalid signature")
@@ -709,12 +709,12 @@ async def openclaw_webhook(request: Request,
         raise HTTPException(400, "No message in payload")
 
     interpretation = await _interpret_instruction(message)
-    background.add_task(_execute_change, interpretation, "openclaw")
+    background.add_task(_execute_change, interpretation, "supergrokie")
 
     return {
         "received":       message,
         "interpretation": interpretation,
-        "tool":           "claw" if CLAW_AVAILABLE else "direct_api",
+        "tool":           "supergrokie" if SUPERGROKIE_AVAILABLE else "direct_api",
         "status":         "queued"
     }
 
@@ -730,14 +730,14 @@ async def update(req: UpdateRequest, background: BackgroundTasks):
         result = await _update_knobs(req.payload, req.source)
 
     elif req.target == "code":
-        result = await modify_with_claw(
+        result = await modify_with_supergrokie(
             service     = req.payload.get("service", ""),
             description = req.description,
             change_type = req.payload.get("change_type", "modify")
         )
 
     elif req.target == "service":
-        result = await generate_service_with_claw(GenerateServiceRequest(
+        result = await generate_service_with_supergrokie(GenerateServiceRequest(
             service_name = req.payload.get("service_name", ""),
             description  = req.description,
             port         = req.payload.get("port", 8100),
@@ -760,7 +760,7 @@ async def update(req: UpdateRequest, background: BackgroundTasks):
     _log_change({"target": req.target, "source": req.source,
                  "description": req.description, "result": str(result)[:200]})
     events.publish("self.update.triggered", {
-        "target": req.target, "source": req.source, "tool": "claw"
+        "target": req.target, "source": req.source, "tool": "supergrokie"
     })
 
     return BrainResponse(
@@ -774,11 +774,11 @@ async def update(req: UpdateRequest, background: BackgroundTasks):
 @app.post("/modify-code")
 async def modify_code(req: CodeChangeRequest):
     """
-    Modify code in an existing service using claw.
-    claw reads the file, understands context, makes targeted edits.
+    Modify code in an existing service using supergrokie.
+    supergrokie reads the file, understands context, makes targeted edits.
     """
-    if req.use_claw and CLAW_AVAILABLE:
-        return await modify_with_claw(req.service, req.description, req.change_type)
+    if req.use_supergrokie and SUPERGROKIE_AVAILABLE:
+        return await modify_with_supergrokie(req.service, req.description, req.change_type)
     else:
         return await _generate_code_direct(req.service, req.description)
 
@@ -786,10 +786,10 @@ async def modify_code(req: CodeChangeRequest):
 @app.post("/generate-service")
 async def generate_service(req: GenerateServiceRequest):
     """
-    Generate a complete new microservice using claw.
-    claw writes main.py from a scaffold guided by CLAW.md spec.
+    Generate a complete new microservice using supergrokie.
+    supergrokie writes main.py from a scaffold guided by SUPERGROKIE.md spec.
     """
-    return await generate_service_with_claw(req)
+    return await generate_service_with_supergrokie(req)
 
 
 @app.post("/self-analyze", response_model=BrainResponse)
@@ -797,7 +797,7 @@ async def self_analyze(req: SelfAnalysisRequest):
     """
     Analyze experiences and propose improvements.
     Auto-applies low-risk knob changes.
-    Queues code changes for claw to implement after human review.
+    Queues code changes for supergrokie to implement after human review.
     """
     start = time.time()
 
@@ -878,13 +878,13 @@ JSON response:
               and risk == "low"
               and confidence > 0.80
               and req.auto_apply
-              and CLAW_AVAILABLE):
-            # Queue for claw — human still approves but claw does the writing
+              and SUPERGROKIE_AVAILABLE):
+            # Queue for supergrokie — human still approves but supergrokie does the writing
             service  = change.get("target", "")
             desc     = change.get("description", "")
             if service and desc:
-                result = await modify_with_claw(service, desc, "modify")
-                queued.append({**change, "claw_result": result})
+                result = await modify_with_supergrokie(service, desc, "modify")
+                queued.append({**change, "supergrokie_result": result})
                 continue
 
         queued.append(change)
@@ -906,7 +906,7 @@ JSON response:
             "priority":          proposal.get("priority", "low"),
             "auto_applied":      applied,
             "queued_for_review": queued,
-            "tool":              "claw" if CLAW_AVAILABLE else "direct_api"
+            "tool":              "supergrokie" if SUPERGROKIE_AVAILABLE else "direct_api"
         }
     )
 
@@ -920,7 +920,7 @@ async def get_pending():
 async def approve_change(change_id: str):
     """
     Approve a pending change.
-    For claw-generated code: the staged file is copied to the service.
+    For supergrokie-generated code: the staged file is copied to the service.
     For direct-API code: the code string is appended to the service file.
     """
     pending = _get_pending()
@@ -972,7 +972,7 @@ async def _apply_approved_change(change: dict) -> dict:
         code      = change.get("code")     # direct API fallback
 
         if staged and source and Path(staged).exists():
-            # claw wrote the file — copy staged back to source
+            # supergrokie wrote the file — copy staged back to source
             backup = Path(source).with_suffix(f".{int(time.time())}.bak")
             shutil.copy2(source, backup)
             shutil.copy2(staged, source)
@@ -1036,8 +1036,8 @@ async def _interpret_instruction(message: str) -> dict:
     return await complete_json(
         prompt=f"""Interpret this instruction for an AI system that can:
 1. Adjust behavioral knobs (0.0–1.0 values: humor, empathy, formality etc.)
-2. Modify code in existing services (using claw coding agent)
-3. Create entirely new microservices (claw generates complete files)
+2. Modify code in existing services (using supergrokie coding agent)
+3. Create entirely new microservices (supergrokie generates complete files)
 4. Restart services
 5. Update system prompts
 
@@ -1082,10 +1082,10 @@ async def _execute_change(interpretation: dict, source: str = "api") -> dict:
         )
 
     elif change_type == "code_modify":
-        return await modify_with_claw(target, description)
+        return await modify_with_supergrokie(target, description)
 
     elif change_type == "new_service":
-        return await generate_service_with_claw(GenerateServiceRequest(
+        return await generate_service_with_supergrokie(GenerateServiceRequest(
             service_name = target,
             description  = description,
             port         = int(interpretation.get("port", 8100)),
@@ -1147,7 +1147,8 @@ async def _update_system_prompt(payload: dict, source: str) -> dict:
 
 
 def _restart_container(service_name: str) -> dict:
-    if not DOCKER_AVAILABLE:
+    if not DOCKER_AVAILABLE or docker_client is None:
+        print(f"Docker not available — cannot restart {service_name}")
         return {"restarted": False, "error": "Docker not available"}
     if not service_name:
         return {"restarted": False, "error": "No service name"}
@@ -1162,7 +1163,8 @@ def _restart_container(service_name: str) -> dict:
 
 
 def _build_and_start_container(name: str, path: str, port: int) -> dict:
-    if not DOCKER_AVAILABLE:
+    if not DOCKER_AVAILABLE or docker_client is None:
+        print(f"Docker not available — cannot build/start {name}")
         return {"deployed": False, "error": "Docker not available"}
     try:
         image, _ = docker_client.images.build(

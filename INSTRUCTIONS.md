@@ -20,7 +20,7 @@ Read this once fully before touching anything.
 7. [Redeployment Procedures](#7-redeployment-procedures)
 8. [Updating Individual Services](#8-updating-individual-services)
 9. [Code Changes That Require Extra Steps](#9-code-changes-that-require-extra-steps)
-10. [claw Integration — Build and Maintain](#10-claw-integration--build-and-maintain)
+10. [supergrokie Integration — Build and Maintain](#10-supergrokie-integration--build-and-maintain)
 11. [Local Model — First Download and Updates](#11-local-model--first-download-and-updates)
 12. [Vision Service — Camera Setup](#12-vision-service--camera-setup)
 13. [Common Errors and Fixes](#13-common-errors-and-fixes)
@@ -78,16 +78,18 @@ Your brain directory must look exactly like this before deployment:
 ```
 brain/
 ├── .env                          ← you create this from .env.example
+├── .gitignore
 ├── docker-compose.yml
-├── CLAW.md                       ← claw architecture context (do not delete)
+├── skynet.sh                     ← launcher script (start/stop/status/etc.)
+├── SUPERGROKIE.md                  ← supergrokie architecture context (do not delete)
 ├── nginx/
 │   └── nginx.conf
 ├── shared/
 │   ├── __init__.py
-│   ├── models.py
-│   ├── knobs.py
-│   ├── events.py
-│   └── llm_provider.py
+│   ├── models.py               ← 21 ExperienceTypes, BrainResponse, KnobSet
+│   ├── knobs.py                ← 21 behavioral knobs including gratitude/belonging
+│   ├── events.py               ← Redis pub/sub event bus (sync + async)
+│   └── llm_provider.py         ← 8-provider LLM abstraction
 ├── services/
 │   ├── thalamus/     main.py  Dockerfile  requirements.txt
 │   ├── amygdala/     main.py  Dockerfile  requirements.txt
@@ -95,10 +97,10 @@ brain/
 │   ├── neocortex/    main.py  Dockerfile  requirements.txt
 │   ├── cerebellum/   main.py  Dockerfile  requirements.txt
 │   ├── working-memory/
-│   ├── perception/
+│   ├── perception/               ← 14 senses including gratitude, regret, belonging
 │   ├── verification/
 │   ├── cross-domain/
-│   ├── compass/
+│   ├── compass/                  ← 7 dimensions (gratitude, belonging, empathy, ...)
 │   ├── framework-router/
 │   ├── self-update/  main.py  Dockerfile  requirements.txt
 │   ├── knobs/
@@ -107,7 +109,9 @@ brain/
 │   ├── metacognition/
 │   ├── goals/
 │   ├── learner/
-│   └── vision/
+│   ├── vision/
+│   ├── dashboard/    main.py  Dockerfile  requirements.txt  ← web UI (port 8080)
+│   └── autonomy/     main.py  Dockerfile  requirements.txt  ← self-improvement (port 8018)
 └── databases/
     ├── redis/        Dockerfile  redis.conf  init.py  init.sh  requirements.txt
     ├── elasticsearch/ Dockerfile  init.py  requirements.txt
@@ -129,28 +133,69 @@ system if left empty.
 ```
 LLM_PROVIDER=anthropic
 ```
-Controls which AI provider is used for reasoning.
-- `anthropic` — uses Claude (Sonnet for reasoning, Haiku for fast calls)
-- `openai`    — uses GPT-4o and GPT-4o-mini
-- To switch: change this value, restart thalamus and compass only
+Controls which AI provider is used for reasoning. 9 providers supported:
+- `anthropic`   — uses Claude (Sonnet for reasoning, Haiku for fast calls)
+- `openai`      — uses GPT-5.4-mini and GPT-5.4-nano
+- `gemini`      — uses Google Gemini (2.5 Pro / 2.0 Flash)
+- `ollama`      — uses local Ollama models (no API key needed, fully private)
+- `deepseek`    — uses DeepSeek R1 (reasoning) / DeepSeek Chat
+- `groq`        — uses Groq (Llama 3.3 70B / Llama 3.1 8B — very fast inference)
+- `xai`         — uses xAI Grok 4.20 / Grok 3 Mini Fast
+- `openrouter`  — uses OpenRouter (multi-model gateway)
+- `generic`     — uses any OpenAI-compatible endpoint (set GENERIC_BASE_URL)
+- To switch: change this value + set the corresponding API key, restart services
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...          REQUIRED if LLM_PROVIDER=anthropic
 OPENAI_API_KEY=sk-...                 REQUIRED if LLM_PROVIDER=openai
+GEMINI_API_KEY=...                    REQUIRED if LLM_PROVIDER=gemini
+DEEPSEEK_API_KEY=...                  REQUIRED if LLM_PROVIDER=deepseek
+GROQ_API_KEY=...                      REQUIRED if LLM_PROVIDER=groq
+XAI_API_KEY=...                       REQUIRED if LLM_PROVIDER=xai
+OPENROUTER_API_KEY=...                REQUIRED if LLM_PROVIDER=openrouter
+GENERIC_API_KEY=...                   REQUIRED if LLM_PROVIDER=generic
+GENERIC_BASE_URL=https://...          REQUIRED if LLM_PROVIDER=generic
 ```
 
 ```
 ANTHROPIC_MAIN_MODEL=claude-sonnet-4-20250514
 ANTHROPIC_FAST_MODEL=claude-haiku-4-5-20251001
-OPENAI_MAIN_MODEL=gpt-4o
-OPENAI_FAST_MODEL=gpt-4o-mini
+OPENAI_MAIN_MODEL=gpt-5.4-mini
+OPENAI_FAST_MODEL=gpt-5.4-nano
+GEMINI_MAIN_MODEL=gemini-2.5-pro
+GEMINI_FAST_MODEL=gemini-2.0-flash
+DEEPSEEK_MAIN_MODEL=deepseek-r1
+DEEPSEEK_FAST_MODEL=deepseek-chat
+GROQ_MAIN_MODEL=llama-3.3-70b-versatile
+GROQ_FAST_MODEL=llama-3.1-8b-instant
+XAI_MAIN_MODEL=grok-4-20
+XAI_FAST_MODEL=grok-3-mini-fast
+OLLAMA_LLM_MODEL=phi4
 DEFAULT_CLAUDE_MODEL=claude-sonnet-4-20250514
 FAST_CLAUDE_MODEL=claude-haiku-4-5-20251001
 ```
-These are the model names sent in API calls. Update if Anthropic or OpenAI
-releases new models. The DEFAULT_CLAUDE_MODEL and FAST_CLAUDE_MODEL values
-are legacy aliases read by older service code — keep them in sync with the
-Anthropic model names.
+These are the model names sent in API calls. Update when providers release new models.
+The DEFAULT_CLAUDE_MODEL and FAST_CLAUDE_MODEL are legacy aliases.
+
+### Token Limits
+
+```
+MAX_TOKENS_MAIN=0
+MAX_TOKENS_FAST=0
+```
+Override the default max_tokens for LLM calls. When 0, uses built-in defaults
+(4096 for complete(), 2048 for complete_json()). Increase if you need longer
+responses from the brain or if the LLM is truncating output.
+
+### Autonomy (Self-Improvement)
+
+```
+AUTONOMY_MAX_RISK=low
+```
+Controls what the autonomous thinking loop is allowed to propose:
+- `low`    — only knob adjustments (safe)
+- `medium` — knobs + small code improvements (add endpoints, fix bugs)
+- `high`   — can propose new services and major refactors (use with caution)
 
 ### Databases
 
@@ -240,36 +285,36 @@ OLLAMA_LOCAL_MODEL=phi4
 The Ollama inference model used as a fallback. Pull with `ollama pull phi4`.
 Optional — the main reasoning is done by the LLM provider, not Ollama.
 
-### claw Code Modification Engine
+### supergrokie Code Modification Engine
 
 ```
-CLAW_BINARY_PATH=/usr/local/bin/claw
+SUPERGROKIE_PATH=/usr/local/bin/supergrokie
 ```
-Path to the claw binary inside the self-update container. Built during
+Path to supergrokie inside the self-update container. Installed during
 Docker image build. Do not change unless you are mounting the binary
 from the host instead of building it.
 
 ```
-CLAW_GIT_REF=main
+SUPERGROKIE_GIT_REF=main
 ```
-Which git ref to build claw from. Options:
+Which git ref to install supergrokie from. Options:
 - `main`          — latest (may include breaking changes)
 - `<commit-sha>`  — pinned to a specific commit (recommended for production)
 
-To pin: run `git log --oneline` in the claw-code repo, copy the hash,
-set `CLAW_GIT_REF=a3f91b2` (or whatever the hash is).
+To pin: run `git log --oneline` in the supergrokie repo, copy the hash,
+set `SUPERGROKIE_GIT_REF=a3f91b2` (or whatever the hash is).
 
-### Self-Update / OpenClaw
+### Self-Update / Supergrokie
 
 ```
-OPENCLAW_WEBHOOK_SECRET=change-this-to-a-random-secret-min-32-chars
+SUPERGROKIE_WEBHOOK_SECRET=change-this-to-a-random-secret-min-32-chars
 ```
-**REQUIRED.** The HMAC secret that OpenClaw uses to sign webhook payloads.
+**REQUIRED.** The HMAC secret that Supergrokie uses to sign webhook payloads.
 Must be at least 32 characters. Generate with:
 ```bash
 openssl rand -hex 32
 ```
-This value must match what you configure in OpenClaw's webhook settings.
+This value must match what you configure in Supergrokie's webhook settings.
 
 ```
 GITHUB_TOKEN=ghp_...
@@ -283,7 +328,7 @@ AUTO_APPLY_CODE_CHANGES=false
 ```
 - `false` — all code changes go to a pending queue. You approve them manually
   with `POST /update/approve/{id}`. Recommended.
-- `true`  — claw-generated code is applied immediately without review.
+- `true`  — supergrokie-generated code is applied immediately without review.
   Only use this if you trust the system completely.
 
 ```
@@ -349,6 +394,8 @@ GOALS_URL=http://goals:8015
 LEARNER_URL=http://learner:8016
 VISION_URL=http://vision:8017
 THALAMUS_URL=http://thalamus:8000
+AUTONOMY_URL=http://autonomy:8018
+DASHBOARD_URL=http://dashboard:8080
 ```
 
 ### Resource Limits
@@ -377,8 +424,12 @@ Container memory limits. Increase if learner OOM-kills during model loading.
 ```
 GATEWAY_PORT=8000
 KNOBS_PORT=8090
+DASHBOARD_PORT=8080
 ```
-The ports the gateway and knobs service expose to the host machine.
+The ports exposed to the host machine:
+- 8000 — Gateway (Nginx → Thalamus, the main API)
+- 8090 — Knobs service (direct access for tools)
+- 8080 — Dashboard (web UI — terminal, monitoring, logging, controls)
 All other services are internal to the Docker network only.
 
 ### Paths
@@ -415,16 +466,16 @@ The services directory is mounted from `./services` on the host.
 2. New Token → Read access
 3. Format: `hf_...`
 
-### OpenClaw Webhook Secret (`OPENCLAW_WEBHOOK_SECRET`)
-**Required for OpenClaw integration**
-**Not required if you don't use OpenClaw**
+### Supergrokie Webhook Secret (`SUPERGROKIE_WEBHOOK_SECRET`)
+**Required for Supergrokie integration**
+**Not required if you don't use Supergrokie**
 Generate locally — this is not obtained from a third party:
 ```bash
 openssl rand -hex 32
 ```
 This value must be set identically in:
-1. Your `.env` file (`OPENCLAW_WEBHOOK_SECRET=...`)
-2. OpenClaw's webhook configuration panel
+1. Your `.env` file (`SUPERGROKIE_WEBHOOK_SECRET=...`)
+2. Supergrokie's webhook configuration panel
 
 ### GitHub Token (`GITHUB_TOKEN`)
 **Optional — only needed if self-update commits code to GitHub**
@@ -452,7 +503,7 @@ cp .env.example .env
 Open `.env` and fill in every **REQUIRED** value:
 ```
 ANTHROPIC_API_KEY=sk-ant-...        ← your real key
-OPENCLAW_WEBHOOK_SECRET=<32+ chars> ← generate with: openssl rand -hex 32
+SUPERGROKIE_WEBHOOK_SECRET=<32+ chars> ← generate with: openssl rand -hex 32
 ```
 
 Set your Ollama URL correctly for your OS (see Section 3).
@@ -481,10 +532,10 @@ docker compose build
 ```
 
 This builds every service image. Expected duration:
-- Without claw (if self-update is excluded): 5-10 minutes
-- With claw (Rust compilation): 15-25 minutes on first build
+- Without supergrokie (if self-update is excluded): 5-10 minutes
+- With supergrokie: 5-15 minutes on first build
 
-The claw Rust compilation is the slowest part. It only runs once — the
+Supergrokie installation only runs once — the
 Docker layer cache preserves it on all subsequent builds.
 
 Watch for errors. If any service fails to build, fix it before proceeding.
@@ -605,14 +656,14 @@ curl -s -X POST http://localhost:8000/brain/process \
 Expected: a `response` field with actual text, `cognitive_path` showing
 how the brain processed it, `execution_ms` showing total time.
 
-### Check 6: claw available
+### Check 6: supergrokie available
 ```bash
-curl -s http://localhost:8000/update/claw-status
+curl -s http://localhost:8000/update/supergrokie-status
 ```
 Expected: `"available": true` with a version string.
-If `"available": false`: claw binary was not built. Check self-update logs:
+If `"available": false`: supergrokie was not installed. Check self-update logs:
 ```bash
-docker compose logs self-update | grep -i claw
+docker compose logs self-update | grep -i supergrokie
 ```
 
 ### Check 7: Ollama embedding working
@@ -679,7 +730,7 @@ you do `docker compose up`. All init scripts are written to be safe:
 
 ### Type 2: Full rebuild (dependency changes, Dockerfile changes)
 
-Use when: you changed requirements.txt, Dockerfile, or the claw Dockerfile.
+Use when: you changed requirements.txt, Dockerfile, or the supergrokie Dockerfile.
 
 ```bash
 docker compose build --no-cache
@@ -690,7 +741,7 @@ docker compose up -d
 steps. Slower, but guarantees a clean state. Use this when you suspect a
 stale layer is causing problems.
 
-**Warning**: `--no-cache` will re-compile the claw Rust binary (15-25 min).
+**Warning**: `--no-cache` will re-install supergrokie.
 Only use it when you actually changed the Dockerfile, not for routine deploys.
 
 ---
@@ -972,11 +1023,11 @@ docker exec brain_gateway nginx -t
 
 ---
 
-## 10. claw Integration — Build and Maintain
+## 10. supergrokie Integration — Build and Maintain
 
-### What claw is and why it's in the build
+### What supergrokie is and why it's in the build
 
-claw (github.com/ultraworkers/claw-code) is a Rust-based coding agent that
+supergrokie (github.com/mytuo1/supergrokie) is a claude-code equivalent coding agent that
 the self-update service uses to read existing service files, understand their
 context, and make precise edits. It is compiled from source during the
 Docker build of the self-update service.
@@ -987,18 +1038,18 @@ The self-update Dockerfile has two stages:
 
 ```
 Stage 1 (rust:1.78-slim):
-  git clone github.com/ultraworkers/claw-code
+  git clone https://github.com/mytuo1/supergrokie
   cd rust && cargo build --release
-  → produces: target/release/claw (binary)
+  → produces: supergrokie (installed)
 
 Stage 2 (python:3.12-slim):
-  COPY --from=stage1 .../claw /usr/local/bin/claw
+  installs supergrokie into /usr/local/bin/supergrokie
   pip install requirements.txt
-  → produces: final image with both claw and Python runtime
+  → produces: final image with both supergrokie and Python runtime
 ```
 
 The Rust compilation only runs once and is cached by Docker. Subsequent
-builds skip the Rust compilation unless you change CLAW_GIT_REF.
+builds skip re-installation unless you change SUPERGROKIE_GIT_REF.
 
 ### First build (slow):
 ```bash
@@ -1013,30 +1064,30 @@ docker compose build self-update
 # Expected time: 30-60 seconds (cached layers)
 ```
 
-### Pinning claw to a specific version
+### Pinning supergrokie to a specific version
 
-The claw repo is new and active. `main` may have breaking changes.
+The supergrokie repo is new and active. `main` may have breaking changes.
 Once the project cuts a stable release, pin to it:
 
 ```bash
 # Find a stable commit
-git clone https://github.com/ultraworkers/claw-code /tmp/claw-check
-cd /tmp/claw-check && git log --oneline | head -10
+git clone https://github.com/mytuo1/supergrokie supergrokie-check
+cd supergrokie-check && git log --oneline | head -10
 # Find the last known-good commit hash, e.g. a3f91b2
 
 # Set in .env
-CLAW_GIT_REF=a3f91b2
+SUPERGROKIE_GIT_REF=a3f91b2
 
 # Rebuild self-update with the pinned version
 docker compose build --no-cache self-update
 docker compose up -d --no-deps self-update
 ```
 
-### If the claw repo moves, renames, or disappears
+### If the supergrokie repo moves, renames, or disappears
 
 The Dockerfile clones from:
 ```
-https://github.com/ultraworkers/claw-code
+https://github.com/mytuo1/supergrokie
 ```
 
 If this URL changes (the repo is mid-ownership-transfer as of this writing):
@@ -1045,21 +1096,21 @@ If this URL changes (the repo is mid-ownership-transfer as of this writing):
 3. Update to the new URL
 4. Rebuild: `docker compose build --no-cache self-update`
 
-If claw becomes unavailable entirely, the self-update service falls back to
+If supergrokie becomes unavailable entirely, the self-update service falls back to
 direct API code generation automatically. The brain continues to function.
 
-### Verify claw is working after any rebuild
+### Verify supergrokie is working after any rebuild
 
 ```bash
-curl -s http://localhost:8000/update/claw-status | python3 -m json.tool
+curl -s http://localhost:8000/update/supergrokie-status | python3 -m json.tool
 ```
 
 Expected:
 ```json
 {
   "available": true,
-  "path": "/usr/local/bin/claw",
-  "version": "claw 0.1.x ..."
+  "path": "/usr/local/bin/supergrokie",
+  "version": "supergrokie ..."
 }
 ```
 
@@ -1233,11 +1284,11 @@ LOCAL_MODEL_NAME=Qwen/Qwen2.5-1.5B-Instruct
 docker compose up -d --no-deps learner
 ```
 
-### claw binary not found after build
+### supergrokie not found after build
 
 ```bash
 # Check if the binary was built
-docker compose exec self-update ls -la /usr/local/bin/claw
+docker compose exec self-update ls -la /usr/local/bin/supergrokie
 
 # If missing, force rebuild of self-update
 docker compose build --no-cache self-update
@@ -1256,12 +1307,12 @@ Or re-run the init (reseeds only if key is missing):
 docker compose up db-init
 ```
 
-### OpenClaw webhook returns 401
+### Supergrokie webhook returns 401
 
 The signature check is failing. Verify:
-1. `OPENCLAW_WEBHOOK_SECRET` in `.env` matches OpenClaw's webhook secret exactly
+1. `SUPERGROKIE_WEBHOOK_SECRET` in `.env` matches Supergrokie's webhook secret exactly
 2. No trailing spaces or newlines in the secret value
-3. The webhook URL is correct: `http://your-host:8000/update/webhook/openclaw`
+3. The webhook URL is correct: `http://your-host:8000/update/webhook/supergrokie`
 
 ### "embedding dimension mismatch" in Elasticsearch
 
@@ -1308,7 +1359,7 @@ Before going to production, complete every item on this list.
 
 ```
 [ ] ANTHROPIC_API_KEY set to real key (not example value)
-[ ] OPENCLAW_WEBHOOK_SECRET is 32+ random characters (openssl rand -hex 32)
+[ ] SUPERGROKIE_WEBHOOK_SECRET is 32+ random characters (openssl rand -hex 32)
 [ ] REDIS_PASSWORD set to strong password
 [ ] ELASTICSEARCH_PASSWORD set to strong password
 [ ] .env file is NOT committed to git (add .env to .gitignore)
@@ -1337,7 +1388,7 @@ docker compose up -d --no-deps redis
 ```
 [ ] AUTO_APPLY_CODE_CHANGES=false
 [ ] CODE_REVIEW_REQUIRED=true
-[ ] CLAW_GIT_REF pinned to a specific commit hash (not "main")
+[ ] SUPERGROKIE_GIT_REF pinned to a specific commit hash (not "main")
 ```
 
 ### Resource limits
@@ -1456,7 +1507,7 @@ curl -X POST http://localhost:8000/brain/process \
   -d '{"session_id": "s1", "user_input": "Your question here"}'
 ```
 
-### Review pending code changes (from claw/self-update)
+### Review pending code changes (from supergrokie/self-update)
 ```bash
 curl http://localhost:8000/update/pending
 curl -X POST http://localhost:8000/update/approve/<change_id>
