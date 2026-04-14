@@ -5,4 +5,3 @@ pydantic==2.7.0
 redis==5.0.4
 edgedb==1.8.0
 numpy==1.26.4
-anthropic==0.28.0
