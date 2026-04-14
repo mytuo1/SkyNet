@@ -209,7 +209,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       <<: *common-healthcheck
 
   hippocampus:
@@ -228,7 +228,7 @@ services:
       db-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8002/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
       <<: *common-healthcheck
 
   neocortex:
@@ -245,7 +245,7 @@ services:
       db-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8004/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
       <<: *common-healthcheck
 
   cerebellum:
@@ -262,7 +262,7 @@ services:
       db-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8003/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
       <<: *common-healthcheck
 
   working-memory:
@@ -275,7 +275,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8005/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
       <<: *common-healthcheck
 
   perception:
@@ -290,7 +290,7 @@ services:
       neocortex:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8006/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health')"]
       <<: *common-healthcheck
 
   verification:
@@ -305,7 +305,7 @@ services:
       neocortex:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8007/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8007/health')"]
       <<: *common-healthcheck
 
   cross-domain:
@@ -320,7 +320,7 @@ services:
       neocortex:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8008/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health')"]
       <<: *common-healthcheck
 
   compass:
@@ -333,7 +333,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8009/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8009/health')"]
       <<: *common-healthcheck
 
   framework-router:
@@ -346,7 +346,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8010/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/health')"]
       <<: *common-healthcheck
 
   knobs:
@@ -363,7 +363,7 @@ services:
       db-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8090/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
       <<: *common-healthcheck
 
   # ── Self-Update (supergrokie-powered code modification) ──────────────────────
@@ -410,7 +410,7 @@ services:
         condition: service_healthy
     <<: [*common-network, *common-restart]
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8011/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8011/health')"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -430,7 +430,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8012/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8012/health')"]
       <<: *common-healthcheck
 
   simulator:
@@ -441,7 +441,7 @@ services:
     <<: [*common-env, *common-network, *common-restart]
     # No external dependencies — pure sandboxed Python execution
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8013/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8013/health')"]
       <<: *common-healthcheck
 
   metacognition:
@@ -456,7 +456,7 @@ services:
       neocortex:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8014/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8014/health')"]
       <<: *common-healthcheck
 
   goals:
@@ -469,7 +469,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8015/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8015/health')"]
       <<: *common-healthcheck
 
   # ── Learner (local model — heavy, 4-8GB RAM) ──────────────────────────────
@@ -504,7 +504,7 @@ services:
         reservations:
           memory: 2g
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8016/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8016/health')"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -555,7 +555,7 @@ services:
         limits:
           memory: ${VISION_MAX_MEMORY:-4g}
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8017/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8017/health')"]
       interval: 15s
       timeout: 10s
       retries: 5
@@ -582,7 +582,7 @@ services:
       knobs:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       <<: *common-healthcheck
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -614,7 +614,7 @@ services:
         condition: service_healthy
     <<: [*common-network, *common-restart]
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8018/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8018/health')"]
       <<: *common-healthcheck
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -690,7 +690,7 @@ services:
       learner:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       timeout: 8s
       retries: 5
