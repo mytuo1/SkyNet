@@ -92,7 +92,7 @@ async def handle_context(req: ContextRequest):
             val   = r.get(key)
             if val:
                 try:    context[short] = json.loads(val)
-                except: context[short] = val
+                except (json.JSONDecodeError, TypeError, ValueError): context[short] = val
 
         # Include thought stream
         raw_thoughts = r.lrange(f"wm:{sid}:thought_stream", 0, -1)
