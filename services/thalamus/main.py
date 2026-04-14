@@ -29,6 +29,12 @@ from knobs import KnobsClient
 from events import EventBus
 from llm_provider import complete, provider_info, get_model
 
+
+async def _noop(val=None):
+    """Return a default value as an awaitable — replaces removed asyncio.coroutine."""
+    return val if val is not None else {}
+
+
 app = FastAPI(title="Thalamus", version="2.0.0",
               description="Master cognitive orchestrator — routes all inputs through brain regions")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
@@ -375,7 +381,7 @@ async def process(req: ProcessRequest):
     parallel_batch = [
         # Hippocampus
         call("hippocampus", "/recall", base_req)
-        if ar.get("needs_memory") else asyncio.coroutine(lambda: {"data": {"episodes": []}})(),
+        if ar.get("needs_memory") else _noop({"data": {"episodes": []}}),
         # Neocortex
         call("neocortex", "/search", {
             **base_req,
@@ -385,13 +391,13 @@ async def process(req: ProcessRequest):
         call("cross_domain", "/find-analogies", {
             **base_req,
             "source_domain": (ar.get("required_regions") or ["general"])[0]
-        }) if k.analogy_seeking > 0.3 else asyncio.coroutine(lambda: {"data": {"analogies": []}})(),
+        }) if k.analogy_seeking > 0.3 else _noop({"data": {"analogies": []}}),
         # Compass
         call("compass", "/read", {**base_req, "working_memory": wm}),
         # Goals agenda
         call_get("goals", f"/agenda?session_id={req.session_id}"),
         # Vision context (if requested or VISION_ENABLED)
-        call_get("vision", "/current") if req.include_vision else asyncio.coroutine(lambda: {})(),
+        call_get("vision", "/current") if req.include_vision else _noop({}),
     ]
 
     results = await asyncio.gather(*parallel_batch, return_exceptions=True)
