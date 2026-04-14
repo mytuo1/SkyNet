@@ -98,34 +98,42 @@ app = FastAPI(title="SkyNet Dashboard", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 
 
+def _parse_response(r: httpx.Response) -> JSONResponse:
+    """Return upstream JSON when possible; fall back to raw text so errors are never swallowed."""
+    try:
+        return JSONResponse(content=r.json(), status_code=r.status_code)
+    except Exception:
+        return JSONResponse({"error": r.text or f"Upstream returned {r.status_code}"}, status_code=r.status_code)
+
+
 async def _proxy_get(url: str) -> JSONResponse:
     try:
         r = await http_client.get(url)
-        return JSONResponse(content=r.json(), status_code=r.status_code)
+        return _parse_response(r)
     except httpx.ConnectError:
         return JSONResponse({"error": "Service unreachable"}, status_code=502)
-    except Exception:
-        return JSONResponse({"error": "Internal proxy error"}, status_code=500)
+    except Exception as exc:
+        return JSONResponse({"error": f"Proxy error: {exc}"}, status_code=500)
 
 
 async def _proxy_post(url: str, body: dict) -> JSONResponse:
     try:
         r = await http_client.post(url, json=body)
-        return JSONResponse(content=r.json(), status_code=r.status_code)
+        return _parse_response(r)
     except httpx.ConnectError:
         return JSONResponse({"error": "Service unreachable"}, status_code=502)
-    except Exception:
-        return JSONResponse({"error": "Internal proxy error"}, status_code=500)
+    except Exception as exc:
+        return JSONResponse({"error": f"Proxy error: {exc}"}, status_code=500)
 
 
 async def _proxy_patch(url: str, params: dict | None = None, body: dict | None = None) -> JSONResponse:
     try:
         r = await http_client.patch(url, params=params, json=body)
-        return JSONResponse(content=r.json(), status_code=r.status_code)
+        return _parse_response(r)
     except httpx.ConnectError:
         return JSONResponse({"error": "Service unreachable"}, status_code=502)
-    except Exception:
-        return JSONResponse({"error": "Internal proxy error"}, status_code=500)
+    except Exception as exc:
+        return JSONResponse({"error": f"Proxy error: {exc}"}, status_code=500)
 
 
 # ---------------------------------------------------------------------------

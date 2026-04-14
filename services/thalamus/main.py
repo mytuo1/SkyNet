@@ -103,7 +103,7 @@ async def call_llm(user_input: str, context: str, amygdala: dict, k) -> str:
     complexity = amygdala.get("complexity", "medium")
 
     # Additional system prompt from knobs
-    knob_modifier = k.build_system_prompt_modifier()
+    knob_modifier = knobs.build_system_prompt_modifier()
     prompt_additions = ""
     try:
         import redis

@@ -1,6 +1,6 @@
 # Brain System — Architecture Guide for supergrokie
 
-This repository contains a 19-service cognitive AI architecture.
+This repository contains a 21-service cognitive AI architecture.
 Each service is a FastAPI microservice in a Docker container.
 Services communicate only via HTTP — they never import each other.
 
@@ -14,7 +14,7 @@ PORT    SERVICE           PURPOSE
 8003    cerebellum        Skill registry — EdgeDB
 8004    neocortex         Semantic knowledge — Elasticsearch
 8005    working-memory    Active context — Redis
-8006    perception        Experience detection (18 types)
+8006    perception        Experience detection (21 types)
 8007    verification      3-stage fact checking
 8008    cross-domain      Structural analogy reasoning
 8009    compass           Ethical orientation (7 dimensions)
@@ -26,6 +26,8 @@ PORT    SERVICE           PURPOSE
 8015    goals             Long-horizon planning — Redis
 8016    learner           Continual local model learning
 8017    vision            Camera + CLIP visual memory
+8018    autonomy          Autonomous self-improvement loop
+8080    dashboard         Web UI — terminal, monitoring, logs, controls
 8090    knobs             Dynamic behavioral parameters — Redis
 ```
 
