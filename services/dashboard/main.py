@@ -709,7 +709,7 @@ button{font-family:var(--font)}
 #page-terminal{gap:0;position:relative;display:flex;flex-direction:column;overflow:hidden;
   padding-bottom:0 !important}
 .chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
-  padding:10px 12%;padding-top:10px;background:var(--glass-bg);backdrop-filter:blur(8px);
+  padding:10px 12%;background:var(--glass-bg);backdrop-filter:blur(8px);
   border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease;
   margin:0 0 0 0}
 .chat-log .chat-spacer{flex:1}

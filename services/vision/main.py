@@ -319,8 +319,8 @@ async def _process_image(image, session_id: str = "",
                     "Content-Type":  "application/json"
                 },
                 json={
-                    "model":      "gpt-4o-mini",
-                    "max_tokens": 300,
+                    "model":      "gpt-5.4-nano",
+                    "max_completion_tokens": 300,
                     "messages": [{
                         "role": "user",
                         "content": [

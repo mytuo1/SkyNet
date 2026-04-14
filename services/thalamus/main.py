@@ -740,13 +740,8 @@ async def process(req: ProcessRequest):
                           "corrections", "learned today"]
     if any(kw in _input_lower for kw in _learning_keywords):
         try:
-            learnings_resp = await http.get(
-                f"http://localhost:{os.getenv('PORT', '8000')}/recent-learnings"
-                f"?session_id={req.session_id}&limit=10",
-                timeout=5.0)
-            learnings = learnings_resp.json()
+            learnings = await recent_learnings(session_id=req.session_id, limit=10)
         except Exception:
-            # Fallback — just query working memory for corrections
             learnings = None
 
     context = assemble_context(
@@ -817,9 +812,12 @@ async def process(req: ProcessRequest):
                 taught_emotion = emo
                 break
         if taught_emotion and taught_emotion != ar.get("emotion"):
+            sig_words = [w for w in req.user_input.lower().split()
+                         if len(w) > 3 and w.isalpha()]
+            pattern = ".*" + ".*".join(sig_words) + ".*" if sig_words else ".*"
             asyncio.create_task(call("amygdala", "/learn-emotion", {
                 "name":     taught_emotion,
-                "patterns": [f".*{'.*'.join(w for w in req.user_input.lower().split() if len(w) > 3 and w.isalpha())}.*"],
+                "patterns": [pattern],
                 "score":    0.7,
                 "category": "taught"
             }))

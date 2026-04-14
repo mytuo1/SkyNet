@@ -269,10 +269,14 @@ async def _openai_compatible_complete(
 
     body: dict = {
         "model":       model,
-        "max_tokens":  max_tokens,
         "temperature": temperature,
         "messages":    messages,
     }
+    # GPT-5.x models use max_completion_tokens instead of max_tokens
+    if model and ("gpt-5" in model or "o1" in model or "o3" in model):
+        body["max_completion_tokens"] = max_tokens
+    else:
+        body["max_tokens"] = max_tokens
     if json_mode:
         body["response_format"] = {"type": "json_object"}
 
