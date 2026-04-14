@@ -571,11 +571,18 @@ async def process(req: ProcessRequest):
         "metadata":   req.metadata
     }
 
-    # ── STEP 1: Amygdala ──────────────────────────────────────────────────────
-    t1 = time.time()
-    ar_resp = await call("amygdala", "/evaluate", base_req)
-    ar      = ar_resp.get("data", {})
-    step_times["amygdala"] = round((time.time() - t1) * 1000, 1)
+    # ── STEPS 1-3: Amygdala + Working Memory + Cerebellum (parallel) ─────────
+    t_early = time.time()
+    ar_resp, wm_resp, cb_resp = await asyncio.gather(
+        call("amygdala", "/evaluate", base_req, timeout=10.0),
+        call("working_memory", "/context",
+             {"session_id": req.session_id, "action": "get_all"}, timeout=10.0),
+        call("cerebellum", "/recognize", base_req, timeout=10.0),
+    )
+    t_early_done = time.time()
+
+    ar = ar_resp.get("data", {})
+    step_times["amygdala"] = round((t_early_done - t_early) * 1000, 1)
     if ar_resp.get("error"):
         errors.append({"step": "amygdala", "error": ar_resp["error"]})
     trace["amygdala"] = {
@@ -585,20 +592,14 @@ async def process(req: ProcessRequest):
         "ms": step_times["amygdala"]
     }
 
-    # ── STEP 2: Working Memory ────────────────────────────────────────────────
-    t2 = time.time()
-    wm_resp = await call("working_memory", "/context",
-                          {"session_id": req.session_id, "action": "get_all"})
-    wm      = wm_resp.get("data", {})
-    step_times["working_memory"] = round((time.time() - t2) * 1000, 1)
+    wm = wm_resp.get("data", {})
+    step_times["working_memory"] = round((t_early_done - t_early) * 1000, 1)
     if wm_resp.get("error"):
         errors.append({"step": "working_memory", "error": wm_resp["error"]})
 
-    # ── STEP 3: Cerebellum (fast path check) ─────────────────────────────────
-    t3 = time.time()
-    cb_resp     = await call("cerebellum", "/recognize", base_req)
+    # ── STEP 3: Cerebellum result (ran in parallel above) ─────────────────────
     skill_match = cb_resp.get("data", {}).get("skill_match")
-    step_times["cerebellum"] = round((time.time() - t3) * 1000, 1)
+    step_times["cerebellum"] = round((t_early_done - t_early) * 1000, 1)
 
     if skill_match and skill_match.get("similarity", 0) > 0.88 \
             and skill_match.get("exec_success", False):
@@ -627,20 +628,20 @@ async def process(req: ProcessRequest):
     t4 = time.time()
     parallel_batch = [
         # Hippocampus
-        call("hippocampus", "/recall", base_req)
+        call("hippocampus", "/recall", base_req, timeout=8.0)
         if ar.get("needs_memory") else _noop({"data": {"episodes": []}}),
         # Neocortex
         call("neocortex", "/search", {
             **base_req,
             "domain": (ar.get("required_regions") or ["general"])[0]
-        }),
+        }, timeout=8.0),
         # Cross-domain
         call("cross_domain", "/find-analogies", {
             **base_req,
             "source_domain": (ar.get("required_regions") or ["general"])[0]
-        }) if k.analogy_seeking > 0.3 else _noop({"data": {"analogies": []}}),
+        }, timeout=8.0) if k.analogy_seeking > 0.3 else _noop({"data": {"analogies": []}}),
         # Compass
-        call("compass", "/read", {**base_req, "working_memory": wm}),
+        call("compass", "/read", {**base_req, "working_memory": wm}, timeout=8.0),
         # Goals agenda
         call_get("goals", f"/agenda?session_id={req.session_id}"),
         # Vision context (if requested or VISION_ENABLED)
@@ -916,39 +917,44 @@ async def process(req: ProcessRequest):
     # Store the emotional assessment alongside the interaction so the bot
     # can recall its own feelings when asked about them later.
     t14 = time.time()
-    await call("working_memory", "/context", {
-        "session_id": req.session_id, "action": "push_thought",
-        "data": {
-            "type":      "interaction",
-            "input":     req.user_input[:200],
-            "response":  final_response[:200],
-            "emotion":   ar.get("emotion", "neutral"),
-            "urgency":   ar.get("urgency", "low"),
-            "timestamp": time.time()
-        }
-    })
-    await call("working_memory", "/context", {
-        "session_id": req.session_id, "action": "set",
-        "key":        "last_response",
-        "data":       {"content": final_response[:300], "ts": time.time()}
-    })
-    # Persist last emotional state so the bot can introspect
-    await call("working_memory", "/context", {
-        "session_id": req.session_id, "action": "set",
-        "key":        "last_emotion",
-        "data":       {
-            "emotion":  ar.get("emotion", "neutral"),
-            "urgency":  ar.get("urgency", "low"),
-            "threat":   ar.get("threat_detected", False),
-            "input":    req.user_input[:100],
-            "ts":       time.time()
-        }
-    })
+    await asyncio.gather(
+        call("working_memory", "/context", {
+            "session_id": req.session_id, "action": "push_thought",
+            "data": {
+                "type":      "interaction",
+                "input":     req.user_input[:200],
+                "response":  final_response[:200],
+                "emotion":   ar.get("emotion", "neutral"),
+                "urgency":   ar.get("urgency", "low"),
+                "timestamp": time.time()
+            }
+        }),
+        call("working_memory", "/context", {
+            "session_id": req.session_id, "action": "set",
+            "key":        "last_response",
+            "data":       {"content": final_response[:300], "ts": time.time()}
+        }),
+        # Persist last emotional state so the bot can introspect
+        call("working_memory", "/context", {
+            "session_id": req.session_id, "action": "set",
+            "key":        "last_emotion",
+            "data":       {
+                "emotion":  ar.get("emotion", "neutral"),
+                "urgency":  ar.get("urgency", "low"),
+                "threat":   ar.get("threat_detected", False),
+                "input":    req.user_input[:100],
+                "ts":       time.time()
+            }
+        }),
+    )
     step_times["working_memory_update"] = round((time.time() - t14) * 1000, 1)
 
-    # ── STEP 15: DB writes — track success/failure in trace ───────────────────
+    # ── STEP 15: DB writes — fire-and-forget (don't block response) ──────────
     t15 = time.time()
-    db_ops = []   # list of {"op": name, "ok": bool, "error": str|None}
+    db_ops = [
+        {"op": "hippocampus_encode", "ok": True, "error": None},
+        {"op": "learner_experience", "ok": True, "error": None},
+    ]
 
     quality = min(1.0, (
         metacognition.get("confidence", 0.7) * 0.4 +
@@ -956,38 +962,25 @@ async def process(req: ProcessRequest):
         (0.8 if verification.get("status") in ("confirmed","probable") else 0.5) * 0.3
     ))
 
-    # Run hippocampus encode + learner experience in parallel (awaited, not fire-and-forget)
-    db_batch = [
-        call("hippocampus", "/encode", {
-            **base_req,
-            "content":   f"Q: {req.user_input}\nA: {final_response[:400]}",
-            "emotion":   ar.get("emotion", "neutral"),
-            "importance": ar.get("importance", 0.5),
-            "concepts":  ar.get("required_regions", [])
-        }),
-        call("learner", "/experience", {
-            "session_id": req.session_id,
-            "user_input": req.user_input,
-            "response":   final_response[:600],
-            "quality":    quality,
-            "domain":     (ar.get("required_regions") or ["general"])[0],
-            "emotion":    ar.get("emotion", "neutral"),
-            "source":     "claude"
-        }),
-    ]
-    db_results = await asyncio.gather(*db_batch, return_exceptions=True)
+    # Fire-and-forget: these write ops don't affect the response
+    asyncio.create_task(call("hippocampus", "/encode", {
+        **base_req,
+        "content":   f"Q: {req.user_input}\nA: {final_response[:400]}",
+        "emotion":   ar.get("emotion", "neutral"),
+        "importance": ar.get("importance", 0.5),
+        "concepts":  ar.get("required_regions", [])
+    }))
+    asyncio.create_task(call("learner", "/experience", {
+        "session_id": req.session_id,
+        "user_input": req.user_input,
+        "response":   final_response[:600],
+        "quality":    quality,
+        "domain":     (ar.get("required_regions") or ["general"])[0],
+        "emotion":    ar.get("emotion", "neutral"),
+        "source":     "claude"
+    }))
 
-    db_names = ["hippocampus_encode", "learner_experience"]
-    for i, name in enumerate(db_names):
-        res = db_results[i]
-        if isinstance(res, (Exception, BaseException)):
-            db_ops.append({"op": name, "ok": False, "error": str(res)[:120]})
-        elif isinstance(res, dict) and res.get("error"):
-            db_ops.append({"op": name, "ok": False, "error": str(res["error"])[:120]})
-        else:
-            db_ops.append({"op": name, "ok": True, "error": None})
-
-    # Self-update analysis (still background — can be slow)
+    # Self-update analysis (background — can be slow)
     if significance > 0.70 and experiences:
         asyncio.create_task(call("self_update", "/self-analyze", {
             "session_id":  req.session_id,
