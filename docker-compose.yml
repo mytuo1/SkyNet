@@ -149,12 +149,13 @@ services:
     environment:
       - EDGEDB_SERVER_SECURITY=insecure_dev_mode
       - EDGEDB_SERVER_BIND_ADDRESS=0.0.0.0
+      - EDGEDB_CLIENT_TLS_SECURITY=insecure
     volumes:
       - edgedb-data:/var/lib/edgedb/data
       - ./databases/edgedb/schema:/dbschema
     <<: [*common-network, *common-restart]
     healthcheck:
-      test: ["CMD-SHELL", "edgedb query --dsn edgedb://edgedb/main 'SELECT 1' 2>/dev/null && echo ok"]
+      test: ["CMD-SHELL", "edgedb query --dsn edgedb://localhost:5656 --tls-security=insecure 'SELECT 1' 2>/dev/null && echo ok"]
       interval: 15s
       timeout: 8s
       retries: 20
@@ -168,7 +169,7 @@ services:
     container_name: brain_db_init
     command: >
       sh -c "
-        pip install -q redis==5.0.4 elasticsearch==8.13.0 edgedb==1.8.0 &&
+        pip install -q redis==5.0.4 elasticsearch==8.13.0 edgedb==2.2.0 &&
         echo '--- Redis init ---' &&
         python /init/redis/init.py &&
         echo '--- Elasticsearch init ---' &&
@@ -183,6 +184,7 @@ services:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-http://elasticsearch:9200}
       - EDGEDB_DSN=${EDGEDB_DSN:-edgedb://edgedb/main}
+      - EDGEDB_CLIENT_TLS_SECURITY=insecure
     depends_on:
       redis:
         condition: service_healthy
