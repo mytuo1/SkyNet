@@ -44,6 +44,9 @@ knobs  = KnobsClient()
 events = EventBus()
 http   = httpx.AsyncClient(timeout=120.0)
 
+# Dashboard URL for metrics reporting
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://dashboard:8080")
+
 # ── Service registry ──────────────────────────────────────────────────────────
 SERVICES = {
     # Core brain regions
@@ -68,36 +71,71 @@ SERVICES = {
     "vision":          os.getenv("VISION_URL",            "http://vision:8017"),
 }
 
+# Map internal service names (with underscores) to dashboard names (with hyphens)
+_SVC_DASH_NAME = {
+    "working_memory": "working-memory",
+    "cross_domain": "cross-domain",
+    "causal_graph": "causal-graph",
+    "self_update": "self-update",
+    "framework": "framework-router",
+}
+
+
+async def _report_metric(service: str, latency_ms: float, status: str = "ok"):
+    """Fire-and-forget metric report to dashboard."""
+    dash_name = _SVC_DASH_NAME.get(service, service)
+    try:
+        await http.post(f"{DASHBOARD_URL}/api/metrics/record", json={
+            "service":    dash_name,
+            "latency_ms": round(latency_ms, 2),
+            "status":     status,
+            "timestamp":  time.time()
+        }, timeout=2.0)
+    except Exception:
+        pass  # metrics are best-effort
+
 
 class ProcessRequest(BaseModel):
     session_id:     str
     user_input:     str
     metadata:       dict = {}
     include_vision: bool = False   # attach current visual context
+    teacher_mode:   bool = False   # when True, user is teaching/correcting the system
 
 
 async def call(service: str, path: str, data: dict,
                timeout: float = 30.0) -> dict:
     """Call a brain region. Returns {} on failure — brain degrades gracefully."""
     url = f"{SERVICES[service]}{path}"
+    t0 = time.time()
     try:
         resp = await http.post(url, json=data, timeout=timeout)
+        latency_ms = (time.time() - t0) * 1000
+        asyncio.create_task(_report_metric(service, latency_ms, "ok"))
         return resp.json()
     except Exception as e:
+        latency_ms = (time.time() - t0) * 1000
+        asyncio.create_task(_report_metric(service, latency_ms, "error"))
         return {"success": False, "error": str(e)[:60], "data": {}}
 
 
 async def call_get(service: str, path: str, timeout: float = 10.0) -> dict:
     """GET call to a brain region."""
     url = f"{SERVICES[service]}{path}"
+    t0 = time.time()
     try:
         resp = await http.get(url, timeout=timeout)
+        latency_ms = (time.time() - t0) * 1000
+        asyncio.create_task(_report_metric(service, latency_ms, "ok"))
         return resp.json()
     except Exception as e:
+        latency_ms = (time.time() - t0) * 1000
+        asyncio.create_task(_report_metric(service, latency_ms, "error"))
         return {"error": str(e)[:60]}
 
 
-async def call_llm(user_input: str, context: str, amygdala: dict, k) -> str:
+async def call_llm(user_input: str, context: str, amygdala: dict, k,
+                   teacher_mode: bool = False) -> str:
     """Call LLM provider (Anthropic or OpenAI) with cognitive context."""
     urgency    = amygdala.get("urgency", "low")
     complexity = amygdala.get("complexity", "medium")
@@ -113,11 +151,31 @@ async def call_llm(user_input: str, context: str, amygdala: dict, k) -> str:
     except Exception:
         pass
 
-    system = (
-        "You are the reasoning center of a cognitive architecture. "
-        "Multiple memory and perception systems have prepared context for you. "
-        "Use this context naturally — let it inform your response without announcing it.\n\n"
-    )
+    if teacher_mode:
+        system = (
+            "You are in TEACHER MODE. The user is your teacher — they are "
+            "correcting your emotional understanding, knowledge, or behavior. "
+            "Treat their input as authoritative corrections.\n\n"
+            "If they tell you that you should feel a certain emotion about "
+            "something, acknowledge it and explain what you learned. "
+            "If they correct factual information, accept the correction. "
+            "If they give you context about why an emotion is appropriate, "
+            "absorb it and confirm your understanding.\n\n"
+            "Be humble, attentive, and grateful. Confirm what you learned "
+            "in a brief, natural way.\n\n"
+        )
+    else:
+        system = (
+            "You are the reasoning center of a cognitive architecture. "
+            "Multiple memory and perception systems have prepared context for you. "
+            "Use this context naturally — let it inform your response without announcing it.\n\n"
+            "IMPORTANT: You have emotional self-awareness. Your amygdala assesses "
+            "emotions for each interaction. If the user asks about your feelings, "
+            "emotions, or why you reacted a certain way, look at your Cognitive State "
+            "and Emotional State sections in the context. Explain honestly why you "
+            "felt that way based on the input content. If the assessment seems wrong, "
+            "acknowledge it.\n\n"
+        )
     if urgency == "critical":
         system += "URGENCY IS CRITICAL — be concise and direct above all else.\n"
     if complexity == "high":
@@ -150,7 +208,8 @@ def assemble_context(
     metacognition: dict,
     visual:        dict,
     agenda:        list,
-    k
+    k,
+    learnings:     dict = None
 ) -> str:
     """Assemble complete cognitive context for the LLM."""
     parts = []
@@ -247,18 +306,41 @@ def assemble_context(
                 f"(strength={edge.get('strength',0):.2f})"
             )
 
-    # Conversation history
+    # Conversation history (including emotional state per turn)
     thoughts = wm.get("thought_stream", [])
     if thoughts:
-        recent = [t for t in thoughts[:6]
+        recent = [t for t in thoughts[:8]
                   if isinstance(t, dict) and t.get("type") == "interaction"]
+        corrections = [t for t in thoughts[:8]
+                       if isinstance(t, dict) and t.get("type") == "emotion_correction"]
         if recent:
             parts.append("\n## Recent Conversation")
-            for t in recent[:4]:
+            for t in recent[:5]:
+                emo_tag = ""
+                if t.get("emotion"):
+                    emo_tag = f" [felt: {t['emotion']}]"
                 parts.append(
                     f"User: {t.get('input','')[:100]}\n"
-                    f"System: {t.get('response','')[:100]}"
+                    f"You: {t.get('response','')[:100]}{emo_tag}"
                 )
+        if corrections:
+            parts.append("\n## Emotion Corrections (Teacher Feedback)")
+            for c in corrections[:3]:
+                parts.append(
+                    f"- For \"{c.get('input','')[:60]}\" you detected "
+                    f"'{c.get('detected_emotion','')}' but the correct "
+                    f"emotion was '{c.get('correct_emotion','')}'."
+                )
+
+    # Last emotional state for introspection
+    last_emo = wm.get("last_emotion") or {}
+    if last_emo and last_emo.get("emotion") and last_emo["emotion"] != "neutral":
+        parts.append(
+            f"\n## Your Previous Emotional State\n"
+            f"For input \"{last_emo.get('input','')[:60]}\" you felt "
+            f"'{last_emo.get('emotion','')}' with urgency "
+            f"'{last_emo.get('urgency','low')}'."
+        )
 
     # Episodic memory
     if episodic:
@@ -297,6 +379,22 @@ def assemble_context(
         parts.append("\n## New Experiences This Interaction")
         for e in novel_exps[:3]:
             parts.append(f"- {e.get('experience_type')}: {e.get('content','')[:80]}")
+
+    # What I've learned (when user asks about learnings)
+    if learnings:
+        parts.append("\n## What You Have Learned (Self-Knowledge)")
+        parts.append(learnings.get("summary", "No learnings summary available."))
+        wm_corr = learnings.get("working_memory", {}).get("corrections", [])
+        if wm_corr:
+            parts.append("Recent corrections from teacher feedback:")
+            for c in wm_corr[:3]:
+                parts.append(
+                    f"- Corrected '{c.get('detected_emotion','')}' to "
+                    f"'{c.get('correct_emotion','')}' for: \"{c.get('input','')[:50]}\""
+                )
+        learned_emos = learnings.get("emotions", {}).get("learned", [])
+        if learned_emos:
+            parts.append(f"Newly learned emotions: {', '.join(learned_emos[:8])}")
 
     return "\n".join(parts)
 
@@ -380,6 +478,76 @@ async def teach_emotion(req: TeachEmotionRequest):
         "correct":  req.correct_emotion,
         "message":  f"Thanks! I'll remember that '{req.user_input[:50]}' "
                     f"feels like {req.correct_emotion}, not {req.detected_emotion}."
+    }
+
+
+@app.get("/recent-learnings")
+async def recent_learnings(session_id: str = "", limit: int = 20):
+    """
+    Aggregate recent learnings from hippocampus, learner, and working memory.
+    Used by the LLM to answer "what have you learned?" questions.
+    """
+    results = await asyncio.gather(
+        # Recent hippocampus episodes
+        call_get("hippocampus", "/stats"),
+        # Learner training history
+        call_get("learner", f"/training-history?limit={limit}"),
+        # Learner status (buffer size, corrections count)
+        call_get("learner", "/status"),
+        # Working memory (conversation + corrections)
+        call("working_memory", "/context", {
+            "session_id": session_id or "global",
+            "action": "get_all"
+        }) if session_id else _noop({"data": {}}),
+        # Amygdala learned emotions
+        call_get("amygdala", "/emotions"),
+        return_exceptions=True
+    )
+
+    def _safe(r):
+        if isinstance(r, (Exception, BaseException)):
+            return {}
+        return r if isinstance(r, dict) else {}
+
+    hippo_stats    = _safe(results[0])
+    train_history  = _safe(results[1]).get("history", [])
+    learner_status = _safe(results[2])
+    wm_data        = _safe(results[3]).get("data", {})
+    emotions_data  = _safe(results[4])
+
+    # Extract emotion corrections from working memory
+    thoughts = wm_data.get("thought_stream", [])
+    corrections = [t for t in (thoughts or [])
+                   if isinstance(t, dict) and t.get("type") == "emotion_correction"]
+    interactions = [t for t in (thoughts or [])
+                    if isinstance(t, dict) and t.get("type") == "interaction"]
+
+    return {
+        "hippocampus": {
+            "total_episodes":  hippo_stats.get("total_episodes", 0),
+            "unconsolidated":  hippo_stats.get("unconsolidated", 0),
+        },
+        "learner": {
+            "replay_buffer_size":  learner_status.get("replay_buffer_size", 0),
+            "emotion_corrections": learner_status.get("emotion_corrections", 0),
+            "training_runs":       len(train_history),
+            "recent_training":     train_history[:3],
+        },
+        "working_memory": {
+            "interactions":       len(interactions),
+            "emotion_corrections": len(corrections),
+            "corrections":        corrections[:5],
+        },
+        "emotions": {
+            "learned_count": len(emotions_data.get("learned_emotions", {})),
+            "learned":       list(emotions_data.get("learned_emotions", {}).keys()),
+        },
+        "summary": (
+            f"I have {hippo_stats.get('total_episodes', 0)} memories stored, "
+            f"{len(interactions)} conversations this session, "
+            f"{len(corrections)} emotion corrections from teacher feedback, "
+            f"and {len(emotions_data.get('learned_emotions', {}))} new emotions learned."
+        )
     }
 
 
@@ -564,6 +732,23 @@ async def process(req: ProcessRequest):
                            "ms": step_times["perception"]}
 
     # ── STEP 8: Assemble cognitive context ────────────────────────────────────
+    # Detect if user is asking about learnings/knowledge/memory
+    learnings = None
+    _input_lower = req.user_input.lower()
+    _learning_keywords = ["learned", "learning", "know now", "remember",
+                          "new knowledge", "what do you know", "teach",
+                          "corrections", "learned today"]
+    if any(kw in _input_lower for kw in _learning_keywords):
+        try:
+            learnings_resp = await http.get(
+                f"http://localhost:{os.getenv('PORT', '8000')}/recent-learnings"
+                f"?session_id={req.session_id}&limit=10",
+                timeout=5.0)
+            learnings = learnings_resp.json()
+        except Exception:
+            # Fallback — just query working memory for corrections
+            learnings = None
+
     context = assemble_context(
         user_input    = req.user_input,
         amygdala      = ar,
@@ -577,7 +762,8 @@ async def process(req: ProcessRequest):
         metacognition = metacognition,
         visual        = visual,
         agenda        = agenda,
-        k             = k
+        k             = k,
+        learnings     = learnings
     )
 
     # ── STEP 9: Reasoning (direct or multi-agent) ─────────────────────────────
@@ -587,7 +773,7 @@ async def process(req: ProcessRequest):
         ar.get("complexity") == "high"
         or word_count > k.framework_threshold
         or novelty_score > 0.82
-    )
+    ) and not req.teacher_mode   # teacher mode always uses direct LLM
 
     if use_framework:
         trace["reasoning_path"] = "framework"
@@ -603,9 +789,56 @@ async def process(req: ProcessRequest):
         if fw_resp.get("error"):
             errors.append({"step": "framework", "error": fw_resp["error"]})
     else:
-        trace["reasoning_path"] = "llm_direct"
-        raw_response = await call_llm(req.user_input, context, ar, k)
+        trace["reasoning_path"] = "teacher_direct" if req.teacher_mode else "llm_direct"
+        raw_response = await call_llm(req.user_input, context, ar, k,
+                                       teacher_mode=req.teacher_mode)
     step_times["reasoning"] = round((time.time() - t9) * 1000, 1)
+
+    # ── STEP 9b: Teacher mode — extract and apply emotion corrections ─────────
+    if req.teacher_mode:
+        trace["teacher_mode"] = True
+        # Try to detect emotion words in teacher input and teach the amygdala
+        input_lower = req.user_input.lower()
+        # Known emotion names from GoEmotions + custom
+        all_emotions = [
+            "admiration", "amusement", "approval", "caring", "desire",
+            "excitement", "gratitude", "joy", "love", "optimism", "pride",
+            "relief", "anger", "annoyance", "disappointment", "disapproval",
+            "disgust", "embarrassment", "fear", "grief", "nervousness",
+            "remorse", "sadness", "confusion", "curiosity", "realization",
+            "surprise", "neutral", "belonging", "alarm", "regret",
+            "distress", "urgency", "creative"
+        ]
+        # Look for patterns like "that was curiosity" or "feel happy" or
+        # "the correct emotion is joy" or "this should be neutral"
+        taught_emotion = None
+        for emo in all_emotions:
+            if emo in input_lower:
+                taught_emotion = emo
+                break
+        if taught_emotion and taught_emotion != ar.get("emotion"):
+            asyncio.create_task(call("amygdala", "/learn-emotion", {
+                "name":     taught_emotion,
+                "patterns": [f".*{'.*'.join(w for w in req.user_input.lower().split() if len(w) > 3 and w.isalpha())}.*"],
+                "score":    0.7,
+                "category": "taught"
+            }))
+            # Store the correction in working memory
+            asyncio.create_task(call("working_memory", "/context", {
+                "session_id": req.session_id,
+                "action":     "push_thought",
+                "data": {
+                    "type":             "emotion_correction",
+                    "detected_emotion": ar.get("emotion", "neutral"),
+                    "correct_emotion":  taught_emotion,
+                    "input":            req.user_input[:200],
+                    "timestamp":        time.time()
+                }
+            }))
+            trace["emotion_taught"] = {
+                "from": ar.get("emotion"),
+                "to":   taught_emotion
+            }
 
     # ── STEP 10: Simulator grounding (for factual/math claims) ────────────────
     t10 = time.time()
@@ -681,15 +914,7 @@ async def process(req: ProcessRequest):
         trace["compass_enriched"] = True
     step_times["compass_enrich"] = round((time.time() - t12) * 1000, 1)
 
-    # ── STEP 13: Extract causal relations from response ───────────────────────
-    asyncio.create_task(call("causal_graph", "/extract", {
-        "request_id": request_id,
-        "session_id": req.session_id,
-        "text":       final_response[:600],
-        "domain":     (ar.get("required_regions") or ["general"])[0]
-    }))
-
-    # ── STEP 14: Update Working Memory ────────────────────────────────────────
+    # ── STEP 13: Update Working Memory ────────────────────────────────────────
     # Store the emotional assessment alongside the interaction so the bot
     # can recall its own feelings when asked about them later.
     t14 = time.time()
@@ -723,31 +948,48 @@ async def process(req: ProcessRequest):
     })
     step_times["working_memory_update"] = round((time.time() - t14) * 1000, 1)
 
-    # ── STEP 15: Background tasks ─────────────────────────────────────────────
+    # ── STEP 15: DB writes — track success/failure in trace ───────────────────
+    t15 = time.time()
+    db_ops = []   # list of {"op": name, "ok": bool, "error": str|None}
+
     quality = min(1.0, (
         metacognition.get("confidence", 0.7) * 0.4 +
         (1.0 - novelty_score) * 0.3 +
         (0.8 if verification.get("status") in ("confirmed","probable") else 0.5) * 0.3
     ))
 
-    asyncio.create_task(call("hippocampus", "/encode", {
-        **base_req,
-        "content":   f"Q: {req.user_input}\nA: {final_response[:400]}",
-        "emotion":   ar.get("emotion", "neutral"),
-        "importance": ar.get("importance", 0.5),
-        "concepts":  ar.get("required_regions", [])
-    }))
+    # Run hippocampus encode + learner experience in parallel (awaited, not fire-and-forget)
+    db_batch = [
+        call("hippocampus", "/encode", {
+            **base_req,
+            "content":   f"Q: {req.user_input}\nA: {final_response[:400]}",
+            "emotion":   ar.get("emotion", "neutral"),
+            "importance": ar.get("importance", 0.5),
+            "concepts":  ar.get("required_regions", [])
+        }),
+        call("learner", "/experience", {
+            "session_id": req.session_id,
+            "user_input": req.user_input,
+            "response":   final_response[:600],
+            "quality":    quality,
+            "domain":     (ar.get("required_regions") or ["general"])[0],
+            "emotion":    ar.get("emotion", "neutral"),
+            "source":     "claude"
+        }),
+    ]
+    db_results = await asyncio.gather(*db_batch, return_exceptions=True)
 
-    asyncio.create_task(call("learner", "/experience", {
-        "session_id": req.session_id,
-        "user_input": req.user_input,
-        "response":   final_response[:600],
-        "quality":    quality,
-        "domain":     (ar.get("required_regions") or ["general"])[0],
-        "emotion":    ar.get("emotion", "neutral"),
-        "source":     "claude"
-    }))
+    db_names = ["hippocampus_encode", "learner_experience"]
+    for i, name in enumerate(db_names):
+        res = db_results[i]
+        if isinstance(res, (Exception, BaseException)):
+            db_ops.append({"op": name, "ok": False, "error": str(res)[:120]})
+        elif isinstance(res, dict) and res.get("error"):
+            db_ops.append({"op": name, "ok": False, "error": str(res["error"])[:120]})
+        else:
+            db_ops.append({"op": name, "ok": True, "error": None})
 
+    # Self-update analysis (still background — can be slow)
     if significance > 0.70 and experiences:
         asyncio.create_task(call("self_update", "/self-analyze", {
             "session_id":  req.session_id,
@@ -760,6 +1002,14 @@ async def process(req: ProcessRequest):
             "auto_apply": True
         }, timeout=90.0))
 
+    # Causal graph extraction (background)
+    asyncio.create_task(call("causal_graph", "/extract", {
+        "request_id": request_id,
+        "session_id": req.session_id,
+        "text":       final_response[:600],
+        "domain":     (ar.get("required_regions") or ["general"])[0]
+    }))
+
     # Consolidation check
     wm_pressure = wm_resp.get("data", {}).get("pressure", 0.0)
     if isinstance(wm_pressure, dict):
@@ -768,10 +1018,15 @@ async def process(req: ProcessRequest):
         asyncio.create_task(call("hippocampus", "/consolidate",
                                   {"max_items": 8}))
 
+    step_times["db_writes"] = round((time.time() - t15) * 1000, 1)
     execution_ms = round((time.time() - start) * 1000, 2)
     trace["step_times_ms"] = step_times
+    trace["db_operations"] = db_ops
     if errors:
         trace["errors"] = errors
+
+    # Report thalamus-level metric (the overall /process latency)
+    asyncio.create_task(_report_metric("thalamus", execution_ms, "ok"))
 
     return {
         "request_id":        request_id,
@@ -795,5 +1050,6 @@ async def process(req: ProcessRequest):
         },
         "active_goals":      len(agenda),
         "llm_provider":      provider_info().get("provider"),
+        "teacher_mode":      req.teacher_mode,
         "trace":             trace
     }

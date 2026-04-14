@@ -161,6 +161,12 @@ async def api_teach_emotion(body: dict):
     return await _proxy_post(f"{THALAMUS_URL}/teach-emotion", body)
 
 
+@app.get("/api/recent-learnings")
+async def api_recent_learnings(session_id: str = ""):
+    return await _proxy_get(
+        f"{THALAMUS_URL}/recent-learnings?session_id={session_id}&limit=20")
+
+
 @app.get("/api/knobs")
 async def api_knobs():
     return await _proxy_get(f"{KNOBS_URL}/current")
@@ -487,11 +493,30 @@ async def ws_events(ws: WebSocket):
                     data = json.loads(msg["data"])
                 except (json.JSONDecodeError, TypeError):
                     data = {"raw": msg["data"]}
+                channel = msg["channel"]
+                ts = time.time()
                 await ws.send_json({
-                    "channel": msg["channel"],
+                    "channel": channel,
                     "data": data,
-                    "ts": time.time(),
+                    "ts": ts,
                 })
+                # Also persist to service logs so the Logging page shows them
+                svc_name = _channel_to_service(channel, data)
+                log_entry = json.dumps({
+                    "service":   svc_name,
+                    "level":     "info",
+                    "message":   f"[{channel}] {json.dumps(data)[:200]}",
+                    "timestamp": ts,
+                })
+                try:
+                    pipe = redis_pool.pipeline()
+                    pipe.lpush(f"logs:{svc_name}", log_entry)
+                    pipe.ltrim(f"logs:{svc_name}", 0, MAX_LOGS_PER_SERVICE - 1)
+                    pipe.lpush("logs:_all", log_entry)
+                    pipe.ltrim("logs:_all", 0, MAX_LOGS_PER_SERVICE - 1)
+                    await pipe.execute()
+                except Exception:
+                    pass
             await asyncio.sleep(0.05)
     except WebSocketDisconnect:
         pass
@@ -500,6 +525,30 @@ async def ws_events(ws: WebSocket):
     finally:
         await pubsub.unsubscribe(*PUBSUB_CHANNELS)
         await pubsub.aclose()
+
+
+# Map pubsub channels to service names for log storage
+_CHANNEL_SERVICE_MAP = {
+    "experience.new": "perception",
+    "memory.consolidate": "hippocampus",
+    "knowledge.updated": "neocortex",
+    "skill.learned": "cerebellum",
+    "knobs.updated": "knobs",
+    "verification.failed": "verification",
+    "verification.contested": "verification",
+    "self.update.triggered": "self-update",
+    "session.started": "thalamus",
+    "session.ended": "thalamus",
+    "analogical.insight": "cross-domain",
+    "pattern.registered": "learner",
+}
+
+
+def _channel_to_service(channel: str, data: dict) -> str:
+    """Derive a service name from a pubsub channel and payload."""
+    if isinstance(channel, bytes):
+        channel = channel.decode()
+    return _CHANNEL_SERVICE_MAP.get(channel, data.get("service", "system"))
 
 
 # ---------------------------------------------------------------------------
@@ -635,7 +684,9 @@ button{font-family:var(--font)}
 .brain-thumb{position:fixed;top:54px;right:12px;width:180px;height:140px;z-index:10;
   cursor:pointer;background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
   border:1px solid var(--border);border-radius:var(--radius);
-  padding:4px;transition:all .25s ease;overflow:hidden}
+  padding:4px;transition:all .35s ease;overflow:hidden;transform-origin:top right}
+.brain-thumb.expanded{width:270px;height:210px;z-index:25;
+  box-shadow:0 8px 30px rgba(0,0,0,.5);border-color:rgba(0,212,255,.3)}
 .brain-thumb:hover{border-color:rgba(0,212,255,.4);box-shadow:0 0 15px var(--glow-accent)}
 .brain-thumb canvas{width:100%;height:100%;display:block;border-radius:calc(var(--radius) - 4px)}
 .brain-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;
@@ -911,13 +962,9 @@ button{font-family:var(--font)}
     <button class="chat-btn" id="chat-send">Send</button>
   </div>
   <!-- Teacher Mode Bar -->
-  <div id="teacher-bar" style="display:none;margin:0 210px;padding:8px 12px;background:rgba(255,214,0,.08);border:1px solid var(--warning);border-top:none;border-radius:0 0 var(--radius) var(--radius);font-size:.82rem;gap:8px;align-items:center">
-    <span style="color:var(--warning);font-weight:700">&#x1F4DA; Teacher Mode</span>
-    <span id="teacher-detected" style="color:var(--text-dim);margin-left:8px">Detected: —</span>
-    <select id="teacher-correct" style="padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--surface-solid);color:var(--text);font-size:.8rem;margin-left:8px"></select>
-    <input type="text" id="teacher-explain" placeholder="Why? (optional context)" style="flex:1;padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:rgba(10,14,23,.5);color:var(--text);font-size:.8rem;margin-left:8px"/>
-    <button id="teacher-submit" style="padding:4px 14px;border-radius:4px;border:1px solid var(--warning);background:rgba(255,214,0,.15);color:var(--warning);cursor:pointer;font-weight:700;font-size:.8rem;margin-left:8px">Teach</button>
-    <button id="teacher-cancel" style="padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--surface-solid);color:var(--text-dim);cursor:pointer;font-size:.8rem;margin-left:4px">Cancel</button>
+  <div id="teacher-bar" style="display:none;margin:0 210px;padding:6px 12px;background:rgba(255,214,0,.08);border:1px solid var(--warning);border-top:none;border-radius:0 0 var(--radius) var(--radius);font-size:.78rem;align-items:center;color:var(--warning)">
+    <span style="font-weight:700">&#x1F4DA; Teacher Mode Active</span>
+    <span style="color:var(--text-dim);margin-left:8px">— your messages teach the brain. Type <code>/teach</code> again to exit.</span>
   </div>
 </div>
 
@@ -1241,6 +1288,17 @@ function initModalRenderer(){
 
 /* -- Brain open/close ------------------------------------------------- */
 $('#brain-thumb').addEventListener('click',function(){
+  var thumb=$('#brain-thumb');
+  if(thumb.classList.contains('expanded')){
+    thumb.classList.remove('expanded');
+    brainModalOpen=false;
+  }else{
+    thumb.classList.add('expanded');
+    brainModalOpen=true;
+  }
+});
+$('#brain-thumb').addEventListener('dblclick',function(){
+  /* Double-click opens the full modal for detailed inspection */
   brainModalOpen=true;
   $('#brain-modal-overlay').classList.add('open');
 });
@@ -1546,19 +1604,85 @@ $('#emo-expand-btn').addEventListener('click',function(){
 /* -- Chat / Terminal -------------------------------------------------- */
 var busy=false;
 var camStream=null,camEnabled=false,sttActive=false;
+var teacherMode=false;
 
 $('#chat-send').addEventListener('click',sendMessage);
 $('#chat-input').addEventListener('keydown',function(e){if(e.key==='Enter'&&!busy)sendMessage()});
+
+function toggleTeacherMode(){
+  teacherMode=!teacherMode;
+  var bar=$('#teacher-bar');
+  var btn=$('#chat-send');
+  var inp=$('#chat-input');
+  if(teacherMode){
+    bar.style.display='flex';
+    btn.textContent='\uD83D\uDCDA Teach';
+    btn.style.background='linear-gradient(135deg,var(--warning),#e6a800)';
+    inp.placeholder='Teach the brain... (e.g. "that was curiosity, not alarm")';
+    appendMsg('bot','<span style="color:var(--warning);font-weight:700">\uD83D\uDCDA Teacher Mode ON</span> — I\'m listening as your student. Tell me what I should feel, know, or correct. Type <code>/teach</code> to exit.');
+  }else{
+    bar.style.display='none';
+    btn.textContent='Send';
+    btn.style.background='';
+    inp.placeholder='Talk to the brain... (type /teach to enter teacher mode)';
+    appendMsg('bot','<span style="color:var(--text-dim)">\uD83D\uDCDA Teacher Mode OFF</span> — back to normal conversation.');
+  }
+}
 
 function sendMessage(){
   var inp=$('#chat-input');
   var text=inp.value.trim();
   if(!text||busy)return;
+
+  /* Slash commands */
+  if(text.toLowerCase()==='/teach'){
+    inp.value='';
+    toggleTeacherMode();
+    return;
+  }
+  if(text.toLowerCase()==='/learnings'||text.toLowerCase()==='/learned'){
+    inp.value='';
+    appendMsg('user',esc(text));
+    fetch('/api/recent-learnings?session_id='+encodeURIComponent(SESSION))
+      .then(function(r){return r.json()})
+      .then(function(d){
+        var html='<b>\uD83E\uDDE0 What I\'ve Learned</b><br>';
+        html+=esc(d.summary||'No learnings yet.')+'<br><br>';
+        if(d.emotions&&d.emotions.learned&&d.emotions.learned.length>0){
+          html+='<b>New emotions:</b> '+d.emotions.learned.map(esc).join(', ')+'<br>';
+        }
+        if(d.working_memory&&d.working_memory.corrections&&d.working_memory.corrections.length>0){
+          html+='<b>Emotion corrections:</b><br>';
+          d.working_memory.corrections.forEach(function(c){
+            html+='&bull; '+esc(c.detected_emotion||'')+' \u2192 '+esc(c.correct_emotion||'')+' for "'+esc((c.input||'').slice(0,40))+'"<br>';
+          });
+        }
+        html+='<br><span style="color:var(--text-dim)">Memories: '+
+          (d.hippocampus?d.hippocampus.total_episodes:0)+
+          ' | Buffer: '+(d.learner?d.learner.replay_buffer_size:0)+
+          ' | Training runs: '+(d.learner?d.learner.training_runs:0)+'</span>';
+        appendMsg('bot',html);
+      })
+      .catch(function(e){appendMsg('bot','<span class="error-box">Error: '+esc(e.message)+'</span>')});
+    return;
+  }
+  if(text.toLowerCase()==='/help'){
+    inp.value='';
+    appendMsg('bot',
+      '<b>Commands:</b><br>'+
+      '<code>/teach</code> — toggle teacher mode (correct emotions, teach knowledge)<br>'+
+      '<code>/learnings</code> — show what the brain has learned<br>'+
+      '<code>/help</code> — show this help'
+    );
+    return;
+  }
+
   busy=true;inp.value='';$('#chat-send').disabled=true;
-  appendMsg('user',esc(text));
+  var role=teacherMode?'user teacher':'user';
+  appendMsg(role,esc(text));
   animateBrainPipeline([]);
   var t0=performance.now();
-  var payload={user_input:text,session_id:SESSION};
+  var payload={user_input:text,session_id:SESSION,teacher_mode:teacherMode};
   if(camEnabled){var frame=captureFrame();if(frame)payload.image=frame}
   fetch('/api/process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
     .then(function(r){return r.json()})
@@ -1575,7 +1699,13 @@ function sendMessage(){
 function appendMsg(role,html){
   var log=$('#chat-log');
   var div=document.createElement('div');
-  div.className='msg '+role;div.innerHTML=html;
+  var cls=role.split(' ')[0];  /* 'user' or 'bot' */
+  div.className='msg '+cls;
+  if(role.indexOf('teacher')>=0){
+    div.style.borderLeft='3px solid var(--warning)';
+    html='<span style="font-size:.68rem;color:var(--warning);font-weight:700;letter-spacing:.5px">\uD83D\uDCDA TEACHER</span><br>'+html;
+  }
+  div.innerHTML=html;
   log.appendChild(div);log.scrollTop=log.scrollHeight;
 }
 
@@ -1596,13 +1726,71 @@ function appendBotMsg(d,latency){
   if(urgency!=='')meta+='<span class="badge-urgency" style="background:'+urgencyColor(urgency)+'">urgency '+urgency+'</span>';
   if(confidence!=='')meta+='<span class="badge-confidence">\u2691 '+Math.round(confidence*100)+'%</span>';
   meta+='<span class="badge-latency">\u23F1 '+latency+'s</span>';
+  if(d.execution_ms)meta+='<span class="badge-latency" style="color:var(--text-dim)">\u2699 '+Math.round(d.execution_ms)+'ms server</span>';
   if(path)meta+='<span class="badge-path">\u21A3 '+esc(Array.isArray(path)?path.join(' \u2192 '):path)+'</span>';
+  if(d.teacher_mode)meta+='<span style="padding:2px 8px;border-radius:12px;font-weight:600;background:rgba(255,214,0,.15);color:var(--warning);border:1px solid var(--warning)">\uD83D\uDCDA teacher</span>';
   meta+='</div>';
+
+  /* Trace with timing waterfall */
   var trace='';
   if(d.trace){
     trace='<span class="trace-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">';
     trace+='\u25B6 trace</span>';
-    trace+='<pre class="trace">'+esc(JSON.stringify(d.trace,null,2))+'</pre>';
+    /* Build timing waterfall if step_times_ms exists */
+    var traceContent='';
+    var st=d.trace.step_times_ms;
+    if(st){
+      var totalMs=d.execution_ms||0;
+      traceContent+='<div style="margin-bottom:8px;font-size:.72rem;font-family:var(--mono)">';
+      traceContent+='<div style="font-weight:700;margin-bottom:4px;color:var(--accent)">Step Timing (ms)</div>';
+      var steps=Object.keys(st);
+      for(var si=0;si<steps.length;si++){
+        var sn=steps[si],sv=st[sn];
+        var pct=totalMs>0?Math.min(100,Math.round(sv/totalMs*100)):0;
+        var barColor=sv>5000?'var(--error)':sv>2000?'var(--warning)':'var(--accent)';
+        traceContent+='<div style="display:flex;align-items:center;gap:6px;margin:2px 0">';
+        traceContent+='<span style="width:140px;color:var(--text-dim);text-align:right;flex-shrink:0">'+esc(sn)+'</span>';
+        traceContent+='<div style="flex:1;height:10px;background:var(--border);border-radius:3px;overflow:hidden">';
+        traceContent+='<div style="width:'+pct+'%;height:100%;background:'+barColor+';border-radius:3px;transition:width .3s"></div></div>';
+        traceContent+='<span style="width:60px;text-align:right;color:'+(sv>5000?'var(--error)':'var(--text)')+'">'+Math.round(sv)+'</span>';
+        traceContent+='</div>';
+      }
+      traceContent+='<div style="margin-top:4px;color:var(--text-dim)">Total: '+Math.round(totalMs)+'ms</div>';
+      traceContent+='</div>';
+    }
+    /* Show errors if any */
+    if(d.trace.errors&&d.trace.errors.length>0){
+      traceContent+='<div style="margin-bottom:8px;font-size:.72rem">';
+      traceContent+='<div style="font-weight:700;color:var(--error);margin-bottom:4px">\u26A0 Errors ('+d.trace.errors.length+')</div>';
+      for(var ei=0;ei<d.trace.errors.length;ei++){
+        var err=d.trace.errors[ei];
+        traceContent+='<div style="color:var(--error);padding:2px 0">'+esc(err.step)+': '+esc(String(err.error).slice(0,120))+'</div>';
+      }
+      traceContent+='</div>';
+    }
+    /* Show emotion teaching result */
+    if(d.trace.emotion_taught){
+      traceContent+='<div style="margin-bottom:8px;font-size:.72rem;color:var(--warning)">';
+      traceContent+='\uD83D\uDCDA Emotion corrected: '+esc(d.trace.emotion_taught.from)+' \u2192 '+esc(d.trace.emotion_taught.to);
+      traceContent+='</div>';
+    }
+    /* Show DB operations */
+    var dbOps=d.trace.db_operations;
+    if(dbOps&&dbOps.length>0){
+      traceContent+='<div style="margin-bottom:8px;font-size:.72rem">';
+      traceContent+='<div style="font-weight:700;color:var(--accent);margin-bottom:4px">\uD83D\uDCBE DB Operations</div>';
+      for(var di=0;di<dbOps.length;di++){
+        var op=dbOps[di];
+        var okColor=op.ok?'var(--success)':'var(--error)';
+        var okIcon=op.ok?'\u2713':'\u2717';
+        traceContent+='<div style="color:'+okColor+';padding:1px 0">'+okIcon+' '+esc(op.op);
+        if(op.error)traceContent+=' — <span style="color:var(--error)">'+esc(String(op.error).slice(0,80))+'</span>';
+        traceContent+='</div>';
+      }
+      traceContent+='</div>';
+    }
+    traceContent+='<pre style="margin:0;font-size:.68rem">'+esc(JSON.stringify(d.trace,null,2))+'</pre>';
+    trace+='<div class="trace" style="display:none">'+traceContent+'</div>';
   }
   appendMsg('bot',esc(text)+meta+trace);
   updateEmotionTracker(emotion,confidence||null,mixedEmotions);
