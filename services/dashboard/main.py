@@ -636,8 +636,8 @@ button{font-family:var(--font)}
 
 /* == Terminal ========================================================= */
 #page-terminal{gap:0;position:relative;display:flex;flex-direction:column}
-.chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
-  padding:10px;padding-left:224px;padding-top:10px;background:var(--glass-bg);backdrop-filter:blur(8px);
+.chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;justify-content:flex-end;
+  padding:10px 15%;padding-top:10px;background:var(--glass-bg);backdrop-filter:blur(8px);
   border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease}
 .chat-log:hover{border-color:rgba(0,212,255,.12)}
 
@@ -1524,7 +1524,7 @@ function sendMessage(){
   appendMsg('user',esc(text));
   animateBrainPipeline([]);
   var t0=performance.now();
-  var payload={input:text,session_id:SESSION};
+  var payload={user_input:text,session_id:SESSION};
   if(camEnabled){var frame=captureFrame();if(frame)payload.image=frame}
   fetch('/api/process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
     .then(function(r){return r.json()})
