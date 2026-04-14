@@ -931,7 +931,7 @@ docker compose up -d
 
 ### Changing shared/knobs.py (KnobsClient)
 
-All 19 services use this. Rebuild everything.
+All 21 services use this. Rebuild everything.
 
 ```bash
 docker compose build

@@ -202,7 +202,7 @@ HUMAN BRAIN REGION          CODE EQUIVALENT              PURPOSE
 Thalamus                  →  Router / Orchestrator      Decides which brain
                                                          region handles what
 
-Prefrontal Cortex         →  LLM (8 providers)          Reasoning, planning,
+Prefrontal Cortex         →  LLM (9 providers)          Reasoning, planning,
                                                          decision making
 
 Hippocampus               →  EdgeDB (EDB)               Episode formation,
@@ -292,7 +292,7 @@ brain/
 │   │                                     BrainResponse, KnobSet, ExperienceEvent
 │   ├── knobs.py                       ← KnobsClient (read-only, all services use)
 │   ├── events.py                      ← EventBus (Redis pub/sub)
-│   ├── llm_provider.py                ← Anthropic/OpenAI abstraction
+│   ├── llm_provider.py                ← Multi-provider LLM abstraction (9 providers)
 │   └── __init__.py
 ├── services/
 │   ├── thalamus/                      ← Orchestrator,           port 8000
@@ -313,7 +313,9 @@ brain/
 │   ├── metacognition/                 ← Uncertainty calibration,port 8014
 │   ├── goals/                         ← Long-horizon planning,  port 8015
 │   ├── learner/                       ← Continual local model,  port 8016
-│   └── vision/                        ← Camera + CLIP,          port 8017
+│   ├── vision/                        ← Camera + CLIP,          port 8017
+│   ├── autonomy/                      ← Self-directed thinking, port 8018
+│   └── dashboard/                     ← Web UI + monitoring,    port 8080
 │
 │   Each service contains:
 │       main.py          ← FastAPI application
