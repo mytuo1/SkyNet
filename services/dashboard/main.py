@@ -156,6 +156,11 @@ async def api_process(body: dict):
     return await _proxy_post(f"{THALAMUS_URL}/process", body)
 
 
+@app.post("/api/teach-emotion")
+async def api_teach_emotion(body: dict):
+    return await _proxy_post(f"{THALAMUS_URL}/teach-emotion", body)
+
+
 @app.get("/api/knobs")
 async def api_knobs():
     return await _proxy_get(f"{KNOBS_URL}/current")
@@ -586,12 +591,14 @@ button{font-family:var(--font)}
 .main{overflow:hidden;position:relative}
 .page{display:none;position:absolute;inset:0;overflow-y:auto;padding:16px 20px;opacity:0;transition:opacity .3s ease}
 .page.active{display:flex;flex-direction:column;opacity:1}
+#page-terminal.active{padding:8px 0 0 0}
 
 /* == Emotion Panel ==================================================== */
-.emotion-panel{position:absolute;top:12px;left:12px;width:200px;z-index:10;
+.emotion-panel{position:fixed;top:54px;left:12px;width:200px;z-index:10;
   background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
   border:1px solid var(--border);border-radius:var(--radius);padding:12px;
-  transition:all .3s ease;box-shadow:0 4px 20px rgba(0,0,0,.3)}
+  transition:all .3s ease;box-shadow:0 4px 20px rgba(0,0,0,.3);
+  max-height:calc(100vh - 70px);overflow-y:auto}
 .emotion-panel:hover{border-color:rgba(0,212,255,.25);box-shadow:0 4px 20px rgba(0,0,0,.3),0 0 15px var(--glow-accent)}
 .emotion-panel.expanded{width:320px;max-height:500px;overflow-y:auto}
 .emo-face-wrap{text-align:center;margin-bottom:8px}
@@ -625,7 +632,7 @@ button{font-family:var(--font)}
 .emo-hist-mixed{font-size:.62rem;color:var(--text-dim);margin-left:4px}
 
 /* == 3D Brain ========================================================= */
-.brain-thumb{position:fixed;top:54px;right:12px;width:180px;height:140px;z-index:30;
+.brain-thumb{position:fixed;top:54px;right:12px;width:180px;height:140px;z-index:10;
   cursor:pointer;background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
   border:1px solid var(--border);border-radius:var(--radius);
   padding:4px;transition:all .25s ease;overflow:hidden}
@@ -648,10 +655,12 @@ button{font-family:var(--font)}
   white-space:nowrap;display:none;color:var(--text);box-shadow:0 2px 10px rgba(0,0,0,.3)}
 
 /* == Terminal ========================================================= */
-#page-terminal{gap:0;position:relative;display:flex;flex-direction:column;overflow:hidden}
+#page-terminal{gap:0;position:relative;display:flex;flex-direction:column;overflow:hidden;
+  padding-bottom:0 !important}
 .chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
-  padding:10px 15%;padding-top:10px;background:var(--glass-bg);backdrop-filter:blur(8px);
-  border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease}
+  padding:10px 12%;padding-top:10px;background:var(--glass-bg);backdrop-filter:blur(8px);
+  border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease;
+  margin:0 0 0 0}
 .chat-log .chat-spacer{flex:1}
 .chat-log:hover{border-color:rgba(0,212,255,.12)}
 
@@ -887,29 +896,8 @@ button{font-family:var(--font)}
 
 <!-- PAGE: Terminal -->
 <div class="page active" id="page-terminal">
-  <div class="emotion-panel" id="emotion-tracker">
-    <div class="emo-face-wrap">
-      <canvas id="pixel-face" width="80" height="80"></canvas>
-      <div class="emo-face-label" id="emo-face-label">neutral</div>
-    </div>
-    <div class="emo-current">
-      <span class="emo-emoji" id="emo-emoji">&#x1F610;</span>
-      <span class="emo-name" id="emo-name">neutral</span>
-    </div>
-    <div style="margin-bottom:6px"><span class="emo-badge" id="emo-badge" style="background:var(--emo-neutral)">neutral</span></div>
-    <div class="emo-mixed-wrap" id="emo-mixed-wrap" style="display:none">
-      <div class="emo-mixed-label">Mixed Feelings</div>
-      <div class="emo-mixed-list" id="emo-mixed-list"></div>
-    </div>
-    <div class="emo-mood">
-      <div class="emo-mood-label">Overall Mood</div>
-      <div class="emo-mood-bar"><div class="emo-mood-bar-fill" id="mood-bar-fill" style="width:50%"></div></div>
-    </div>
-    <button class="emo-expand-btn" id="emo-expand-btn">&#x25BC; History</button>
-    <div class="emo-history" id="emo-history"></div>
-  </div>
-  <div class="chat-log" id="chat-log"><div class="chat-spacer"></div></div>
-  <div class="media-bar" id="media-bar">
+  <div class="chat-log" id="chat-log" style="margin:0 210px"><div class="chat-spacer"></div></div>
+  <div class="media-bar" id="media-bar" style="margin:0 210px">
     <button class="media-btn" id="btn-stt" title="Microphone">&#x1F3A4;<span class="rec-dot"></span></button>
     <button class="media-btn" id="btn-cam" title="Webcam">&#x1F4F7;<span class="rec-dot"></span></button>
     <video id="cam-preview" class="webcam-preview" autoplay muted playsinline></video>
@@ -918,9 +906,18 @@ button{font-family:var(--font)}
     </div>
     <span class="media-label" id="media-label"></span>
   </div>
-  <div class="chat-controls">
-    <input type="text" id="chat-input" placeholder="Talk to the brain..." autocomplete="off"/>
+  <div class="chat-controls" style="margin:0 210px">
+    <input type="text" id="chat-input" placeholder="Talk to the brain... (type /teach to enter teacher mode)" autocomplete="off"/>
     <button class="chat-btn" id="chat-send">Send</button>
+  </div>
+  <!-- Teacher Mode Bar -->
+  <div id="teacher-bar" style="display:none;margin:0 210px;padding:8px 12px;background:rgba(255,214,0,.08);border:1px solid var(--warning);border-top:none;border-radius:0 0 var(--radius) var(--radius);font-size:.82rem;gap:8px;align-items:center">
+    <span style="color:var(--warning);font-weight:700">&#x1F4DA; Teacher Mode</span>
+    <span id="teacher-detected" style="color:var(--text-dim);margin-left:8px">Detected: —</span>
+    <select id="teacher-correct" style="padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--surface-solid);color:var(--text);font-size:.8rem;margin-left:8px"></select>
+    <input type="text" id="teacher-explain" placeholder="Why? (optional context)" style="flex:1;padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:rgba(10,14,23,.5);color:var(--text);font-size:.8rem;margin-left:8px"/>
+    <button id="teacher-submit" style="padding:4px 14px;border-radius:4px;border:1px solid var(--warning);background:rgba(255,214,0,.15);color:var(--warning);cursor:pointer;font-weight:700;font-size:.8rem;margin-left:8px">Teach</button>
+    <button id="teacher-cancel" style="padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--surface-solid);color:var(--text-dim);cursor:pointer;font-size:.8rem;margin-left:4px">Cancel</button>
   </div>
 </div>
 
@@ -998,6 +995,29 @@ button{font-family:var(--font)}
 
 </div><!-- /main -->
 </div><!-- /app -->
+
+<!-- == Emotion Panel (fixed, outside page flow) ======================== -->
+<div class="emotion-panel" id="emotion-tracker">
+  <div class="emo-face-wrap">
+    <canvas id="pixel-face" width="80" height="80"></canvas>
+    <div class="emo-face-label" id="emo-face-label">neutral</div>
+  </div>
+  <div class="emo-current">
+    <span class="emo-emoji" id="emo-emoji">&#x1F610;</span>
+    <span class="emo-name" id="emo-name">neutral</span>
+  </div>
+  <div style="margin-bottom:6px"><span class="emo-badge" id="emo-badge" style="background:var(--emo-neutral)">neutral</span></div>
+  <div class="emo-mixed-wrap" id="emo-mixed-wrap" style="display:none">
+    <div class="emo-mixed-label">Mixed Feelings</div>
+    <div class="emo-mixed-list" id="emo-mixed-list"></div>
+  </div>
+  <div class="emo-mood">
+    <div class="emo-mood-label">Overall Mood</div>
+    <div class="emo-mood-bar"><div class="emo-mood-bar-fill" id="mood-bar-fill" style="width:50%"></div></div>
+  </div>
+  <button class="emo-expand-btn" id="emo-expand-btn">&#x25BC; History</button>
+  <div class="emo-history" id="emo-history"></div>
+</div>
 
 <!-- == 3D Brain Thumbnail ============================================= -->
 <div class="brain-thumb" id="brain-thumb" title="Click to expand brain view">

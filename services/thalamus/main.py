@@ -155,7 +155,7 @@ def assemble_context(
     """Assemble complete cognitive context for the LLM."""
     parts = []
 
-    # Cognitive state
+    # Cognitive state — including emotional self-awareness
     conf_str = ""
     if metacognition.get("confidence"):
         conf_str = f" | Confidence: {metacognition['confidence']:.0%}"
@@ -177,6 +177,20 @@ def assemble_context(
         f"Complexity: {amygdala.get('complexity','medium')}"
         f"{conf_str}{gratitude_str}{belonging_str}{regret_str}"
     )
+
+    # Emotional self-awareness — let the LLM know its own emotional assessment
+    # so it can answer questions like "why did you feel alarmed?"
+    current_emo = amygdala.get("emotion", "neutral")
+    if current_emo != "neutral":
+        parts.append(
+            f"\n## Your Emotional State (Self-Awareness)\n"
+            f"Your amygdala assessed this interaction as '{current_emo}' "
+            f"with urgency '{amygdala.get('urgency', 'low')}'. "
+            f"If the user asks about your feelings or emotions, reflect on "
+            f"WHY you felt this way based on the input content. "
+            f"Be honest — if the assessment seems wrong for the input, "
+            f"acknowledge that your emotional detection may have erred."
+        )
 
     # Uncertainty flag
     if metacognition.get("should_flag"):
@@ -319,6 +333,56 @@ async def get_knobs():
     return knobs.get().dict()
 
 
+class TeachEmotionRequest(BaseModel):
+    session_id:       str
+    user_input:       str           # the original user text
+    detected_emotion: str           # what the amygdala guessed
+    correct_emotion:  str           # what the user says it should be
+    explanation:      Optional[str] = ""  # why the user thinks so
+
+
+@app.post("/teach-emotion")
+async def teach_emotion(req: TeachEmotionRequest):
+    """
+    Teacher mode — let the user correct the amygdala's emotional assessment.
+    Sends the corrected pattern to the amygdala /learn-emotion endpoint so it
+    can recognise similar inputs in the future.
+    """
+    # Build a simple pattern from the user input (first significant words)
+    words = [w for w in req.user_input.lower().split() if len(w) > 3 and w.isalpha()][:5]
+    pattern = ".*" + ".*".join(words) + ".*" if words else req.user_input.lower()
+
+    learn_resp = await call("amygdala", "/learn-emotion", {
+        "name":     req.correct_emotion,
+        "patterns": [pattern],
+        "score":    0.7,
+        "category": "taught"
+    })
+
+    # Also store the correction in working memory so the bot remembers
+    await call("working_memory", "/context", {
+        "session_id": req.session_id,
+        "action":     "push_thought",
+        "data": {
+            "type":             "emotion_correction",
+            "input":            req.user_input[:200],
+            "detected_emotion": req.detected_emotion,
+            "correct_emotion":  req.correct_emotion,
+            "explanation":      (req.explanation or "")[:200],
+            "timestamp":        time.time()
+        }
+    })
+
+    return {
+        "ok":       True,
+        "learned":  learn_resp.get("ok", False),
+        "detected": req.detected_emotion,
+        "correct":  req.correct_emotion,
+        "message":  f"Thanks! I'll remember that '{req.user_input[:50]}' "
+                    f"feels like {req.correct_emotion}, not {req.detected_emotion}."
+    }
+
+
 @app.post("/process")
 async def process(req: ProcessRequest):
     """
@@ -329,6 +393,8 @@ async def process(req: ProcessRequest):
     request_id = uuid.uuid4().hex
     k          = knobs.get()
     trace      = {}
+    step_times = {}   # per-step wall-clock timing (ms)
+    errors     = []   # collect non-fatal errors for the trace
 
     base_req = {
         "request_id": request_id,
@@ -338,22 +404,33 @@ async def process(req: ProcessRequest):
     }
 
     # ── STEP 1: Amygdala ──────────────────────────────────────────────────────
+    t1 = time.time()
     ar_resp = await call("amygdala", "/evaluate", base_req)
     ar      = ar_resp.get("data", {})
+    step_times["amygdala"] = round((time.time() - t1) * 1000, 1)
+    if ar_resp.get("error"):
+        errors.append({"step": "amygdala", "error": ar_resp["error"]})
     trace["amygdala"] = {
         "urgency": ar.get("urgency"),
         "emotion": ar.get("emotion"),
-        "threat":  ar.get("threat_detected", False)
+        "threat":  ar.get("threat_detected", False),
+        "ms": step_times["amygdala"]
     }
 
     # ── STEP 2: Working Memory ────────────────────────────────────────────────
+    t2 = time.time()
     wm_resp = await call("working_memory", "/context",
                           {"session_id": req.session_id, "action": "get_all"})
     wm      = wm_resp.get("data", {})
+    step_times["working_memory"] = round((time.time() - t2) * 1000, 1)
+    if wm_resp.get("error"):
+        errors.append({"step": "working_memory", "error": wm_resp["error"]})
 
     # ── STEP 3: Cerebellum (fast path check) ─────────────────────────────────
+    t3 = time.time()
     cb_resp     = await call("cerebellum", "/recognize", base_req)
     skill_match = cb_resp.get("data", {}).get("skill_match")
+    step_times["cerebellum"] = round((time.time() - t3) * 1000, 1)
 
     if skill_match and skill_match.get("similarity", 0) > 0.88 \
             and skill_match.get("exec_success", False):
@@ -369,6 +446,7 @@ async def process(req: ProcessRequest):
             "success": True,
             "execution_ms": (time.time() - start) * 1000
         }))
+        trace["step_times_ms"] = step_times
         return {
             "request_id": request_id, "session_id": req.session_id,
             "response": skill_match.get("procedure_output", "Done."),
@@ -378,6 +456,7 @@ async def process(req: ProcessRequest):
         }
 
     # ── STEP 4: Parallel memory + reasoning preparation ───────────────────────
+    t4 = time.time()
     parallel_batch = [
         # Hippocampus
         call("hippocampus", "/recall", base_req)
@@ -401,10 +480,13 @@ async def process(req: ProcessRequest):
     ]
 
     results = await asyncio.gather(*parallel_batch, return_exceptions=True)
+    step_times["parallel_batch"] = round((time.time() - t4) * 1000, 1)
 
     def safe(res, key=None, default=None):
         if isinstance(res, (Exception, BaseException)):
             return default or ([] if key else {})
+        if isinstance(res, dict) and res.get("error"):
+            errors.append({"step": "parallel", "error": res["error"]})
         d = res.get("data", res) if isinstance(res, dict) else {}
         return d.get(key, default or []) if key else d
 
@@ -423,9 +505,9 @@ async def process(req: ProcessRequest):
     })
 
     # ── STEP 5: Causal graph query ────────────────────────────────────────────
+    t5 = time.time()
     causal = {}
     if k.analogy_seeking > 0.4 and req.user_input:
-        # Extract key concept from input for causal query
         concept_words = [
             w for w in req.user_input.lower().split()
             if len(w) > 4 and w.isalpha()
@@ -438,8 +520,12 @@ async def process(req: ProcessRequest):
             })
             causal = causal_resp.get("data", {})
             trace["causal_graph"] = {"edges": len(causal.get("edges", []))}
+            if causal_resp.get("error"):
+                errors.append({"step": "causal_graph", "error": causal_resp["error"]})
+    step_times["causal_graph"] = round((time.time() - t5) * 1000, 1)
 
     # ── STEP 6: Metacognition assessment ─────────────────────────────────────
+    t6 = time.time()
     meta_resp = await call("metacognition", "/assess", {
         "request_id":        request_id,
         "session_id":        req.session_id,
@@ -448,12 +534,17 @@ async def process(req: ProcessRequest):
         "neocortex_results": semantic
     })
     metacognition = meta_resp.get("data", {})
+    step_times["metacognition"] = round((time.time() - t6) * 1000, 1)
+    if meta_resp.get("error"):
+        errors.append({"step": "metacognition", "error": meta_resp["error"]})
     trace["metacognition"] = {
         "confidence": metacognition.get("confidence"),
-        "level":      metacognition.get("uncertainty_level")
+        "level":      metacognition.get("uncertainty_level"),
+        "ms": step_times["metacognition"]
     }
 
     # ── STEP 7: Perception ────────────────────────────────────────────────────
+    t7 = time.time()
     perc_resp = await call("perception", "/perceive", {
         "request_id":        request_id,
         "session_id":        req.session_id,
@@ -466,7 +557,11 @@ async def process(req: ProcessRequest):
     experiences   = perc_resp.get("data", {}).get("experiences", [])
     novelty_score = perc_resp.get("data", {}).get("novelty_score", 0)
     significance  = perc_resp.get("data", {}).get("significance", 0)
-    trace["perception"] = {"experiences": len(experiences), "novelty": novelty_score}
+    step_times["perception"] = round((time.time() - t7) * 1000, 1)
+    if perc_resp.get("error"):
+        errors.append({"step": "perception", "error": perc_resp["error"]})
+    trace["perception"] = {"experiences": len(experiences), "novelty": novelty_score,
+                           "ms": step_times["perception"]}
 
     # ── STEP 8: Assemble cognitive context ────────────────────────────────────
     context = assemble_context(
@@ -486,6 +581,7 @@ async def process(req: ProcessRequest):
     )
 
     # ── STEP 9: Reasoning (direct or multi-agent) ─────────────────────────────
+    t9 = time.time()
     word_count    = len(req.user_input.split())
     use_framework = (
         ar.get("complexity") == "high"
@@ -504,11 +600,15 @@ async def process(req: ProcessRequest):
             "Framework processing returned no output."
         )
         trace["framework"] = fw_resp.get("data", {}).get("framework", "unknown")
+        if fw_resp.get("error"):
+            errors.append({"step": "framework", "error": fw_resp["error"]})
     else:
         trace["reasoning_path"] = "llm_direct"
         raw_response = await call_llm(req.user_input, context, ar, k)
+    step_times["reasoning"] = round((time.time() - t9) * 1000, 1)
 
     # ── STEP 10: Simulator grounding (for factual/math claims) ────────────────
+    t10 = time.time()
     if "code" in ar.get("required_regions", []) and \
        any(marker in req.user_input.lower() for marker in
            ["calculate", "compute", "what is", "equals", "run", "result of"]):
@@ -526,8 +626,10 @@ async def process(req: ProcessRequest):
             if actual and not sim_resp.get("data", {}).get("error"):
                 raw_response += f"\n\n*(Computed result: {actual})*"
                 trace["simulator_used"] = True
+    step_times["simulator"] = round((time.time() - t10) * 1000, 1)
 
     # ── STEP 11: Verification ─────────────────────────────────────────────────
+    t11 = time.time()
     verification = {}
     if k.verification_threshold > 0.2 and len(raw_response) > 60:
         ver_resp = await call("verification", "/verify", {
@@ -542,6 +644,8 @@ async def process(req: ProcessRequest):
             "status":     verification.get("status"),
             "confidence": verification.get("confidence")
         }
+        if ver_resp.get("error"):
+            errors.append({"step": "verification", "error": ver_resp["error"]})
 
         if verification.get("status") == "contested":
             raw_response += (
@@ -558,8 +662,10 @@ async def process(req: ProcessRequest):
                                          ("confirmed", "probable"),
                 "session_id":            req.session_id
             }))
+    step_times["verification"] = round((time.time() - t11) * 1000, 1)
 
     # ── STEP 12: Compass enrichment ───────────────────────────────────────────
+    t12 = time.time()
     final_response = raw_response
     if compass.get("enrichments") and k.ethical_weight > 0.4:
         enrich_resp = await call("compass", "/enrich", {
@@ -573,6 +679,7 @@ async def process(req: ProcessRequest):
             enrich_resp.get("data", {}).get("enriched_response") or raw_response
         )
         trace["compass_enriched"] = True
+    step_times["compass_enrich"] = round((time.time() - t12) * 1000, 1)
 
     # ── STEP 13: Extract causal relations from response ───────────────────────
     asyncio.create_task(call("causal_graph", "/extract", {
@@ -583,12 +690,17 @@ async def process(req: ProcessRequest):
     }))
 
     # ── STEP 14: Update Working Memory ────────────────────────────────────────
+    # Store the emotional assessment alongside the interaction so the bot
+    # can recall its own feelings when asked about them later.
+    t14 = time.time()
     await call("working_memory", "/context", {
         "session_id": req.session_id, "action": "push_thought",
         "data": {
             "type":      "interaction",
             "input":     req.user_input[:200],
             "response":  final_response[:200],
+            "emotion":   ar.get("emotion", "neutral"),
+            "urgency":   ar.get("urgency", "low"),
             "timestamp": time.time()
         }
     })
@@ -597,6 +709,19 @@ async def process(req: ProcessRequest):
         "key":        "last_response",
         "data":       {"content": final_response[:300], "ts": time.time()}
     })
+    # Persist last emotional state so the bot can introspect
+    await call("working_memory", "/context", {
+        "session_id": req.session_id, "action": "set",
+        "key":        "last_emotion",
+        "data":       {
+            "emotion":  ar.get("emotion", "neutral"),
+            "urgency":  ar.get("urgency", "low"),
+            "threat":   ar.get("threat_detected", False),
+            "input":    req.user_input[:100],
+            "ts":       time.time()
+        }
+    })
+    step_times["working_memory_update"] = round((time.time() - t14) * 1000, 1)
 
     # ── STEP 15: Background tasks ─────────────────────────────────────────────
     quality = min(1.0, (
@@ -644,6 +769,9 @@ async def process(req: ProcessRequest):
                                   {"max_items": 8}))
 
     execution_ms = round((time.time() - start) * 1000, 2)
+    trace["step_times_ms"] = step_times
+    if errors:
+        trace["errors"] = errors
 
     return {
         "request_id":        request_id,
