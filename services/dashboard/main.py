@@ -643,7 +643,7 @@ button{font-family:var(--font)}
   white-space:nowrap;display:none;color:var(--text);box-shadow:0 2px 10px rgba(0,0,0,.3)}
 
 /* == Terminal ========================================================= */
-#page-terminal{gap:0;position:relative;display:flex;flex-direction:column}
+#page-terminal{gap:0;position:relative;display:flex;flex-direction:column;overflow:hidden}
 .chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
   padding:10px 15%;padding-top:10px;background:var(--glass-bg);backdrop-filter:blur(8px);
   border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease}
