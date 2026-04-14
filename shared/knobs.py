@@ -2,7 +2,7 @@
 import redis
 import json
 import os
-from .models import KnobSet
+from models import KnobSet
 
 
 class KnobsClient:
