@@ -712,7 +712,6 @@ button{font-family:var(--font)}
   padding:10px 12%;background:var(--glass-bg);backdrop-filter:blur(8px);
   border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease;
   margin:0 0 0 0}
-.chat-log .chat-spacer{flex:1}
 .chat-log:hover{border-color:rgba(0,212,255,.12)}
 
 /* == Media Bar (above chat input) ===================================== */
@@ -904,6 +903,20 @@ button{font-family:var(--font)}
 .error-box{padding:10px 14px;border-radius:var(--radius);background:rgba(255,23,68,.1);
   border:1px solid var(--error);color:var(--error);font-size:.82rem}
 .scroll-area{flex:1;overflow-y:auto;min-height:0}
+.brain-thumb.hidden-panel,.emotion-panel.hidden-panel{display:none !important}
+
+/* == Session History ==================================================== */
+.session-history{margin-top:12px}
+.session-history .sh-label{font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;padding:0 14px 6px;font-weight:700}
+.session-item{display:flex;align-items:center;gap:8px;padding:8px 14px;margin-bottom:2px;
+  border-radius:var(--radius);color:var(--text-dim);cursor:pointer;font-size:.78rem;transition:all .2s ease;border:1px solid transparent}
+.session-item:hover{background:rgba(0,212,255,.06);color:var(--text);border-color:rgba(0,212,255,.15)}
+.session-item.active-session{background:rgba(0,212,255,.1);color:var(--accent);border-color:rgba(0,212,255,.25)}
+.session-item .si-id{font-family:var(--mono);font-size:.72rem;letter-spacing:.3px}
+.session-item .si-ts{font-size:.66rem;color:var(--text-dim);margin-left:auto}
+.session-new-btn{width:100%;padding:8px;margin-top:4px;border:1px dashed var(--border);border-radius:var(--radius);
+  background:none;color:var(--text-dim);cursor:pointer;font-size:.78rem;transition:all .2s ease}
+.session-new-btn:hover{border-color:var(--accent);color:var(--accent)}
 </style>
 </head>
 <body>
@@ -922,6 +935,12 @@ button{font-family:var(--font)}
   <div class="menu-item" data-page="page-monitoring"><span class="mi-icon">&#x1F4CA;</span> Monitoring</div>
   <div class="menu-item" data-page="page-logging"><span class="mi-icon">&#x1F4DC;</span> Logging</div>
   <div class="menu-item" data-page="page-controls"><span class="mi-icon">&#x1F39B;</span> Controls</div>
+  <div class="menu-divider"></div>
+  <div class="session-history" id="session-history">
+    <div class="sh-label">Sessions</div>
+    <div id="session-list"></div>
+    <button class="session-new-btn" id="new-session-btn">+ New Session</button>
+  </div>
 </div>
 
 <!-- == Header ========================================================= -->
@@ -947,7 +966,7 @@ button{font-family:var(--font)}
 
 <!-- PAGE: Terminal -->
 <div class="page active" id="page-terminal">
-  <div class="chat-log" id="chat-log" style="margin:0 210px"><div class="chat-spacer"></div></div>
+  <div class="chat-log" id="chat-log" style="margin:0 210px"></div>
   <div class="media-bar" id="media-bar" style="margin:0 210px">
     <button class="media-btn" id="btn-stt" title="Microphone">&#x1F3A4;<span class="rec-dot"></span></button>
     <button class="media-btn" id="btn-cam" title="Webcam">&#x1F4F7;<span class="rec-dot"></span></button>
@@ -1100,10 +1119,47 @@ var $=function(s){return document.querySelector(s)};
 var $$=function(s){return document.querySelectorAll(s)};
 var esc=function(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML};
 
-/* -- Session ---------------------------------------------------------- */
+/* -- Device ID & Session Management ----------------------------------- */
+var DEVICE_ID=localStorage.getItem('skynet_device_id');
+if(!DEVICE_ID){DEVICE_ID=crypto.randomUUID();localStorage.setItem('skynet_device_id',DEVICE_ID)}
 var SESSION=localStorage.getItem('skynet_session');
 if(!SESSION){SESSION=crypto.randomUUID();localStorage.setItem('skynet_session',SESSION)}
+/* Track session list: [{id, created, label}] */
+var sessionList=JSON.parse(localStorage.getItem('skynet_sessions')||'[]');
+if(!sessionList.find(function(s){return s.id===SESSION})){
+  sessionList.unshift({id:SESSION,created:Date.now(),label:''});
+  localStorage.setItem('skynet_sessions',JSON.stringify(sessionList));
+}
 $('#session-display').textContent='session: '+SESSION.slice(0,8);
+
+function switchSession(sid){
+  SESSION=sid;localStorage.setItem('skynet_session',sid);
+  $('#session-display').textContent='session: '+sid.slice(0,8);
+  $('#chat-log').innerHTML='';
+  renderSessionList();
+}
+function newSession(){
+  var sid=crypto.randomUUID();
+  sessionList.unshift({id:sid,created:Date.now(),label:''});
+  localStorage.setItem('skynet_sessions',JSON.stringify(sessionList));
+  switchSession(sid);
+}
+function renderSessionList(){
+  var c=$('#session-list');if(!c)return;
+  c.innerHTML=sessionList.slice(0,20).map(function(s){
+    var d=new Date(s.created);
+    var ts=d.toLocaleDateString()+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    var cls=s.id===SESSION?'session-item active-session':'session-item';
+    return '<div class="'+cls+'" data-sid="'+s.id+'">'
+      +'<span class="si-id">'+s.id.slice(0,8)+'</span>'
+      +'<span class="si-ts">'+ts+'</span></div>';
+  }).join('');
+  c.querySelectorAll('.session-item').forEach(function(el){
+    el.addEventListener('click',function(){switchSession(el.dataset.sid)});
+  });
+}
+$('#new-session-btn').addEventListener('click',newSession);
+renderSessionList();
 
 /* -- Hamburger Menu --------------------------------------------------- */
 var slideOpen=false;
@@ -1121,6 +1177,10 @@ $$('.menu-item').forEach(function(b){b.addEventListener('click',function(){
   $$('.page').forEach(function(x){x.classList.remove('active')});
   b.classList.add('active');
   $('#'+b.dataset.page).classList.add('active');
+  /* Show brain/emotions only on terminal page */
+  var isTerminal=b.dataset.page==='page-terminal';
+  $('#emotion-tracker').classList.toggle('hidden-panel',!isTerminal);
+  $('#brain-thumb').classList.toggle('hidden-panel',!isTerminal);
   if(b.dataset.page==='page-monitoring') refreshMonitoring();
   if(b.dataset.page==='page-logging') refreshLogs();
   if(b.dataset.page==='page-controls') loadKnobs();
