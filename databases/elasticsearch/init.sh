@@ -17,7 +17,7 @@ for i in $(seq 1 30); do
 done
 
 # Verify cluster health
-HEALTH=$(curl -sf "${ES_URL}/_cluster/health" | grep -oP '"status":"\K[^"]+')
+HEALTH=$(curl -sf "${ES_URL}/_cluster/health" 2>/dev/null | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
 echo "Cluster health: ${HEALTH}"
 
 echo "Elasticsearch initialization complete"
