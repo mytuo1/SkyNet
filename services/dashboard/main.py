@@ -523,8 +523,8 @@ a{color:var(--accent);text-decoration:none}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 button{font-family:var(--font)}
 
-#app{display:grid;grid-template-rows:auto auto 1fr;height:100vh;overflow:hidden}
-.header{display:flex;align-items:center;gap:12px;padding:10px 20px;
+#app{display:grid;grid-template-rows:auto 1fr;height:100vh;overflow:hidden}
+.header{display:flex;align-items:center;gap:12px;padding:10px 20px 10px 56px;
   background:linear-gradient(135deg,rgba(10,14,23,.95),rgba(20,25,38,.9),rgba(27,34,54,.95));
   backdrop-filter:blur(var(--glass-blur));border-bottom:1px solid var(--border);position:relative;z-index:20}
 .header h1{font-size:1.15rem;font-weight:700;background:linear-gradient(135deg,var(--accent),#a78bfa);
@@ -536,12 +536,39 @@ button{font-family:var(--font)}
 .header .session{font-size:.75rem;color:var(--text-dim);font-family:var(--mono);letter-spacing:.5px}
 .header .global-status{font-size:.75rem;padding:3px 10px;border-radius:12px;font-weight:600;letter-spacing:.3px}
 
-.nav{display:flex;gap:2px;padding:0 20px;background:var(--glass-bg);
-  backdrop-filter:blur(var(--glass-blur));border-bottom:1px solid var(--border)}
-.nav-btn{padding:9px 20px;font-size:.82rem;font-weight:600;color:var(--text-dim);cursor:pointer;
-  border:none;background:none;border-bottom:2px solid transparent;transition:all .25s ease;letter-spacing:.3px}
-.nav-btn:hover{color:var(--text);text-shadow:0 0 8px var(--glow-accent)}
-.nav-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+.nav{display:none}
+.nav-btn{display:none}
+
+/* == Hamburger Menu ==================================================== */
+.hamburger{position:fixed;top:12px;left:12px;z-index:50;width:36px;height:36px;
+  background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));border:1px solid var(--border);
+  border-radius:var(--radius);cursor:pointer;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:4px;transition:all .25s ease}
+.hamburger:hover{border-color:var(--accent);box-shadow:0 0 10px var(--glow-accent)}
+.hamburger span{display:block;width:18px;height:2px;background:var(--text-dim);border-radius:1px;transition:all .3s ease}
+.hamburger.open span:nth-child(1){transform:rotate(45deg) translate(4px,4px)}
+.hamburger.open span:nth-child(2){opacity:0}
+.hamburger.open span:nth-child(3){transform:rotate(-45deg) translate(4px,-4px)}
+.hamburger.open{border-color:var(--accent)}
+.hamburger.open span{background:var(--accent)}
+.slide-menu{position:fixed;top:0;left:-300px;width:280px;height:100vh;z-index:45;
+  background:linear-gradient(180deg,rgba(10,14,23,.98),rgba(20,25,38,.98));
+  backdrop-filter:blur(16px);border-right:1px solid var(--border);
+  transition:left .3s cubic-bezier(.4,0,.2,1);padding:60px 16px 16px;overflow-y:auto;
+  box-shadow:4px 0 30px rgba(0,0,0,.4)}
+.slide-menu.open{left:0}
+.slide-menu-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:40;
+  display:none;backdrop-filter:blur(2px)}
+.slide-menu-overlay.open{display:block}
+.menu-item{display:flex;align-items:center;gap:10px;padding:12px 14px;margin-bottom:4px;
+  border-radius:var(--radius);color:var(--text-dim);cursor:pointer;font-size:.85rem;
+  font-weight:600;letter-spacing:.3px;transition:all .2s ease;border:1px solid transparent}
+.menu-item:hover{background:rgba(0,212,255,.06);color:var(--text);border-color:rgba(0,212,255,.15)}
+.menu-item.active{background:rgba(0,212,255,.1);color:var(--accent);border-color:rgba(0,212,255,.25)}
+.menu-item .mi-icon{font-size:1.1rem;width:24px;text-align:center}
+.menu-divider{height:1px;background:var(--border);margin:12px 0}
+.menu-label{font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;
+  padding:8px 14px;font-weight:700}
 
 .main{overflow:hidden;position:relative}
 .page{display:none;position:absolute;inset:0;overflow-y:auto;padding:16px 20px;opacity:0;transition:opacity .3s ease}
@@ -553,14 +580,20 @@ button{font-family:var(--font)}
   border:1px solid var(--border);border-radius:var(--radius);padding:12px;
   transition:all .3s ease;box-shadow:0 4px 20px rgba(0,0,0,.3)}
 .emotion-panel:hover{border-color:rgba(0,212,255,.25);box-shadow:0 4px 20px rgba(0,0,0,.3),0 0 15px var(--glow-accent)}
-.emotion-panel.expanded{width:320px;max-height:400px;overflow-y:auto}
+.emotion-panel.expanded{width:320px;max-height:500px;overflow-y:auto}
 .emo-face-wrap{text-align:center;margin-bottom:8px}
 .emo-face-wrap canvas{border-radius:6px;image-rendering:pixelated}
 .emo-face-label{font-size:.7rem;color:var(--text-dim);margin-top:4px;letter-spacing:.5px;text-transform:uppercase}
 .emo-current{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .emo-current .emo-emoji{font-size:1.5rem}
 .emo-current .emo-name{font-weight:700;font-size:.85rem;letter-spacing:.3px}
-.emo-badge{font-size:.68rem;padding:2px 8px;border-radius:10px;font-weight:700;color:#111}
+.emo-badge{font-size:.68rem;padding:2px 8px;border-radius:10px;font-weight:700;color:#111;display:inline-block;margin-right:3px;margin-bottom:3px}
+.emo-mixed-wrap{margin-bottom:6px}
+.emo-mixed-label{font-size:.68rem;color:var(--text-dim);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+.emo-mixed-list{display:flex;flex-wrap:wrap;gap:3px}
+.emo-mixed-tag{font-size:.65rem;padding:2px 6px;border-radius:8px;font-weight:600;
+  background:rgba(255,255,255,.08);color:var(--text-dim);border:1px solid rgba(255,255,255,.06)}
+.emo-mixed-tag .tag-score{font-size:.58rem;opacity:.7;margin-left:2px}
 .emo-mood{margin-bottom:8px}
 .emo-mood-label{font-size:.7rem;color:var(--text-dim);margin-bottom:4px;letter-spacing:.3px}
 .emo-mood-bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden}
@@ -576,6 +609,7 @@ button{font-family:var(--font)}
 .emo-hist-ts{color:var(--text-dim);font-family:var(--mono);font-size:.68rem}
 .emo-hist-name{font-weight:600;flex:1}
 .emo-hist-conf{color:var(--text-dim);font-family:var(--mono)}
+.emo-hist-mixed{font-size:.62rem;color:var(--text-dim);margin-left:4px}
 
 /* == 3D Brain ========================================================= */
 .brain-thumb{position:fixed;top:54px;right:12px;width:180px;height:140px;z-index:30;
@@ -601,11 +635,36 @@ button{font-family:var(--font)}
   white-space:nowrap;display:none;color:var(--text);box-shadow:0 2px 10px rgba(0,0,0,.3)}
 
 /* == Terminal ========================================================= */
-#page-terminal{gap:12px;position:relative}
+#page-terminal{gap:0;position:relative;display:flex;flex-direction:column}
 .chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
-  padding:10px;padding-left:224px;background:var(--glass-bg);backdrop-filter:blur(8px);
+  padding:10px;padding-left:224px;padding-top:10px;background:var(--glass-bg);backdrop-filter:blur(8px);
   border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease}
 .chat-log:hover{border-color:rgba(0,212,255,.12)}
+
+/* == Media Bar (above chat input) ===================================== */
+.media-bar{display:flex;align-items:center;gap:8px;padding:8px 10px;
+  background:var(--glass-bg);backdrop-filter:blur(8px);border:1px solid var(--border);
+  border-bottom:none;border-radius:var(--radius) var(--radius) 0 0;margin-top:8px}
+.media-btn{width:38px;height:38px;border-radius:var(--radius);border:1px solid var(--border);
+  background:var(--glass-bg);color:var(--text-dim);cursor:pointer;font-size:1.1rem;
+  display:flex;align-items:center;justify-content:center;transition:all .2s ease;position:relative;
+  flex-shrink:0}
+.media-btn:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 0 10px var(--glow-accent)}
+.media-btn.active-media{border-color:var(--success);color:var(--success)}
+.media-btn.active-media.cam-active{border-color:var(--error);color:var(--error)}
+.rec-dot{position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;
+  background:var(--error);display:none;animation:pulse 1s infinite}
+.media-btn.active-media .rec-dot{display:block}
+.webcam-preview{width:48px;height:36px;border-radius:4px;border:1px solid var(--border);
+  object-fit:cover;display:none}
+
+/* == Audio Waveform Visualizer ======================================== */
+.waveform-wrap{flex:1;height:36px;display:none;align-items:center;border-radius:var(--radius);
+  overflow:hidden;background:rgba(0,200,83,.06);border:1px solid rgba(0,200,83,.15);padding:0 4px}
+.waveform-wrap.active{display:flex}
+.waveform-canvas{width:100%;height:100%;display:block}
+.media-label{font-size:.68rem;color:var(--text-dim);font-family:var(--mono);letter-spacing:.5px;
+  white-space:nowrap}
 .msg{padding:10px 14px;border-radius:var(--radius);max-width:88%;word-wrap:break-word;font-size:.88rem;
   animation:msgFade .3s ease}
 @keyframes msgFade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -622,9 +681,11 @@ button{font-family:var(--font)}
 .msg pre.trace{margin-top:6px;padding:8px;background:var(--bg);border-radius:4px;
   font-family:var(--mono);font-size:.7rem;overflow-x:auto;white-space:pre-wrap;display:none;
   max-height:240px;overflow-y:auto;border:1px solid var(--border)}
-.chat-controls{display:flex;gap:8px;align-items:center}
+.chat-controls{display:flex;gap:8px;align-items:center;
+  border-radius:0 0 var(--radius) var(--radius);background:var(--glass-bg);backdrop-filter:blur(8px);
+  border:1px solid var(--border);border-top:none;padding:8px 10px}
 .chat-controls input[type=text]{flex:1;padding:10px 14px;border-radius:var(--radius);border:1px solid var(--border);
-  background:var(--glass-bg);backdrop-filter:blur(8px);color:var(--text);font-size:.9rem;outline:none;
+  background:rgba(10,14,23,.5);color:var(--text);font-size:.9rem;outline:none;
   font-family:var(--font);transition:all .25s ease}
 .chat-controls input:focus{border-color:var(--accent);box-shadow:0 0 10px var(--glow-accent)}
 .chat-btn{padding:10px 20px;border:none;border-radius:var(--radius);
@@ -632,16 +693,6 @@ button{font-family:var(--font)}
   cursor:pointer;font-size:.88rem;transition:all .2s ease;letter-spacing:.3px}
 .chat-btn:hover{background:linear-gradient(135deg,#33dfff,var(--accent));box-shadow:0 0 15px var(--glow-accent)}
 .chat-btn:disabled{opacity:.5;cursor:not-allowed}
-.media-btn{width:38px;height:38px;border-radius:var(--radius);border:1px solid var(--border);
-  background:var(--glass-bg);color:var(--text-dim);cursor:pointer;font-size:1.1rem;
-  display:flex;align-items:center;justify-content:center;transition:all .2s ease;position:relative}
-.media-btn:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 0 10px var(--glow-accent)}
-.media-btn.active-media{border-color:var(--error);color:var(--error)}
-.rec-dot{position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;
-  background:var(--error);display:none;animation:pulse 1s infinite}
-.media-btn.active-media .rec-dot{display:block}
-.webcam-preview{width:48px;height:36px;border-radius:4px;border:1px solid var(--border);
-  object-fit:cover;display:none}
 
 /* == Monitoring ======================================================= */
 #page-monitoring{gap:14px}
@@ -784,6 +835,21 @@ button{font-family:var(--font)}
 <body>
 <div id="app">
 
+<!-- == Hamburger Menu ================================================== -->
+<button class="hamburger" id="hamburger-btn" title="Menu">
+  <span></span><span></span><span></span>
+</button>
+<div class="slide-menu-overlay" id="slide-menu-overlay"></div>
+<div class="slide-menu" id="slide-menu">
+  <div class="menu-label">Navigate</div>
+  <div class="menu-item active" data-page="page-terminal"><span class="mi-icon">&#x1F9E0;</span> Terminal</div>
+  <div class="menu-divider"></div>
+  <div class="menu-label">System</div>
+  <div class="menu-item" data-page="page-monitoring"><span class="mi-icon">&#x1F4CA;</span> Monitoring</div>
+  <div class="menu-item" data-page="page-logging"><span class="mi-icon">&#x1F4DC;</span> Logging</div>
+  <div class="menu-item" data-page="page-controls"><span class="mi-icon">&#x1F39B;</span> Controls</div>
+</div>
+
 <!-- == Header ========================================================= -->
 <div class="header">
   <div class="pulse-dot" id="global-dot"></div>
@@ -794,8 +860,8 @@ button{font-family:var(--font)}
   </div>
 </div>
 
-<!-- == Nav ============================================================ -->
-<div class="nav" id="nav-bar">
+<!-- == Nav (hidden, kept for compatibility) ============================ -->
+<div class="nav" id="nav-bar" style="display:none">
   <button class="nav-btn active" data-page="page-terminal">&#x1F9E0; Terminal</button>
   <button class="nav-btn" data-page="page-monitoring">&#x1F4CA; Monitoring</button>
   <button class="nav-btn" data-page="page-logging">&#x1F4DC; Logging</button>
@@ -817,6 +883,10 @@ button{font-family:var(--font)}
       <span class="emo-name" id="emo-name">neutral</span>
     </div>
     <div style="margin-bottom:6px"><span class="emo-badge" id="emo-badge" style="background:var(--emo-neutral)">neutral</span></div>
+    <div class="emo-mixed-wrap" id="emo-mixed-wrap" style="display:none">
+      <div class="emo-mixed-label">Mixed Feelings</div>
+      <div class="emo-mixed-list" id="emo-mixed-list"></div>
+    </div>
     <div class="emo-mood">
       <div class="emo-mood-label">Overall Mood</div>
       <div class="emo-mood-bar"><div class="emo-mood-bar-fill" id="mood-bar-fill" style="width:50%"></div></div>
@@ -825,10 +895,16 @@ button{font-family:var(--font)}
     <div class="emo-history" id="emo-history"></div>
   </div>
   <div class="chat-log" id="chat-log"></div>
-  <div class="chat-controls">
-    <button class="media-btn" id="btn-stt" title="Speech-to-Text" style="display:none">&#x1F3A4;<span class="rec-dot"></span></button>
-    <button class="media-btn" id="btn-cam" title="Webcam capture" style="display:none">&#x1F4F7;<span class="rec-dot"></span></button>
+  <div class="media-bar" id="media-bar">
+    <button class="media-btn" id="btn-stt" title="Microphone">&#x1F3A4;<span class="rec-dot"></span></button>
+    <button class="media-btn" id="btn-cam" title="Webcam">&#x1F4F7;<span class="rec-dot"></span></button>
     <video id="cam-preview" class="webcam-preview" autoplay muted playsinline></video>
+    <div class="waveform-wrap" id="waveform-wrap">
+      <canvas id="waveform-canvas" class="waveform-canvas" height="34"></canvas>
+    </div>
+    <span class="media-label" id="media-label"></span>
+  </div>
+  <div class="chat-controls">
     <input type="text" id="chat-input" placeholder="Talk to the brain..." autocomplete="off"/>
     <button class="chat-btn" id="chat-send">Send</button>
   </div>
@@ -948,7 +1024,29 @@ var SESSION=localStorage.getItem('skynet_session');
 if(!SESSION){SESSION=crypto.randomUUID();localStorage.setItem('skynet_session',SESSION)}
 $('#session-display').textContent='session: '+SESSION.slice(0,8);
 
-/* -- Navigation ------------------------------------------------------- */
+/* -- Hamburger Menu --------------------------------------------------- */
+var slideOpen=false;
+function toggleMenu(){
+  slideOpen=!slideOpen;
+  $('#hamburger-btn').classList.toggle('open',slideOpen);
+  $('#slide-menu').classList.toggle('open',slideOpen);
+  $('#slide-menu-overlay').classList.toggle('open',slideOpen);
+}
+$('#hamburger-btn').addEventListener('click',toggleMenu);
+$('#slide-menu-overlay').addEventListener('click',toggleMenu);
+
+$$('.menu-item').forEach(function(b){b.addEventListener('click',function(){
+  $$('.menu-item').forEach(function(x){x.classList.remove('active')});
+  $$('.page').forEach(function(x){x.classList.remove('active')});
+  b.classList.add('active');
+  $('#'+b.dataset.page).classList.add('active');
+  if(b.dataset.page==='page-monitoring') refreshMonitoring();
+  if(b.dataset.page==='page-logging') refreshLogs();
+  if(b.dataset.page==='page-controls') loadKnobs();
+  if(slideOpen) toggleMenu();
+})});
+
+/* -- Navigation (legacy compat) --------------------------------------- */
 $$('.nav-btn').forEach(function(b){b.addEventListener('click',function(){
   $$('.nav-btn').forEach(function(x){x.classList.remove('active')});
   $$('.page').forEach(function(x){x.classList.remove('active')});
@@ -959,13 +1057,28 @@ $$('.nav-btn').forEach(function(b){b.addEventListener('click',function(){
   if(b.dataset.page==='page-controls') loadKnobs();
 })});
 
-/* -- Emotion helpers -------------------------------------------------- */
+/* -- Emotion helpers (GoEmotions taxonomy) ----------------------------- */
+var GOEMO_COLORS={
+  admiration:'#ffd700',amusement:'#ffb300',approval:'#66bb6a',caring:'#f48fb1',
+  desire:'#ff7043',excitement:'#ff5722',gratitude:'#ffd700',joy:'#00e676',
+  love:'#e91e63',optimism:'#ffeb3b',pride:'#7e57c2',relief:'#81c784',
+  anger:'#f44336',annoyance:'#ef5350',disappointment:'#9e9e9e',disapproval:'#78909c',
+  disgust:'#795548',embarrassment:'#ce93d8',fear:'#ff1744',grief:'#5c6bc0',
+  nervousness:'#ffb74d',remorse:'#ce93d8',sadness:'#42a5f5',
+  confusion:'#b0bec5',curiosity:'#26c6da',realization:'#ffee58',surprise:'#ff9100',
+  neutral:'#90a4ae',belonging:'#4fc3f7',urgency:'#ff9100',distress:'#ef5350',
+  alarm:'#ff1744',regret:'#ce93d8',creative:'#7e57c2'
+};
+var GOEMO_VALENCE={
+  admiration:0.8,amusement:0.7,approval:0.7,caring:0.75,desire:0.6,excitement:0.85,
+  gratitude:0.9,joy:0.9,love:0.9,optimism:0.75,pride:0.8,relief:0.7,
+  anger:0.15,annoyance:0.3,disappointment:0.25,disapproval:0.3,disgust:0.15,
+  embarrassment:0.3,fear:0.15,grief:0.1,nervousness:0.3,remorse:0.2,sadness:0.15,
+  confusion:0.45,curiosity:0.6,realization:0.6,surprise:0.55,
+  neutral:0.5,belonging:0.7,urgency:0.25,distress:0.15,alarm:0.1,regret:0.2,creative:0.65
+};
 function emotionColor(e){
-  var m={gratitude:'var(--emo-gratitude)',belonging:'var(--emo-belonging)',
-    regret:'var(--emo-regret)',alarm:'var(--emo-alarm)',joy:'var(--emo-joy)',
-    curiosity:'var(--emo-curiosity)',urgency:'var(--emo-urgency)',
-    distress:'var(--emo-distress)',neutral:'var(--emo-neutral)'};
-  return m[e]||'var(--emo-neutral)';
+  return GOEMO_COLORS[e]||GOEMO_COLORS.neutral;
 }
 function urgencyColor(u){return u>7?'var(--error)':u>4?'var(--warning)':'var(--success)'}
 
@@ -1127,9 +1240,13 @@ function animateBrainPipeline(cogPath){
 }
 
 /* =====================================================================
-   Pixelated Face
+   Pixelated Face — Full GoEmotions Expressions
+   Each of the 27 GoEmotions gets a unique color scheme.
+   Eye and mouth shapes vary per emotion. Some share shapes but differ
+   in color — the expandable emotion tracker disambiguates.
    ===================================================================== */
 var currentEmotion='neutral';
+var currentMixed=[];
 var faceGrid=[
   [0,0,0,1,1,1,1,0,0,0],
   [0,0,1,1,1,1,1,1,0,0],
@@ -1147,69 +1264,188 @@ function drawPixelFace(emotion){
   var cv=$('#pixel-face');if(!cv)return;
   var ctx=cv.getContext('2d');
   var s=8;
+  /* Color schemes: bg, face, eye, mouth, extra (blush/tear/etc) */
   var schemes={
-    neutral:{bg:'#0d1117',face:'#2a2e3a',eye:'#8899aa',mouth:'#6a7080'},
-    joy:{bg:'#1a1800',face:'#3a3520',eye:'#ffd700',mouth:'#ffcc00'},
-    gratitude:{bg:'#1a1800',face:'#3a3520',eye:'#ffd700',mouth:'#ffcc00'},
-    curiosity:{bg:'#0a1a1a',face:'#1a3535',eye:'#26c6da',mouth:'#20a0b0'},
-    alarm:{bg:'#1a0808',face:'#3a1515',eye:'#ff4444',mouth:'#ff3333'},
-    urgency:{bg:'#1a0808',face:'#3a1515',eye:'#ff4444',mouth:'#ff3333'},
-    regret:{bg:'#150a18',face:'#2a1535',eye:'#ce93d8',mouth:'#b070c0'},
-    distress:{bg:'#150a18',face:'#2a1535',eye:'#ce93d8',mouth:'#b070c0'},
-    belonging:{bg:'#081018',face:'#152030',eye:'#4fc3f7',mouth:'#3aa0d0'}
+    /* ── Positive ────────────────────────────────────── */
+    admiration:    {bg:'#18150a',face:'#3a3218',eye:'#ffd700',mouth:'#e6be00',x:'#ff980040'},
+    amusement:     {bg:'#1a1505',face:'#3a3010',eye:'#ffb300',mouth:'#ff9800',x:'#ffcc0040'},
+    approval:      {bg:'#0a1a0e',face:'#1a3520',eye:'#66bb6a',mouth:'#4caf50',x:'#81c78440'},
+    caring:        {bg:'#1a0a12',face:'#351a28',eye:'#f48fb1',mouth:'#e91e63',x:'#f8bbd040'},
+    desire:        {bg:'#1a0e08',face:'#351c10',eye:'#ff7043',mouth:'#e64a19',x:'#ffab9140'},
+    excitement:    {bg:'#1a0a05',face:'#351808',eye:'#ff5722',mouth:'#e64a19',x:'#ff8a6540'},
+    gratitude:     {bg:'#1a1800',face:'#3a3520',eye:'#ffd700',mouth:'#ffcc00',x:'#ffe08240'},
+    joy:           {bg:'#081a08',face:'#1a351a',eye:'#00e676',mouth:'#00c853',x:'#69f0ae40'},
+    love:          {bg:'#1a0510',face:'#35081f',eye:'#e91e63',mouth:'#c2185b',x:'#f48fb140'},
+    optimism:      {bg:'#1a1a05',face:'#353508',eye:'#ffeb3b',mouth:'#fdd835',x:'#fff17640'},
+    pride:         {bg:'#12081a',face:'#281035',eye:'#7e57c2',mouth:'#673ab7',x:'#b39ddb40'},
+    relief:        {bg:'#0a1a10',face:'#1a3520',eye:'#81c784',mouth:'#66bb6a',x:'#a5d6a740'},
+    /* ── Negative ────────────────────────────────────── */
+    anger:         {bg:'#1a0505',face:'#350808',eye:'#f44336',mouth:'#d32f2f',x:'#ef535040'},
+    annoyance:     {bg:'#1a0a0a',face:'#351515',eye:'#ef5350',mouth:'#e53935',x:'#ef9a9a40'},
+    disappointment:{bg:'#10100e',face:'#252520',eye:'#9e9e9e',mouth:'#757575',x:'#bdbdbd40'},
+    disapproval:   {bg:'#0e1012',face:'#1e2228',eye:'#78909c',mouth:'#546e7a',x:'#b0bec540'},
+    disgust:       {bg:'#120e08',face:'#281c10',eye:'#795548',mouth:'#5d4037',x:'#a1887f40'},
+    embarrassment: {bg:'#150a18',face:'#2a1535',eye:'#ce93d8',mouth:'#ab47bc',x:'#f48fb180'},
+    fear:          {bg:'#1a0508',face:'#350810',eye:'#ff1744',mouth:'#d50000',x:'#ff8a8040'},
+    grief:         {bg:'#08081a',face:'#101035',eye:'#5c6bc0',mouth:'#3949ab',x:'#7986cb40'},
+    nervousness:   {bg:'#1a1208',face:'#352510',eye:'#ffb74d',mouth:'#ff9800',x:'#ffe0b240'},
+    remorse:       {bg:'#150a18',face:'#2a1535',eye:'#ce93d8',mouth:'#b070c0',x:'#e1bee740'},
+    sadness:       {bg:'#081018',face:'#152030',eye:'#42a5f5',mouth:'#1e88e5',x:'#90caf940'},
+    /* ── Ambiguous ───────────────────────────────────── */
+    confusion:     {bg:'#0e1012',face:'#1e2228',eye:'#b0bec5',mouth:'#90a4ae',x:'#cfd8dc40'},
+    curiosity:     {bg:'#0a1a1a',face:'#1a3535',eye:'#26c6da',mouth:'#00acc1',x:'#80deea40'},
+    realization:   {bg:'#1a1a08',face:'#353510',eye:'#ffee58',mouth:'#fdd835',x:'#fff59d40'},
+    surprise:      {bg:'#1a1208',face:'#352510',eye:'#ff9100',mouth:'#e65100',x:'#ffcc8040'},
+    neutral:       {bg:'#0d1117',face:'#2a2e3a',eye:'#8899aa',mouth:'#6a7080',x:'#00000000'},
+    /* ── Legacy compat ───────────────────────────────── */
+    alarm:         {bg:'#1a0505',face:'#350808',eye:'#ff1744',mouth:'#d50000',x:'#ff8a8040'},
+    urgency:       {bg:'#1a0a05',face:'#351808',eye:'#ff5722',mouth:'#e64a19',x:'#ff8a6540'},
+    distress:      {bg:'#150a18',face:'#2a1535',eye:'#ce93d8',mouth:'#b070c0',x:'#e1bee740'},
+    regret:        {bg:'#150a18',face:'#2a1535',eye:'#ce93d8',mouth:'#b070c0',x:'#e1bee740'},
+    belonging:     {bg:'#081018',face:'#152030',eye:'#4fc3f7',mouth:'#3aa0d0',x:'#b3e5fc40'},
+    creative:      {bg:'#12081a',face:'#281035',eye:'#7e57c2',mouth:'#673ab7',x:'#b39ddb40'}
   };
   var sc=schemes[emotion]||schemes.neutral;
+
+  /* Clear + draw face base */
+  ctx.globalAlpha=1;
   ctx.fillStyle=sc.bg;ctx.fillRect(0,0,80,80);
   ctx.fillStyle=sc.face;
   for(var r=0;r<10;r++)for(var c=0;c<10;c++)if(faceGrid[r][c])ctx.fillRect(c*s,r*s,s,s);
+
+  /* ── Eyes ─────────────────────────────────────────── */
   ctx.fillStyle=sc.eye;
-  if(emotion==='alarm'||emotion==='urgency'){
+  var ey=emotion;
+  /* Wide eyes (fear, alarm, surprise, excitement, realization) */
+  if(ey==='fear'||ey==='alarm'||ey==='surprise'||ey==='excitement'||ey==='realization'){
     ctx.fillRect(2*s,3*s,2*s,2*s);ctx.fillRect(6*s,3*s,2*s,2*s);
-  }else if(emotion==='curiosity'){
+  }
+  /* Raised brow / asymmetric (curiosity, confusion, amusement) */
+  else if(ey==='curiosity'||ey==='confusion'){
     ctx.fillRect(2*s,2*s,2*s,s);ctx.fillRect(2*s,3*s,2*s,2*s);ctx.fillRect(6*s,3*s,s,s);
-  }else if(emotion==='regret'||emotion==='distress'){
+  }
+  else if(ey==='amusement'){
+    ctx.fillRect(2*s,3*s,s,s);ctx.fillRect(3*s,2*s,s,s);ctx.fillRect(6*s,3*s,s,s);ctx.fillRect(7*s,2*s,s,s);
+  }
+  /* Droopy / sad eyes (sadness, grief, disappointment, remorse, regret, distress) */
+  else if(ey==='sadness'||ey==='grief'||ey==='disappointment'||ey==='remorse'||ey==='regret'||ey==='distress'){
     ctx.fillRect(2*s,4*s,2*s,s);ctx.fillRect(6*s,4*s,2*s,s);
-  }else if(emotion==='belonging'){
+  }
+  /* Squinting / narrow (anger, annoyance, disapproval, disgust) */
+  else if(ey==='anger'||ey==='annoyance'||ey==='disapproval'||ey==='disgust'){
+    ctx.fillRect(2*s,3*s,s,s);ctx.fillRect(3*s,4*s,s,s);ctx.fillRect(6*s,4*s,s,s);ctx.fillRect(7*s,3*s,s,s);
+  }
+  /* Soft / glowing eyes (love, caring, belonging, relief) */
+  else if(ey==='love'||ey==='caring'||ey==='belonging'||ey==='relief'){
     ctx.fillRect(3*s,3*s,s,s);ctx.fillRect(6*s,3*s,s,s);
     ctx.globalAlpha=0.3;ctx.fillRect(2*s,3*s,s,s);ctx.fillRect(7*s,3*s,s,s);ctx.globalAlpha=1;
-  }else{
+  }
+  /* Nervous flickering eyes (nervousness, embarrassment) */
+  else if(ey==='nervousness'||ey==='embarrassment'){
+    ctx.fillRect(3*s,3*s,s,s);ctx.fillRect(7*s,3*s,s,s);
+  }
+  /* Starry eyes (admiration, pride, optimism, gratitude, desire) */
+  else if(ey==='admiration'||ey==='pride'||ey==='optimism'||ey==='gratitude'||ey==='desire'){
+    ctx.fillRect(2*s,3*s,2*s,s);ctx.fillRect(6*s,3*s,2*s,s);
+    ctx.globalAlpha=0.4;ctx.fillRect(2*s,2*s,s,s);ctx.fillRect(7*s,2*s,s,s);ctx.globalAlpha=1;
+  }
+  /* Default normal eyes (neutral, approval, joy) */
+  else{
     ctx.fillRect(3*s,3*s,s,s);ctx.fillRect(6*s,3*s,s,s);
   }
+
+  /* ── Mouth ────────────────────────────────────────── */
   ctx.fillStyle=sc.mouth;
-  if(emotion==='joy'||emotion==='gratitude'){
+  /* Big smile (joy, excitement, amusement, love) */
+  if(ey==='joy'||ey==='excitement'||ey==='amusement'||ey==='love'){
     ctx.fillRect(3*s,6*s,s,s);ctx.fillRect(4*s,7*s,2*s,s);ctx.fillRect(6*s,6*s,s,s);
-  }else if(emotion==='alarm'||emotion==='urgency'){
-    ctx.fillRect(4*s,6*s,2*s,2*s);
-  }else if(emotion==='regret'||emotion==='distress'){
-    ctx.fillRect(3*s,7*s,s,s);ctx.fillRect(4*s,6*s,2*s,s);ctx.fillRect(6*s,7*s,s,s);
-  }else if(emotion==='belonging'){
+  }
+  /* Gentle smile (gratitude, admiration, approval, caring, pride, optimism, relief, belonging) */
+  else if(ey==='gratitude'||ey==='admiration'||ey==='approval'||ey==='caring'||
+          ey==='pride'||ey==='optimism'||ey==='relief'||ey==='belonging'){
     ctx.fillRect(3*s,6*s,4*s,s);ctx.fillRect(4*s,7*s,2*s,s);
-  }else if(emotion==='curiosity'){
+  }
+  /* O mouth — shock (fear, alarm, surprise, realization) */
+  else if(ey==='fear'||ey==='alarm'||ey==='surprise'||ey==='realization'){
+    ctx.fillRect(4*s,6*s,2*s,2*s);
+  }
+  /* Frown (sadness, grief, disappointment, remorse, regret, distress) */
+  else if(ey==='sadness'||ey==='grief'||ey==='disappointment'||ey==='remorse'||ey==='regret'||ey==='distress'){
+    ctx.fillRect(3*s,7*s,s,s);ctx.fillRect(4*s,6*s,2*s,s);ctx.fillRect(6*s,7*s,s,s);
+  }
+  /* Gritted / tight (anger, disgust) */
+  else if(ey==='anger'||ey==='disgust'){
+    ctx.fillRect(3*s,6*s,s,s);ctx.fillRect(4*s,7*s,s,s);ctx.fillRect(5*s,7*s,s,s);ctx.fillRect(6*s,6*s,s,s);
+  }
+  /* Flat / tense line (annoyance, disapproval, nervousness) */
+  else if(ey==='annoyance'||ey==='disapproval'||ey==='nervousness'){
+    ctx.fillRect(3*s,7*s,4*s,s);
+  }
+  /* Small O (confusion, embarrassment) */
+  else if(ey==='confusion'||ey==='embarrassment'){
     ctx.fillRect(4*s,6*s,2*s,s);
-  }else{
+  }
+  /* Small opening (curiosity, desire) */
+  else if(ey==='curiosity'||ey==='desire'){
+    ctx.fillRect(4*s,6*s,s,s);ctx.fillRect(5*s,7*s,s,s);
+  }
+  /* Neutral straight line */
+  else{
     ctx.fillRect(3*s,6*s,4*s,s);
   }
+
+  /* ── Extra detail — blush, tears, sparkle ────────── */
+  if(sc.x&&sc.x!=='#00000000'){
+    ctx.fillStyle=sc.x;
+    /* Blush cheeks (embarrassment, love, caring, nervousness) */
+    if(ey==='embarrassment'||ey==='love'||ey==='caring'||ey==='nervousness'){
+      ctx.fillRect(1*s,5*s,2*s,s);ctx.fillRect(7*s,5*s,2*s,s);
+    }
+    /* Tear drops (grief, sadness) */
+    else if(ey==='grief'||ey==='sadness'){
+      ctx.globalAlpha=0.5;ctx.fillRect(4*s,5*s,s,s);ctx.fillRect(6*s,5*s,s,s);ctx.globalAlpha=1;
+    }
+    /* Sparkle above (admiration, realization, gratitude, pride) */
+    else if(ey==='admiration'||ey==='realization'||ey==='gratitude'||ey==='pride'){
+      ctx.globalAlpha=0.4;ctx.fillRect(1*s,1*s,s,s);ctx.fillRect(8*s,1*s,s,s);ctx.globalAlpha=1;
+    }
+    /* Sweat drop (fear, alarm, nervousness) */
+    else if(ey==='fear'||ey==='alarm'){
+      ctx.globalAlpha=0.5;ctx.fillRect(8*s,2*s,s,s);ctx.globalAlpha=1;
+    }
+  }
+
   $('#emo-face-label').textContent=emotion;
 }
 
 /* =====================================================================
-   Emotion Tracker
+   Emotion Tracker — GoEmotions with Mixed Emotions
    ===================================================================== */
 var emotionHistory=[];
 var emotionExpanded=false;
 
-function updateEmotionTracker(emotion,confidence){
-  emotionHistory.unshift({emotion:emotion,confidence:confidence,timestamp:new Date().toLocaleTimeString()});
-  if(emotionHistory.length>20)emotionHistory.length=20;
+function updateEmotionTracker(emotion,confidence,mixedEmotions){
+  var entry={emotion:emotion,confidence:confidence,timestamp:new Date().toLocaleTimeString(),mixed:mixedEmotions||[]};
+  emotionHistory.unshift(entry);
+  if(emotionHistory.length>30)emotionHistory.length=30;
   currentEmotion=emotion;
+  currentMixed=mixedEmotions||[];
   drawPixelFace(emotion);
   renderEmotionTracker();
 }
 
 function renderEmotionTracker(){
-  var emojiMap={neutral:'\uD83D\uDE10',joy:'\uD83D\uDE0A',gratitude:'\uD83D\uDE4F',
-    curiosity:'\uD83E\uDD14',alarm:'\uD83D\uDEA8',urgency:'\u26A0',
-    regret:'\uD83D\uDE14',distress:'\uD83D\uDE1F',belonging:'\uD83D\uDC9C'};
+  var emojiMap={
+    admiration:'\uD83E\uDD29',amusement:'\uD83D\uDE04',approval:'\uD83D\uDC4D',caring:'\uD83E\uDD7A',
+    desire:'\uD83D\uDE0D',excitement:'\uD83E\uDD29',gratitude:'\uD83D\uDE4F',joy:'\uD83D\uDE0A',
+    love:'\u2764\uFE0F',optimism:'\uD83C\uDF1F',pride:'\uD83D\uDE0E',relief:'\uD83D\uDE0C',
+    anger:'\uD83D\uDE21',annoyance:'\uD83D\uDE12',disappointment:'\uD83D\uDE1E',disapproval:'\uD83D\uDC4E',
+    disgust:'\uD83E\uDD22',embarrassment:'\uD83D\uDE33',fear:'\uD83D\uDE28',grief:'\uD83D\uDE2D',
+    nervousness:'\uD83D\uDE30',remorse:'\uD83D\uDE14',sadness:'\uD83D\uDE22',
+    confusion:'\uD83D\uDE15',curiosity:'\uD83E\uDD14',realization:'\uD83D\uDCA1',surprise:'\uD83D\uDE32',
+    neutral:'\uD83D\uDE10',alarm:'\uD83D\uDEA8',urgency:'\u26A0\uFE0F',distress:'\uD83D\uDE1F',
+    regret:'\uD83D\uDE14',belonging:'\uD83D\uDC9C',creative:'\uD83C\uDFA8'
+  };
   var emoji=emojiMap[currentEmotion]||emojiMap.neutral;
   $('#emo-emoji').textContent=emoji;
   $('#emo-name').textContent=currentEmotion;
@@ -1217,12 +1453,25 @@ function renderEmotionTracker(){
   badgeEl.style.background=emotionColor(currentEmotion);
   badgeEl.textContent=currentEmotion;
 
-  var valence={joy:0.9,gratitude:0.85,belonging:0.7,curiosity:0.6,
-    neutral:0.5,alarm:0.3,urgency:0.25,regret:0.2,distress:0.15};
+  /* Show mixed emotions if more than 1 */
+  var mw=$('#emo-mixed-wrap');
+  var ml=$('#emo-mixed-list');
+  if(currentMixed.length>1){
+    mw.style.display='block';
+    ml.innerHTML=currentMixed.map(function(m){
+      return '<span class="emo-mixed-tag" style="border-color:'+emotionColor(m.emotion)+'">'+
+        esc(m.emotion)+'<span class="tag-score">'+Math.round((m.score||0)*100)+'%</span></span>';
+    }).join('');
+  }else{
+    mw.style.display='none';ml.innerHTML='';
+  }
+
+  /* Overall mood bar — use GoEmotions valence map */
   var recent=emotionHistory.slice(0,10);
   var avgVal=0.5;
   if(recent.length>0){
-    var sum=0;for(var i=0;i<recent.length;i++)sum+=(valence[recent[i].emotion]||0.5);
+    var sum=0;
+    for(var i=0;i<recent.length;i++) sum+=(GOEMO_VALENCE[recent[i].emotion]||0.5);
     avgVal=sum/recent.length;
   }
   $('#mood-bar-fill').style.width=(avgVal*100)+'%';
@@ -1231,10 +1480,14 @@ function renderEmotionTracker(){
     var h='';
     for(var j=0;j<emotionHistory.length;j++){
       var e=emotionHistory[j];
+      var mixStr='';
+      if(e.mixed&&e.mixed.length>1){
+        mixStr=' <span class="emo-hist-mixed">(+'+e.mixed.slice(1).map(function(m){return m.emotion}).join(', ')+')</span>';
+      }
       h+='<div class="emo-hist-item">';
       h+='<span class="emo-hist-dot" style="background:'+emotionColor(e.emotion)+'"></span>';
       h+='<span class="emo-hist-ts">'+esc(e.timestamp)+'</span>';
-      h+='<span class="emo-hist-name">'+esc(e.emotion)+'</span>';
+      h+='<span class="emo-hist-name">'+esc(e.emotion)+mixStr+'</span>';
       h+='<span class="emo-hist-conf">'+(e.confidence?Math.round(e.confidence*100)+'%':'')+'</span>';
       h+='</div>';
     }
@@ -1298,8 +1551,14 @@ function appendBotMsg(d,latency){
   var confidence=d.confidence;if(confidence===undefined||confidence===null)confidence='';
   var path=d.cognitive_path||d.path||'';
   var text=d.response||d.reply||d.text||JSON.stringify(d);
+  var mixedEmotions=d.emotions||[];
   var meta='<div class="meta">';
   meta+='<span class="badge-emotion" style="background:'+emotionColor(emotion)+'">'+esc(emotion)+'</span>';
+  if(mixedEmotions.length>1){
+    for(var mi=1;mi<Math.min(mixedEmotions.length,4);mi++){
+      meta+='<span class="badge-emotion" style="background:'+emotionColor(mixedEmotions[mi].emotion)+';opacity:.7">'+esc(mixedEmotions[mi].emotion)+'</span>';
+    }
+  }
   if(urgency!=='')meta+='<span class="badge-urgency" style="background:'+urgencyColor(urgency)+'">urgency '+urgency+'</span>';
   if(confidence!=='')meta+='<span class="badge-confidence">\u2691 '+Math.round(confidence*100)+'%</span>';
   meta+='<span class="badge-latency">\u23F1 '+latency+'s</span>';
@@ -1312,13 +1571,69 @@ function appendBotMsg(d,latency){
     trace+='<pre class="trace">'+esc(JSON.stringify(d.trace,null,2))+'</pre>';
   }
   appendMsg('bot',esc(text)+meta+trace);
-  updateEmotionTracker(emotion,confidence||null);
+  updateEmotionTracker(emotion,confidence||null,mixedEmotions);
 }
 
-/* -- Speech-to-Text --------------------------------------------------- */
+/* -- Speech-to-Text + Audio Waveform ---------------------------------- */
 var SpeechRec=window.SpeechRecognition||window.webkitSpeechRecognition;
+var audioCtx=null,micAnalyser=null,micSource=null,micStream=null,waveAnimId=null;
+
+function startWaveform(stream){
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  micSource=audioCtx.createMediaStreamSource(stream);
+  micAnalyser=audioCtx.createAnalyser();
+  micAnalyser.fftSize=256;
+  micSource.connect(micAnalyser);
+  var canvas=$('#waveform-canvas');
+  var ctx=canvas.getContext('2d');
+  var bufLen=micAnalyser.frequencyBinCount;
+  var data=new Uint8Array(bufLen);
+  $('#waveform-wrap').classList.add('active');
+  $('#media-label').textContent='Listening...';
+  function draw(){
+    waveAnimId=requestAnimationFrame(draw);
+    micAnalyser.getByteTimeDomainData(data);
+    var w=canvas.width,h=canvas.height;
+    ctx.fillStyle='rgba(0,20,8,0.3)';ctx.fillRect(0,0,w,h);
+    ctx.lineWidth=2;ctx.strokeStyle='#00c853';
+    ctx.shadowColor='#00e676';ctx.shadowBlur=6;
+    ctx.beginPath();
+    var sliceW=w/bufLen;var x=0;
+    for(var i=0;i<bufLen;i++){
+      var v=data[i]/128.0;var y=v*h/2;
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+      x+=sliceW;
+    }
+    ctx.lineTo(w,h/2);ctx.stroke();
+    ctx.shadowBlur=0;
+    /* Draw equalizer bars at bottom */
+    micAnalyser.getByteFrequencyData(data);
+    var barW=Math.max(2,w/64-1);
+    ctx.globalAlpha=0.4;
+    for(var b=0;b<64;b++){
+      var bh=(data[b]/255)*h*0.4;
+      var hue=120-(data[b]/255)*30;
+      ctx.fillStyle='hsl('+hue+',80%,50%)';
+      ctx.fillRect(b*(barW+1),h-bh,barW,bh);
+    }
+    ctx.globalAlpha=1;
+  }
+  draw();
+}
+
+function stopWaveform(){
+  if(waveAnimId){cancelAnimationFrame(waveAnimId);waveAnimId=null}
+  if(micSource){micSource.disconnect();micSource=null}
+  if(micStream){micStream.getTracks().forEach(function(t){t.stop()});micStream=null}
+  micAnalyser=null;
+  $('#waveform-wrap').classList.remove('active');
+  $('#media-label').textContent='';
+  var canvas=$('#waveform-canvas');
+  var ctx=canvas.getContext('2d');
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+}
+
 if(SpeechRec){
-  $('#btn-stt').style.display='flex';
   var recognition=new SpeechRec();
   recognition.continuous=false;recognition.interimResults=true;recognition.lang='en-US';
   recognition.onresult=function(e){
@@ -1331,30 +1646,38 @@ if(SpeechRec){
   };
   recognition.onend=function(){
     sttActive=false;$('#btn-stt').classList.remove('active-media');
+    stopWaveform();
     var v=$('#chat-input').value.trim();
     if(v&&!busy)sendMessage();
   };
-  recognition.onerror=function(){sttActive=false;$('#btn-stt').classList.remove('active-media')};
+  recognition.onerror=function(){sttActive=false;$('#btn-stt').classList.remove('active-media');stopWaveform()};
   $('#btn-stt').addEventListener('click',function(){
-    if(sttActive){recognition.stop();sttActive=false;$('#btn-stt').classList.remove('active-media')}
-    else{recognition.start();sttActive=true;$('#btn-stt').classList.add('active-media')}
+    if(sttActive){
+      recognition.stop();sttActive=false;$('#btn-stt').classList.remove('active-media');
+      stopWaveform();
+    }else{
+      navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+        micStream=stream;
+        startWaveform(stream);
+        recognition.start();sttActive=true;$('#btn-stt').classList.add('active-media');
+      }).catch(function(e){console.warn('Mic denied',e)});
+    }
   });
 }
 
 /* -- Webcam ----------------------------------------------------------- */
 if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){
-  $('#btn-cam').style.display='flex';
   var vid=$('#cam-preview');
   $('#btn-cam').addEventListener('click',function(){
     if(camEnabled){
       camEnabled=false;
       if(camStream){camStream.getTracks().forEach(function(t){t.stop()});camStream=null}
       vid.style.display='none';vid.srcObject=null;
-      $('#btn-cam').classList.remove('active-media');
+      $('#btn-cam').classList.remove('active-media');$('#btn-cam').classList.remove('cam-active');
     }else{
       navigator.mediaDevices.getUserMedia({video:true}).then(function(stream){
         camStream=stream;vid.srcObject=stream;vid.style.display='block';
-        camEnabled=true;$('#btn-cam').classList.add('active-media');
+        camEnabled=true;$('#btn-cam').classList.add('active-media');$('#btn-cam').classList.add('cam-active');
       }).catch(function(e){console.warn('Webcam denied',e)});
     }
   });
