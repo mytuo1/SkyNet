@@ -636,9 +636,10 @@ button{font-family:var(--font)}
 
 /* == Terminal ========================================================= */
 #page-terminal{gap:0;position:relative;display:flex;flex-direction:column}
-.chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;justify-content:flex-end;
+.chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
   padding:10px 15%;padding-top:10px;background:var(--glass-bg);backdrop-filter:blur(8px);
   border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease}
+.chat-log .chat-spacer{flex:1}
 .chat-log:hover{border-color:rgba(0,212,255,.12)}
 
 /* == Media Bar (above chat input) ===================================== */
@@ -894,7 +895,7 @@ button{font-family:var(--font)}
     <button class="emo-expand-btn" id="emo-expand-btn">&#x25BC; History</button>
     <div class="emo-history" id="emo-history"></div>
   </div>
-  <div class="chat-log" id="chat-log"></div>
+  <div class="chat-log" id="chat-log"><div class="chat-spacer"></div></div>
   <div class="media-bar" id="media-bar">
     <button class="media-btn" id="btn-stt" title="Microphone">&#x1F3A4;<span class="rec-dot"></span></button>
     <button class="media-btn" id="btn-cam" title="Webcam">&#x1F4F7;<span class="rec-dot"></span></button>
