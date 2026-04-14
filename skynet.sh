@@ -22,10 +22,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 COMPOSE="docker compose"
+BUILD_MAX_RETRIES=3
 GATEWAY_URL="http://localhost:8000"
 KNOBS_URL="http://localhost:8090"
 DASHBOARD_URL="http://localhost:8080"
 AUTONOMY_URL="http://localhost:8018"
+
+# ── Build with Retry ──────────────────────────────────────────────────────────
+# Docker image pulls can fail with transient network errors (EOF, timeout).
+# This wrapper retries the build up to BUILD_MAX_RETRIES times.
+compose_build() {
+    local attempt=1
+    while [ $attempt -le "$BUILD_MAX_RETRIES" ]; do
+        if $COMPOSE build "$@"; then
+            return 0
+        fi
+        if [ $attempt -lt "$BUILD_MAX_RETRIES" ]; then
+            local wait_secs=$((attempt * 5))
+            warn "Build failed (attempt $attempt/$BUILD_MAX_RETRIES) — retrying in ${wait_secs}s..."
+            sleep "$wait_secs"
+        fi
+        attempt=$((attempt + 1))
+    done
+    die "Build failed after $BUILD_MAX_RETRIES attempts"
+}
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 banner() {
@@ -197,7 +217,7 @@ cmd_start() {
     check_deps
 
     info "Building containers..."
-    $COMPOSE build --quiet 2>/dev/null || $COMPOSE build
+    compose_build
 
     info "Starting databases..."
     $COMPOSE up -d redis elasticsearch edgedb
@@ -320,7 +340,7 @@ cmd_update() {
     git pull --rebase || git pull
 
     info "Rebuilding changed services..."
-    $COMPOSE build
+    compose_build
 
     info "Restarting updated services..."
     $COMPOSE up -d
@@ -343,7 +363,7 @@ cmd_reset() {
     $COMPOSE down -v --remove-orphans
 
     info "Rebuilding from scratch..."
-    $COMPOSE build
+    compose_build --no-cache
 
     info "Starting fresh system..."
     cmd_start
