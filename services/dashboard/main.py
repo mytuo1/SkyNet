@@ -98,6 +98,8 @@ app = FastAPI(title="SkyNet Dashboard", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 
 
+import logging as _log
+
 def _parse_response(r: httpx.Response) -> JSONResponse:
     """Return upstream JSON when possible; fall back to raw text so errors are never swallowed."""
     try:
@@ -113,7 +115,8 @@ async def _proxy_get(url: str) -> JSONResponse:
     except httpx.ConnectError:
         return JSONResponse({"error": "Service unreachable"}, status_code=502)
     except Exception as exc:
-        return JSONResponse({"error": f"Proxy error: {exc}"}, status_code=500)
+        _log.exception("proxy GET %s failed", url)
+        return JSONResponse({"error": "Internal proxy error"}, status_code=500)
 
 
 async def _proxy_post(url: str, body: dict) -> JSONResponse:
@@ -123,7 +126,8 @@ async def _proxy_post(url: str, body: dict) -> JSONResponse:
     except httpx.ConnectError:
         return JSONResponse({"error": "Service unreachable"}, status_code=502)
     except Exception as exc:
-        return JSONResponse({"error": f"Proxy error: {exc}"}, status_code=500)
+        _log.exception("proxy POST %s failed", url)
+        return JSONResponse({"error": "Internal proxy error"}, status_code=500)
 
 
 async def _proxy_patch(url: str, params: dict | None = None, body: dict | None = None) -> JSONResponse:
@@ -133,7 +137,8 @@ async def _proxy_patch(url: str, params: dict | None = None, body: dict | None =
     except httpx.ConnectError:
         return JSONResponse({"error": "Service unreachable"}, status_code=502)
     except Exception as exc:
-        return JSONResponse({"error": f"Proxy error: {exc}"}, status_code=500)
+        _log.exception("proxy PATCH %s failed", url)
+        return JSONResponse({"error": "Internal proxy error"}, status_code=500)
 
 
 # ---------------------------------------------------------------------------
