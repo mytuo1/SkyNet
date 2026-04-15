@@ -120,18 +120,22 @@ async def get_knobs():
 
 
 async def embed(text: str) -> list:
-    try:
-        resp = await http.post(
-            f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]},
-            timeout=5.0
-        )
-        vec = resp.json()["embedding"]
-        if all(v == 0.0 for v in vec[:10]):
-            return []
-        return vec
-    except Exception:
-        return []
+    """Generate embedding via local Ollama with retry."""
+    for attempt in range(2):
+        try:
+            resp = await http.post(
+                f"{OLLAMA_URL}/api/embeddings",
+                json={"model": EMBED_MODEL, "prompt": text[:2000]},
+                timeout=5.0
+            )
+            vec = resp.json()["embedding"]
+            if all(v == 0.0 for v in vec[:10]):
+                return []
+            return vec
+        except Exception:
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+    return []
 
 
 def cosine_similarity(a: list, b: list) -> float:

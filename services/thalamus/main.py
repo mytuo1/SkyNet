@@ -117,40 +117,59 @@ class ProcessRequest(BaseModel):
 
 
 async def call(service: str, path: str, data: dict,
-               timeout: float = 30.0) -> dict:
-    """Call a brain region. Returns {} on failure — brain degrades gracefully."""
+               timeout: float = 30.0, retries: int = 2) -> dict:
+    """Call a brain region with retries. Returns {} on failure — brain degrades gracefully."""
     url = f"{SERVICES[service]}{path}"
-    t0 = time.time()
-    try:
-        resp = await http.post(url, json=data, timeout=timeout)
-        latency_ms = (time.time() - t0) * 1000
-        asyncio.create_task(_report_metric(service, latency_ms, "ok"))
+    last_error = ""
+    for attempt in range(1, retries + 1):
+        t0 = time.time()
         try:
-            return resp.json()
-        except Exception:
-            return {"success": True, "data": {}}
-    except Exception as e:
-        latency_ms = (time.time() - t0) * 1000
-        asyncio.create_task(_report_metric(service, latency_ms, "error"))
-        return {"success": False, "error": str(e)[:60], "data": {}}
+            resp = await http.post(url, json=data, timeout=timeout)
+            latency_ms = (time.time() - t0) * 1000
+            asyncio.create_task(_report_metric(service, latency_ms, "ok"))
+            try:
+                return resp.json()
+            except Exception:
+                return {"success": True, "data": {}}
+        except Exception as e:
+            latency_ms = (time.time() - t0) * 1000
+            last_error = f"{type(e).__name__}: {e}"
+            if attempt < retries:
+                await asyncio.sleep(0.3 * attempt)  # brief back-off
+                continue
+            asyncio.create_task(_report_metric(service, latency_ms, "error"))
+    return {
+        "success": False,
+        "error": f"{service}{path} failed after {retries} attempts: {last_error[:80]}",
+        "data": {},
+    }
 
 
-async def call_get(service: str, path: str, timeout: float = 10.0) -> dict:
-    """GET call to a brain region."""
+async def call_get(service: str, path: str, timeout: float = 10.0,
+                   retries: int = 2) -> dict:
+    """GET call to a brain region with retries."""
     url = f"{SERVICES[service]}{path}"
-    t0 = time.time()
-    try:
-        resp = await http.get(url, timeout=timeout)
-        latency_ms = (time.time() - t0) * 1000
-        asyncio.create_task(_report_metric(service, latency_ms, "ok"))
+    last_error = ""
+    for attempt in range(1, retries + 1):
+        t0 = time.time()
         try:
-            return resp.json()
-        except Exception:
-            return {"success": True, "data": {}}
-    except Exception as e:
-        latency_ms = (time.time() - t0) * 1000
-        asyncio.create_task(_report_metric(service, latency_ms, "error"))
-        return {"error": str(e)[:60]}
+            resp = await http.get(url, timeout=timeout)
+            latency_ms = (time.time() - t0) * 1000
+            asyncio.create_task(_report_metric(service, latency_ms, "ok"))
+            try:
+                return resp.json()
+            except Exception:
+                return {"success": True, "data": {}}
+        except Exception as e:
+            latency_ms = (time.time() - t0) * 1000
+            last_error = f"{type(e).__name__}: {e}"
+            if attempt < retries:
+                await asyncio.sleep(0.3 * attempt)
+                continue
+            asyncio.create_task(_report_metric(service, latency_ms, "error"))
+    return {
+        "error": f"{service}{path} failed after {retries} attempts: {last_error[:80]}",
+    }
 
 
 async def call_llm(user_input: str, context: str, amygdala: dict, k,
@@ -632,6 +651,8 @@ async def process(req: ProcessRequest):
     # ── STEP 3: Cerebellum result (ran in parallel above) ─────────────────────
     skill_match = cb_resp.get("data", {}).get("skill_match")
     step_times["cerebellum"] = round((t_early_done - t_early) * 1000, 1)
+    if cb_resp.get("error"):
+        errors.append({"step": "cerebellum", "error": cb_resp["error"]})
 
     if skill_match and skill_match.get("similarity", 0) > 0.88 \
             and skill_match.get("exec_success", False):
@@ -947,6 +968,8 @@ async def process(req: ProcessRequest):
             enrich_resp.get("data", {}).get("enriched_response") or raw_response
         )
         trace["compass_enriched"] = True
+        if enrich_resp.get("error"):
+            errors.append({"step": "compass_enrich", "error": enrich_resp["error"]})
     step_times["compass_enrich"] = round((time.time() - t12) * 1000, 1)
 
     # ── STEP 13: Update Working Memory ────────────────────────────────────────

@@ -105,37 +105,45 @@ async def get_knobs():
 
 
 async def embed(text: str) -> list:
-    try:
-        resp = await http.post(
-            f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]},
-            timeout=5.0
-        )
-        vec = resp.json()["embedding"]
-        # Guard against zero-magnitude vectors (cosine similarity rejects them)
-        if all(v == 0.0 for v in vec[:10]):
-            return []
-        return vec
-    except Exception:
-        return []
+    """Generate embedding via local Ollama with retry."""
+    for attempt in range(2):
+        try:
+            resp = await http.post(
+                f"{OLLAMA_URL}/api/embeddings",
+                json={"model": EMBED_MODEL, "prompt": text[:2000]},
+                timeout=5.0
+            )
+            vec = resp.json()["embedding"]
+            # Guard against zero-magnitude vectors (cosine similarity rejects them)
+            if all(v == 0.0 for v in vec[:10]):
+                return []
+            return vec
+        except Exception:
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+    return []
 
 
 async def search_neocortex(embedding: list, text: str = "",
                              domain: str = None, top_k: int = 12) -> list:
-    """Search neocortex for relevant knowledge."""
-    try:
-        resp = await http.post(
-            f"{NEOCORTEX_URL}/search",
-            json={
-                "request_id": "verify",
-                "session_id": "verify",
-                "user_input": text
-            },
-            params={"domain": domain, "top_k": top_k}
-        )
-        return resp.json().get("data", {}).get("results", [])
-    except Exception:
-        return []
+    """Search neocortex for relevant knowledge with retry."""
+    for attempt in range(2):
+        try:
+            resp = await http.post(
+                f"{NEOCORTEX_URL}/search",
+                json={
+                    "request_id": "verify",
+                    "session_id": "verify",
+                    "user_input": text
+                },
+                params={"domain": domain, "top_k": top_k},
+                timeout=5.0
+            )
+            return resp.json().get("data", {}).get("results", [])
+        except Exception:
+            if attempt == 0:
+                await asyncio.sleep(0.3)
+    return []
 
 
 def generate_negation(claim: str) -> str:

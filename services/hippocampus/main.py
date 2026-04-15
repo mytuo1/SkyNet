@@ -63,20 +63,23 @@ async def shutdown():
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 async def embed(text: str) -> list:
-    """Generate embedding via local Ollama."""
-    try:
-        resp = await http.post(
-            f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]},
-            timeout=5.0
-        )
-        vec = resp.json()["embedding"]
-        # Guard against zero-magnitude vectors
-        if all(v == 0.0 for v in vec[:10]):
-            return []
-        return vec
-    except Exception:
-        return []
+    """Generate embedding via local Ollama with retry."""
+    for attempt in range(2):
+        try:
+            resp = await http.post(
+                f"{OLLAMA_URL}/api/embeddings",
+                json={"model": EMBED_MODEL, "prompt": text[:2000]},
+                timeout=5.0
+            )
+            vec = resp.json()["embedding"]
+            # Guard against zero-magnitude vectors
+            if all(v == 0.0 for v in vec[:10]):
+                return []
+            return vec
+        except Exception:
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+    return []
 
 
 def cosine_similarity(a: list, b: list) -> float:
@@ -92,20 +95,25 @@ async def quick_summarize(content: str) -> str:
     """Summarize content locally without using Claude API."""
     if len(content.split()) <= 35:
         return content
-    try:
-        resp = await http.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model":  OLLAMA_MODEL,
-                "prompt": f"Summarize in one concise sentence:\n{content[:600]}",
-                "stream": False,
-                "options": {"num_predict": 80}
-            }
-        )
-        return resp.json().get("response", content[:200]).strip()
-    except Exception:
-        sentences = content.replace("! ", ". ").replace("? ", ". ").split(". ")
-        return ". ".join(sentences[:2]) + "."
+    for attempt in range(2):
+        try:
+            resp = await http.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model":  OLLAMA_MODEL,
+                    "prompt": f"Summarize in one concise sentence:\n{content[:600]}",
+                    "stream": False,
+                    "options": {"num_predict": 80}
+                },
+                timeout=8.0
+            )
+            return resp.json().get("response", content[:200]).strip()
+        except Exception:
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+    # Final fallback: mechanical truncation
+    sentences = content.replace("! ", ". ").replace("? ", ". ").split(". ")
+    return ". ".join(sentences[:2]) + "."
 
 
 def classify_domain(concepts: list) -> str:
