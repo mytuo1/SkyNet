@@ -45,7 +45,7 @@ ALL_SERVICES = {
     "goals": 8015, "learner": 8016, "vision": 8017, "knobs": 8090,
     "autonomy": 8018, "dashboard": 8080,
     # Infrastructure
-    "gateway": 80, "redis": 6379, "elasticsearch": 9200,
+    "gateway": 80, "redis": 6379, "elasticsearch": 9200, "edgedb": 5656,
 }
 
 PUBSUB_CHANNELS = [
@@ -168,12 +168,13 @@ async def api_services_health():
 
     # Application services
     svc_checks = {name: f"http://{name}:{port}/health" for name, port in ALL_SERVICES.items()
-                  if name not in ("redis", "elasticsearch", "gateway")}
+                  if name not in ("redis", "elasticsearch", "gateway", "edgedb")}
     # Infrastructure — different health endpoints
     infra_checks = {
         "redis": ("redis", REDIS_URL),
         "elasticsearch": ("elasticsearch", "http://elasticsearch:9200/_cluster/health"),
-        "gateway": ("gateway", "http://gateway:80/health"),
+        "gateway": ("gateway", "http://gateway:80/nginx-health"),
+        "edgedb": ("edgedb", "http://edgedb:5656"),
     }
 
     tasks = [_check(name, url) for name, url in svc_checks.items()]
@@ -207,6 +208,24 @@ async def api_services_health():
         except Exception:
             results["gateway"] = {"status": "unreachable", "ms": 0}
     tasks.append(_check_gateway())
+    # EdgeDB — try a TCP connect; EdgeDB doesn't expose a simple HTTP health endpoint
+    async def _check_edgedb():
+        try:
+            t0 = time.time()
+            r = await http_client.get("http://edgedb:5656/server/status/ready", timeout=2.5)
+            results["edgedb"] = {"status": "alive" if r.status_code == 200 else "error", "ms": round((time.time() - t0) * 1000, 1)}
+        except Exception:
+            # EdgeDB may not have HTTP health; try a basic TCP connect as fallback
+            import asyncio as _aio
+            try:
+                t0 = time.time()
+                _, writer = await _aio.wait_for(_aio.open_connection("edgedb", 5656), timeout=2.5)
+                writer.close()
+                await writer.wait_closed()
+                results["edgedb"] = {"status": "alive", "ms": round((time.time() - t0) * 1000, 1)}
+            except Exception:
+                results["edgedb"] = {"status": "unreachable", "ms": 0}
+    tasks.append(_check_edgedb())
 
     await asyncio.gather(*tasks)
 
@@ -2080,7 +2099,7 @@ function refreshMonitoring(){
 var ALL_SVC_LIST=["thalamus","amygdala","hippocampus","cerebellum","neocortex","working-memory",
   "perception","verification","cross-domain","compass","framework-router","self-update",
   "causal-graph","simulator","metacognition","goals","learner","vision","knobs","autonomy","dashboard",
-  "gateway","redis","elasticsearch"];
+  "gateway","redis","elasticsearch","edgedb"];
 
 function renderServiceMetrics(services){
   var grid=$('#svc-metrics-grid');
