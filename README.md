@@ -495,15 +495,17 @@ STEP 15  HIPPOCAMPUS encodes new episode (async)
 </pre>
 ---------------------------------------------------------------------------------
 
-### Reliability: Retries and Error Handling
+### Reliability: Error Handling and Graceful Degradation
 
-Every inter-service call in the pipeline uses automatic retry with exponential
-back-off (2 attempts). If a service is temporarily unreachable, the call is
-retried after a brief delay. Errors are logged and surfaced in the response
-trace (visible in the dashboard under ▶ trace) rather than causing silent
-failures. Embedding calls (Ollama) also retry on failure, with graceful
-fallback to empty results. The brain continues to function even when
-individual services are degraded — the remaining context fills in the gaps.
+Every inter-service call in the pipeline runs with generous timeouts (60s for
+service calls, 30s for Ollama embedding calls) and **no aggressive retries**.
+Instead of retrying and doubling response times, each service gets one attempt
+with enough time to complete. If a service fails, the error is logged and
+surfaced in the response trace (visible in the dashboard under ▶ trace) — the
+brain continues to function with the remaining context. Embedding calls (Ollama)
+retry once on failure with a brief back-off, with graceful fallback to empty
+results. The brain continues to function even when individual services are
+degraded — the remaining context fills in the gaps.
 
 ---
 
@@ -1238,11 +1240,11 @@ GET  /autonomy/thoughts          → see what the brain has thought on its own
 
 ### Conversation Persistence:
 <pre>
-- Chat history survives page refresh (localStorage)
-- Full conversations stored in working memory (Redis, no truncation)
-- LLM receives entire session history as context
+- Chat history survives page refresh (localStorage, trace data stripped for efficiency)
+- Full conversations stored in working memory (Redis, 7-day TTL, no truncation)
+- LLM receives entire session history as context (up to 200 turns)
 - Session switching restores full conversation thread
-- 24 turns kept per session in working memory
+- 200 turns kept per session in working memory
 </pre>
 
 ### Each service:
@@ -1251,7 +1253,7 @@ GET  /autonomy/thoughts          → see what the brain has thought on its own
 - Its own FastAPI application
 - Reads knobs from Redis on every request
 - Publishes/subscribes to Redis event bus
-- Automatic retries (2 attempts with exponential back-off) on all inter-service calls
+- Generous timeouts (60s service calls, 30s embed calls) — no aggressive retries
 - /health endpoint
 - /knobs endpoint (shows current parameters)
 - Restartable independently without affecting others

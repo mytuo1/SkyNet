@@ -1374,11 +1374,34 @@ docker compose up -d --no-deps working-memory
 
 This is a fast tokenizer compatibility issue with some HuggingFace models
 (e.g. `microsoft/phi-4-mini-instruct`). The learner now automatically falls
-back to `use_fast=False` when the fast tokenizer fails. If you still see
-this error, try changing the model:
+back to `use_fast=False` when the fast tokenizer fails, and clears corrupted
+cache on the third attempt. If you still see this error, try changing the model:
 ```env
 LOCAL_MODEL_NAME=Qwen/Qwen2.5-1.5B-Instruct
 ```
+
+### Learner "cannot import name 'SlidingWindowCache'"
+
+The installed `transformers` library is too old for `phi-4-mini-instruct`.
+The learner now requires `transformers>=4.46.3`. Rebuild the learner:
+```bash
+docker compose build --no-cache learner
+docker compose up -d --no-deps learner
+```
+
+### ReadTimeout errors in neocortex, cross-domain, or verification
+
+These services call Ollama for embeddings and LLM APIs for reasoning.
+On cold start, Ollama can take 30+ seconds to load models into memory.
+All timeouts have been raised to 60s for service calls and 30s for
+Ollama embedding calls. Aggressive retries have been removed — each
+service gets one attempt with generous time, and errors are reported
+in the trace without blocking.
+
+If you still see timeouts:
+1. Check that Ollama is running: `ollama list`
+2. Pull the embedding model: `ollama pull nomic-embed-text`
+3. Increase the httpx client timeout in the service's `main.py`
 
 ### Thalamus health check failing but all other services healthy
 
