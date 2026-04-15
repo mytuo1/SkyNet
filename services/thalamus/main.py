@@ -58,6 +58,13 @@ knobs  = KnobsClient()
 events = EventBus()
 http   = httpx.AsyncClient(timeout=30.0)
 
+# Async Redis client for system prompt additions (avoids blocking event loop)
+import redis.asyncio as _aioredis
+_redis = _aioredis.from_url(
+    os.getenv("REDIS_URL", "redis://redis:6379"),
+    decode_responses=True
+)
+
 # Dashboard URL for metrics reporting
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://dashboard:8080")
 
@@ -179,10 +186,7 @@ async def call_llm(user_input: str, context: str, amygdala: dict, k,
     knob_modifier = knobs.build_system_prompt_modifier()
     prompt_additions = ""
     try:
-        import redis
-        r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379"),
-                           decode_responses=True)
-        prompt_additions = r.get("brain:system_prompt_additions") or ""
+        prompt_additions = await _redis.get("brain:system_prompt_additions") or ""
     except Exception:
         pass
 
