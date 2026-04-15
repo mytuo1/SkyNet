@@ -14,7 +14,7 @@
   --emo-gratitude:#ffd700;--emo-belonging:#4fc3f7;--emo-regret:#ce93d8;
   --emo-alarm:#ff1744;--emo-joy:#00e676;--emo-curiosity:#26c6da;
   --emo-neutral:#90a4ae;--emo-urgency:#ff9100;--emo-distress:#ef5350;
-  --radius:8px;
+  --radius:8px;--sidebar-w:220px;
   --font:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
   --mono:'SF Mono',SFMono-Regular,ui-monospace,'Cascadia Code',Menlo,monospace;
   --brain-thalamus:#d4c5a9;--brain-amygdala:#c47d7d;--brain-hippocampus:#6d9e9e;
@@ -79,19 +79,20 @@ button{font-family:var(--font)}
 .menu-label{font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;
   padding:8px 14px;font-weight:700}
 
+/* == Layout: Sidebar + Main ============================================ */
+.content-wrap{display:grid;grid-template-columns:var(--sidebar-w) 1fr;overflow:hidden;height:100%}
+.sidebar{display:flex;flex-direction:column;border-right:1px solid var(--border);
+  background:linear-gradient(180deg,rgba(10,14,23,.92),rgba(20,25,38,.92));
+  overflow-y:auto;overflow-x:hidden}
 .main{overflow:hidden;position:relative}
 .page{display:none;position:absolute;inset:0;overflow-y:auto;padding:16px 20px;opacity:0;transition:opacity .3s ease}
 .page.active{display:flex;flex-direction:column;opacity:1}
-#page-terminal.active{padding:8px 0 0 0}
+#page-terminal.active{padding:0}
 
-/* == Emotion Panel ==================================================== */
-.emotion-panel{position:fixed;top:54px;left:12px;width:200px;z-index:10;
-  background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
-  border:1px solid var(--border);border-radius:var(--radius);padding:12px;
-  transition:all .3s ease;box-shadow:0 4px 20px rgba(0,0,0,.3);
-  max-height:calc(100vh - 70px);overflow-y:auto}
-.emotion-panel:hover{border-color:rgba(0,212,255,.25);box-shadow:0 4px 20px rgba(0,0,0,.3),0 0 15px var(--glow-accent)}
-.emotion-panel.expanded{width:320px;max-height:500px;overflow-y:auto}
+/* == Emotion Panel (in sidebar) ======================================== */
+.emotion-panel{padding:12px;border-bottom:1px solid var(--border);flex-shrink:0}
+.emotion-panel:hover{background:rgba(0,212,255,.02)}
+.emotion-panel.expanded{max-height:none;overflow-y:auto}
 .emo-face-wrap{text-align:center;margin-bottom:8px}
 .emo-face-wrap canvas{border-radius:6px;image-rendering:pixelated}
 .emo-face-label{font-size:.7rem;color:var(--text-dim);margin-top:4px;letter-spacing:.5px;text-transform:uppercase}
@@ -123,7 +124,7 @@ button{font-family:var(--font)}
 .emo-hist-mixed{font-size:.62rem;color:var(--text-dim);margin-left:4px}
 
 /* == 3D Brain ========================================================= */
-.brain-thumb{position:fixed;top:54px;right:12px;width:180px;height:140px;z-index:10;
+.brain-thumb{position:fixed;top:54px;right:12px;width:160px;height:120px;z-index:10;
   cursor:pointer;background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
   border:1px solid var(--border);border-radius:var(--radius);
   padding:4px;transition:all .35s ease;overflow:hidden;transform-origin:top right}
@@ -151,15 +152,12 @@ button{font-family:var(--font)}
 #page-terminal{gap:0;position:relative;display:flex;flex-direction:column;overflow:hidden;
   padding-bottom:0 !important}
 .chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
-  padding:10px 12%;background:var(--glass-bg);backdrop-filter:blur(8px);
-  border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease;
-  margin:0 0 0 0}
-.chat-log:hover{border-color:rgba(0,212,255,.12)}
+  padding:16px 40px;background:transparent;
+  min-height:0;transition:all .25s ease;margin:0}
 
 /* == Media Bar (above chat input) ===================================== */
-.media-bar{display:flex;align-items:center;gap:8px;padding:8px 10px;
-  background:var(--glass-bg);backdrop-filter:blur(8px);border:1px solid var(--border);
-  border-bottom:none;border-radius:var(--radius) var(--radius) 0 0;margin-top:8px}
+.media-bar{display:flex;align-items:center;gap:8px;padding:8px 16px;
+  background:var(--surface-solid);border-top:1px solid var(--border);flex-shrink:0}
 .media-btn{width:38px;height:38px;border-radius:var(--radius);border:1px solid var(--border);
   background:var(--glass-bg);color:var(--text-dim);cursor:pointer;font-size:1.1rem;
   display:flex;align-items:center;justify-content:center;transition:all .2s ease;position:relative;
@@ -197,8 +195,8 @@ button{font-family:var(--font)}
   font-family:var(--mono);font-size:.7rem;overflow-x:auto;white-space:pre-wrap;display:none;
   max-height:240px;overflow-y:auto;border:1px solid var(--border)}
 .chat-controls{display:flex;gap:8px;align-items:center;
-  border-radius:0 0 var(--radius) var(--radius);background:var(--glass-bg);backdrop-filter:blur(8px);
-  border:1px solid var(--border);border-top:none;padding:8px 10px}
+  background:var(--surface-solid);border-top:1px solid var(--border);
+  padding:10px 16px;flex-shrink:0}
 .chat-controls input[type=text]{flex:1;padding:10px 14px;border-radius:var(--radius);border:1px solid var(--border);
   background:rgba(10,14,23,.5);color:var(--text);font-size:.9rem;outline:none;
   font-family:var(--font);transition:all .25s ease}
@@ -345,19 +343,19 @@ button{font-family:var(--font)}
 .error-box{padding:10px 14px;border-radius:var(--radius);background:rgba(255,23,68,.1);
   border:1px solid var(--error);color:var(--error);font-size:.82rem}
 .scroll-area{flex:1;overflow-y:auto;min-height:0}
-.brain-thumb.hidden-panel,.emotion-panel.hidden-panel{display:none !important}
+.brain-thumb.hidden-panel{display:none !important}
 
-/* == Session History ==================================================== */
-.session-history{margin-top:12px}
-.session-history .sh-label{font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;padding:0 14px 6px;font-weight:700}
-.session-item{display:flex;align-items:center;gap:8px;padding:8px 14px;margin-bottom:2px;
-  border-radius:var(--radius);color:var(--text-dim);cursor:pointer;font-size:.78rem;transition:all .2s ease;border:1px solid transparent}
+/* == Session History (in sidebar) ======================================= */
+.session-history{flex:1;overflow-y:auto;padding:0 8px;border-top:1px solid var(--border);min-height:0}
+.session-history .sh-label{font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;padding:10px 6px 6px;font-weight:700}
+.session-item{display:flex;align-items:center;gap:6px;padding:6px 8px;margin-bottom:2px;
+  border-radius:var(--radius);color:var(--text-dim);cursor:pointer;font-size:.72rem;transition:all .2s ease;border:1px solid transparent}
 .session-item:hover{background:rgba(0,212,255,.06);color:var(--text);border-color:rgba(0,212,255,.15)}
 .session-item.active-session{background:rgba(0,212,255,.1);color:var(--accent);border-color:rgba(0,212,255,.25)}
-.session-item .si-id{font-family:var(--mono);font-size:.72rem;letter-spacing:.3px}
-.session-item .si-ts{font-size:.66rem;color:var(--text-dim);margin-left:auto}
-.session-new-btn{width:100%;padding:8px;margin-top:4px;border:1px dashed var(--border);border-radius:var(--radius);
-  background:none;color:var(--text-dim);cursor:pointer;font-size:.78rem;transition:all .2s ease}
+.session-item .si-id{font-family:var(--mono);font-size:.68rem;letter-spacing:.3px}
+.session-item .si-ts{font-size:.62rem;color:var(--text-dim);margin-left:auto}
+.session-new-btn{width:100%;padding:6px;margin-top:4px;border:1px dashed var(--border);border-radius:var(--radius);
+  background:none;color:var(--text-dim);cursor:pointer;font-size:.72rem;transition:all .2s ease}
 .session-new-btn:hover{border-color:var(--accent);color:var(--accent)}
 </style>
 </head>
@@ -377,12 +375,6 @@ button{font-family:var(--font)}
   <div class="menu-item" data-page="page-monitoring"><span class="mi-icon">&#x1F4CA;</span> Monitoring</div>
   <div class="menu-item" data-page="page-logging"><span class="mi-icon">&#x1F4DC;</span> Logging</div>
   <div class="menu-item" data-page="page-controls"><span class="mi-icon">&#x1F39B;</span> Controls</div>
-  <div class="menu-divider"></div>
-  <div class="session-history" id="session-history">
-    <div class="sh-label">Sessions</div>
-    <div id="session-list"></div>
-    <button class="session-new-btn" id="new-session-btn">+ New Session</button>
-  </div>
 </div>
 
 <!-- == Header ========================================================= -->
@@ -404,12 +396,48 @@ button{font-family:var(--font)}
 </div>
 
 <!-- == Main =========================================================== -->
+<div class="content-wrap">
+
+<!-- == Left Sidebar ==================================================== -->
+<div class="sidebar">
+  <!-- Emotion Tracker (always visible) -->
+  <div class="emotion-panel" id="emotion-tracker">
+    <div class="emo-face-wrap">
+      <canvas id="pixel-face" width="80" height="80"></canvas>
+      <div class="emo-face-label" id="emo-face-label">neutral</div>
+    </div>
+    <div class="emo-current">
+      <span class="emo-emoji" id="emo-emoji">&#x1F610;</span>
+      <span class="emo-name" id="emo-name">neutral</span>
+    </div>
+    <div style="margin-bottom:6px"><span class="emo-badge" id="emo-badge" style="background:var(--emo-neutral)">neutral</span></div>
+    <div class="emo-mixed-wrap" id="emo-mixed-wrap" style="display:none">
+      <div class="emo-mixed-label">Mixed Feelings</div>
+      <div class="emo-mixed-list" id="emo-mixed-list"></div>
+    </div>
+    <div class="emo-mood">
+      <div class="emo-mood-label">Overall Mood</div>
+      <div class="emo-mood-bar"><div class="emo-mood-bar-fill" id="mood-bar-fill" style="width:50%"></div></div>
+    </div>
+    <button class="emo-expand-btn" id="emo-expand-btn">&#x25BC; History</button>
+    <div class="emo-history" id="emo-history"></div>
+  </div>
+
+  <!-- Session History -->
+  <div class="session-history" id="session-history">
+    <div class="sh-label">Sessions</div>
+    <div id="session-list"></div>
+    <button class="session-new-btn" id="new-session-btn">+ New Session</button>
+  </div>
+</div>
+
+<!-- == Main Content Area ============================================== -->
 <div class="main">
 
 <!-- PAGE: Terminal -->
 <div class="page active" id="page-terminal">
-  <div class="chat-log" id="chat-log" style="margin:0 210px"></div>
-  <div class="media-bar" id="media-bar" style="margin:0 210px">
+  <div class="chat-log" id="chat-log"></div>
+  <div class="media-bar" id="media-bar">
     <button class="media-btn" id="btn-stt" title="Microphone">&#x1F3A4;<span class="rec-dot"></span></button>
     <button class="media-btn" id="btn-cam" title="Webcam">&#x1F4F7;<span class="rec-dot"></span></button>
     <video id="cam-preview" class="webcam-preview" autoplay muted playsinline></video>
@@ -418,12 +446,12 @@ button{font-family:var(--font)}
     </div>
     <span class="media-label" id="media-label"></span>
   </div>
-  <div class="chat-controls" style="margin:0 210px">
+  <div class="chat-controls">
     <input type="text" id="chat-input" placeholder="Talk to the brain... (type /teach to enter teacher mode)" autocomplete="off"/>
     <button class="chat-btn" id="chat-send">Send</button>
   </div>
   <!-- Teacher Mode Bar -->
-  <div id="teacher-bar" style="display:none;margin:0 210px;padding:6px 12px;background:rgba(255,214,0,.08);border:1px solid var(--warning);border-top:none;border-radius:0 0 var(--radius) var(--radius);font-size:.78rem;align-items:center;color:var(--warning)">
+  <div id="teacher-bar" style="display:none;padding:6px 16px;background:rgba(255,214,0,.08);border-top:1px solid var(--warning);font-size:.78rem;align-items:center;color:var(--warning);flex-shrink:0">
     <span style="font-weight:700">&#x1F4DA; Teacher Mode Active</span>
     <span style="color:var(--text-dim);margin-left:8px">— your messages teach the brain. Type <code>/teach</code> again to exit.</span>
   </div>
@@ -445,6 +473,13 @@ button{font-family:var(--font)}
     <div class="ov-card"><div class="ov-val" id="ov-latency">&mdash;</div><div class="ov-label">Avg Response Time</div></div>
     <div class="ov-card"><div class="ov-val" id="ov-active">&mdash;</div><div class="ov-label">Active Services</div></div>
     <div class="ov-card"><div class="ov-val" id="ov-uptime">&mdash;</div><div class="ov-label">System Uptime</div></div>
+  </div>
+  <!-- DB Health Cards -->
+  <div style="margin-bottom:4px"><h3 style="font-size:.85rem;font-weight:700;color:var(--text-dim);letter-spacing:.3px">&#x1F5C4; Database Health</h3></div>
+  <div class="overview-cards" id="db-health-cards">
+    <div class="ov-card" id="db-redis"><div class="ov-val"><span class="dot-sm dot-unreachable" id="db-redis-dot"></span></div><div class="ov-label">Redis</div><div id="db-redis-detail" style="font-size:.7rem;color:var(--text-dim);margin-top:4px">&mdash;</div></div>
+    <div class="ov-card" id="db-elasticsearch"><div class="ov-val"><span class="dot-sm dot-unreachable" id="db-es-dot"></span></div><div class="ov-label">Elasticsearch</div><div id="db-es-detail" style="font-size:.7rem;color:var(--text-dim);margin-top:4px">&mdash;</div></div>
+    <div class="ov-card" id="db-edgedb"><div class="ov-val"><span class="dot-sm dot-unreachable" id="db-edge-dot"></span></div><div class="ov-label">EdgeDB</div><div id="db-edge-detail" style="font-size:.7rem;color:var(--text-dim);margin-top:4px">&mdash;</div></div>
   </div>
   <div class="svc-metrics-grid" id="svc-metrics-grid"></div>
 </div>
@@ -502,30 +537,8 @@ button{font-family:var(--font)}
 </div>
 
 </div><!-- /main -->
+</div><!-- /content-wrap -->
 </div><!-- /app -->
-
-<!-- == Emotion Panel (fixed, outside page flow) ======================== -->
-<div class="emotion-panel" id="emotion-tracker">
-  <div class="emo-face-wrap">
-    <canvas id="pixel-face" width="80" height="80"></canvas>
-    <div class="emo-face-label" id="emo-face-label">neutral</div>
-  </div>
-  <div class="emo-current">
-    <span class="emo-emoji" id="emo-emoji">&#x1F610;</span>
-    <span class="emo-name" id="emo-name">neutral</span>
-  </div>
-  <div style="margin-bottom:6px"><span class="emo-badge" id="emo-badge" style="background:var(--emo-neutral)">neutral</span></div>
-  <div class="emo-mixed-wrap" id="emo-mixed-wrap" style="display:none">
-    <div class="emo-mixed-label">Mixed Feelings</div>
-    <div class="emo-mixed-list" id="emo-mixed-list"></div>
-  </div>
-  <div class="emo-mood">
-    <div class="emo-mood-label">Overall Mood</div>
-    <div class="emo-mood-bar"><div class="emo-mood-bar-fill" id="mood-bar-fill" style="width:50%"></div></div>
-  </div>
-  <button class="emo-expand-btn" id="emo-expand-btn">&#x25BC; History</button>
-  <div class="emo-history" id="emo-history"></div>
-</div>
 
 <!-- == 3D Brain Thumbnail ============================================= -->
 <div class="brain-thumb" id="brain-thumb" title="Click to expand brain view">
@@ -619,9 +632,8 @@ $$('.menu-item').forEach(function(b){b.addEventListener('click',function(){
   $$('.page').forEach(function(x){x.classList.remove('active')});
   b.classList.add('active');
   $('#'+b.dataset.page).classList.add('active');
-  /* Show brain/emotions only on terminal page */
+  /* Show brain only on terminal page */
   var isTerminal=b.dataset.page==='page-terminal';
-  $('#emotion-tracker').classList.toggle('hidden-panel',!isTerminal);
   $('#brain-thumb').classList.toggle('hidden-panel',!isTerminal);
   if(b.dataset.page==='page-monitoring') refreshMonitoring();
   if(b.dataset.page==='page-logging') refreshLogs();
@@ -1451,9 +1463,36 @@ function refreshMonitoring(){
       $('#ov-latency').textContent=summary.avg_response_time_ms.toFixed(1)+'ms';
       $('#ov-active').textContent=(health.alive||0)+'/'+ALL_SVC_LIST.length;
       $('#ov-uptime').textContent=summary.uptime_hours.toFixed(1)+'h';
+      renderDbHealth(_healthCache);
       renderServiceMetrics(overview.services||{});
     })
     .catch(function(e){$('#svc-metrics-grid').innerHTML='<div class="error-box">'+esc(e.message)+'</div>'});
+}
+
+function renderDbHealth(services){
+  var dbs=[
+    {key:'redis',dotId:'db-redis-dot',detailId:'db-redis-detail',label:'Redis'},
+    {key:'elasticsearch',dotId:'db-es-dot',detailId:'db-es-detail',label:'Elasticsearch'},
+    {key:'edgedb',dotId:'db-edge-dot',detailId:'db-edge-detail',label:'EdgeDB'}
+  ];
+  dbs.forEach(function(db){
+    var h=services[db.key];
+    var dot=$(('#'+db.dotId));
+    var detail=$('#'+db.detailId);
+    if(h&&h.status==='alive'){
+      dot.className='dot-sm dot-alive';
+      detail.textContent=(h.ms?h.ms.toFixed(0)+'ms':'ok');
+      detail.style.color='var(--success)';
+    }else if(h&&h.status==='error'){
+      dot.className='dot-sm dot-degraded';
+      detail.textContent='degraded';
+      detail.style.color='var(--warning)';
+    }else{
+      dot.className='dot-sm dot-unreachable';
+      detail.textContent='unreachable';
+      detail.style.color='var(--error)';
+    }
+  });
 }
 
 var ALL_SVC_LIST=["thalamus","amygdala","hippocampus","cerebellum","neocortex","working-memory",

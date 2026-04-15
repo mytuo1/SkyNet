@@ -24,8 +24,6 @@ cd "$SCRIPT_DIR"
 COMPOSE="docker compose"
 BUILD_MAX_RETRIES=3
 GATEWAY_URL="http://localhost:8000"
-KNOBS_URL="http://localhost:8090"
-DASHBOARD_URL="http://localhost:8080"
 AUTONOMY_URL="http://localhost:8018"
 
 # ── Build with Retry ──────────────────────────────────────────────────────────
@@ -258,9 +256,16 @@ cmd_start() {
 
     echo ""
     success "SkyNet is online"
-    info "Gateway:   $GATEWAY_URL"
-    info "Dashboard: $DASHBOARD_URL"
-    info "Knobs:     $KNOBS_URL"
+    echo ""
+    info "  Dashboard:  $GATEWAY_URL              (main UI)"
+    info "  Health:     $GATEWAY_URL/health        (system health)"
+    info "  Knobs API:  $GATEWAY_URL/knobs/current (behavioral parameters)"
+    info ""
+    info "Management:"
+    info "  ./skynet.sh stop      Graceful shutdown"
+    info "  ./skynet.sh restart   Stop + start"
+    info "  ./skynet.sh status    Service health overview"
+    info "  ./skynet.sh logs      Tail all logs"
     info ""
     info "Try: curl -X POST $GATEWAY_URL/brain/process -H 'Content-Type: application/json' -d '{\"session_id\":\"s1\",\"user_input\":\"Hello\"}'"
 }
@@ -305,15 +310,15 @@ cmd_logs() {
 
 cmd_dashboard() {
     banner
-    info "Dashboard URL: $DASHBOARD_URL"
+    info "Dashboard URL: $GATEWAY_URL"
     if command -v xdg-open &>/dev/null; then
-        xdg-open "$DASHBOARD_URL" 2>/dev/null &
+        xdg-open "$GATEWAY_URL" 2>/dev/null &
         success "Opening dashboard in browser..."
     elif command -v open &>/dev/null; then
-        open "$DASHBOARD_URL" 2>/dev/null &
+        open "$GATEWAY_URL" 2>/dev/null &
         success "Opening dashboard in browser..."
     else
-        info "Open manually: $DASHBOARD_URL"
+        info "Open manually: $GATEWAY_URL"
     fi
 }
 

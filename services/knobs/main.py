@@ -132,6 +132,27 @@ def _write_knobs(new_knobs: KnobSet, source: str = "api"):
     })
 
 
+@app.get("/")
+async def root():
+    """Root endpoint — redirect to health or show service info."""
+    return {
+        "service": "knobs",
+        "description": "Dynamic behavioral parameter control",
+        "endpoints": [
+            "GET  /health",
+            "GET  /current",
+            "GET  /current/{name}",
+            "PUT  /set",
+            "PATCH /adjust?knob_name=...&value=...",
+            "PATCH /adjust-many",
+            "POST /preset/{name}",
+            "GET  /presets",
+            "GET  /history",
+            "POST /reset",
+        ],
+    }
+
+
 @app.get("/health")
 async def health():
     try:
