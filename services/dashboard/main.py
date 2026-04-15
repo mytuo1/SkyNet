@@ -178,9 +178,10 @@ async def api_services_health():
 
     tasks = [_check(name, url) for name, url in svc_checks.items()]
     # Elasticsearch
+    es_url = infra_checks["elasticsearch"][1]
     async def _check_es():
         try:
-            r = await http_client.get("http://elasticsearch:9200/_cluster/health", timeout=2.5)
+            r = await http_client.get(es_url, timeout=2.5)
             results["elasticsearch"] = {"status": "alive" if r.status_code == 200 else "error", "ms": round(r.elapsed.total_seconds() * 1000, 1)}
         except Exception:
             results["elasticsearch"] = {"status": "unreachable", "ms": 0}
@@ -197,10 +198,11 @@ async def api_services_health():
         else:
             results["redis"] = {"status": "unreachable", "ms": 0}
     tasks.append(_check_redis())
-    # Gateway — if dashboard is being served, gateway is reachable
+    # Gateway
+    gw_url = infra_checks["gateway"][1]
     async def _check_gateway():
         try:
-            r = await http_client.get("http://gateway:80/health", timeout=2.5)
+            r = await http_client.get(gw_url, timeout=2.5)
             results["gateway"] = {"status": "alive" if r.status_code == 200 else "error", "ms": round(r.elapsed.total_seconds() * 1000, 1)}
         except Exception:
             results["gateway"] = {"status": "unreachable", "ms": 0}
