@@ -117,58 +117,50 @@ class ProcessRequest(BaseModel):
 
 
 async def call(service: str, path: str, data: dict,
-               timeout: float = 30.0, retries: int = 2) -> dict:
-    """Call a brain region with retries. Returns {} on failure — brain degrades gracefully."""
+               timeout: float = 120.0, retries: int = 1) -> dict:
+    """Call a brain region. Returns {} on failure — brain degrades gracefully.
+    No aggressive retries — let services run as long as they need.
+    Errors are logged in the trace so the user sees what happened."""
     url = f"{SERVICES[service]}{path}"
-    last_error = ""
-    for attempt in range(1, retries + 1):
-        t0 = time.time()
+    t0 = time.time()
+    try:
+        resp = await http.post(url, json=data, timeout=timeout)
+        latency_ms = (time.time() - t0) * 1000
+        asyncio.create_task(_report_metric(service, latency_ms, "ok"))
         try:
-            resp = await http.post(url, json=data, timeout=timeout)
-            latency_ms = (time.time() - t0) * 1000
-            asyncio.create_task(_report_metric(service, latency_ms, "ok"))
-            try:
-                return resp.json()
-            except Exception:
-                return {"success": True, "data": {}}
-        except Exception as e:
-            latency_ms = (time.time() - t0) * 1000
-            last_error = f"{type(e).__name__}: {e}"
-            if attempt < retries:
-                await asyncio.sleep(0.3 * attempt)  # brief back-off
-                continue
-            asyncio.create_task(_report_metric(service, latency_ms, "error"))
+            return resp.json()
+        except Exception:
+            return {"success": True, "data": {}}
+    except Exception as e:
+        latency_ms = (time.time() - t0) * 1000
+        error_msg = f"{type(e).__name__}: {e}"
+        asyncio.create_task(_report_metric(service, latency_ms, "error"))
     return {
         "success": False,
-        "error": f"{service}{path} failed after {retries} attempts: {last_error[:80]}",
+        "error": f"{service}{path}: {error_msg[:120]}",
         "data": {},
     }
 
 
-async def call_get(service: str, path: str, timeout: float = 10.0,
-                   retries: int = 2) -> dict:
-    """GET call to a brain region with retries."""
+async def call_get(service: str, path: str, timeout: float = 60.0,
+                   retries: int = 1) -> dict:
+    """GET call to a brain region. No aggressive retries."""
     url = f"{SERVICES[service]}{path}"
-    last_error = ""
-    for attempt in range(1, retries + 1):
-        t0 = time.time()
+    t0 = time.time()
+    try:
+        resp = await http.get(url, timeout=timeout)
+        latency_ms = (time.time() - t0) * 1000
+        asyncio.create_task(_report_metric(service, latency_ms, "ok"))
         try:
-            resp = await http.get(url, timeout=timeout)
-            latency_ms = (time.time() - t0) * 1000
-            asyncio.create_task(_report_metric(service, latency_ms, "ok"))
-            try:
-                return resp.json()
-            except Exception:
-                return {"success": True, "data": {}}
-        except Exception as e:
-            latency_ms = (time.time() - t0) * 1000
-            last_error = f"{type(e).__name__}: {e}"
-            if attempt < retries:
-                await asyncio.sleep(0.3 * attempt)
-                continue
-            asyncio.create_task(_report_metric(service, latency_ms, "error"))
+            return resp.json()
+        except Exception:
+            return {"success": True, "data": {}}
+    except Exception as e:
+        latency_ms = (time.time() - t0) * 1000
+        error_msg = f"{type(e).__name__}: {e}"
+        asyncio.create_task(_report_metric(service, latency_ms, "error"))
     return {
-        "error": f"{service}{path} failed after {retries} attempts: {last_error[:80]}",
+        "error": f"{service}{path}: {error_msg[:120]}",
     }
 
 
@@ -229,7 +221,7 @@ async def call_llm(user_input: str, context: str, amygdala: dict, k,
         prompt     = user_message,
         system     = system,
         model_tier = "main",
-        max_tokens = 4096
+        max_tokens = 16384
     )
 
 
@@ -363,7 +355,7 @@ def assemble_context(
                 )
         if corrections:
             parts.append("\n## Emotion Corrections (Teacher Feedback)")
-            for c in corrections[:5]:
+            for c in corrections[:10]:
                 parts.append(
                     f"- For \"{c.get('input','')}\" you detected "
                     f"'{c.get('detected_emotion','')}' but the correct "
@@ -383,13 +375,13 @@ def assemble_context(
     # Episodic memory
     if episodic:
         parts.append("\n## Relevant Past Episodes")
-        for ep in episodic[:4]:
+        for ep in episodic[:8]:
             parts.append(f"- [{ep.get('similarity',0):.2f}] {ep.get('summary','')}")
 
     # Semantic knowledge
     if semantic:
         parts.append("\n## Relevant Knowledge")
-        for item in semantic[:5]:
+        for item in semantic[:10]:
             parts.append(
                 f"- [{item.get('domain','')}] {item.get('content','')}"
             )
@@ -397,7 +389,7 @@ def assemble_context(
     # Cross-domain analogies
     if analogies:
         parts.append("\n## Cross-Domain Insights")
-        for a in analogies[:2]:
+        for a in analogies[:5]:
             insight = a.get("concept_mapping", {}).get("transfer_insight", "")
             parts.append(
                 f"- [{a.get('source_domain','')}] {a.get('pattern_type','')} "
@@ -684,16 +676,16 @@ async def process(req: ProcessRequest):
         # Hippocampus
         _timed("hippocampus", call("hippocampus", "/recall", base_req), pb_times)
         if ar.get("needs_memory") else _timed("hippocampus", _noop({"data": {"episodes": []}}), pb_times),
-        # Neocortex — 8s timeout (embed + ES search)
+        # Neocortex — generous timeout (embed + ES search can be slow on cold start)
         _timed("neocortex", call("neocortex", "/search", {
             **base_req,
             "domain": (ar.get("required_regions") or ["general"])[0]
-        }, timeout=8.0), pb_times),
-        # Cross-domain — 10s timeout (LLM extract + embed + ES + store)
+        }, timeout=60.0), pb_times),
+        # Cross-domain — generous timeout (LLM extract + embed + ES + store)
         _timed("cross_domain", call("cross_domain", "/find-analogies", {
             **base_req,
             "source_domain": (ar.get("required_regions") or ["general"])[0]
-        }, timeout=10.0), pb_times) if k.analogy_seeking > 0.3
+        }, timeout=60.0), pb_times) if k.analogy_seeking > 0.3
         else _timed("cross_domain", _noop({"data": {"analogies": []}}), pb_times),
         # Compass
         _timed("compass", call("compass", "/read", {**base_req, "working_memory": wm}), pb_times),
@@ -924,10 +916,10 @@ async def process(req: ProcessRequest):
         ver_resp = await call("verification", "/verify", {
             "request_id": request_id,
             "session_id": req.session_id,
-            "claim":      raw_response[:400],
-            "context":    req.user_input[:200],
+            "claim":      raw_response[:2000],
+            "context":    req.user_input[:1000],
             "domain":     (ar.get("required_regions") or ["general"])[0]
-        }, timeout=5.0)
+        }, timeout=60.0)
         verification = ver_resp.get("data", {})
         trace["verification"] = {
             "status":     verification.get("status"),

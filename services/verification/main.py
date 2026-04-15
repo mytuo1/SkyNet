@@ -36,7 +36,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 knobs  = KnobsClient()
 events = EventBus()
-http   = httpx.AsyncClient(timeout=10.0)
+http   = httpx.AsyncClient(timeout=60.0)
 
 NEOCORTEX_URL = os.getenv("NEOCORTEX_URL",    "http://neocortex:8004")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",        "http://host.docker.internal:11434")
@@ -111,7 +111,7 @@ async def embed(text: str) -> list:
             resp = await http.post(
                 f"{OLLAMA_URL}/api/embeddings",
                 json={"model": EMBED_MODEL, "prompt": text[:2000]},
-                timeout=5.0
+                timeout=30.0
             )
             vec = resp.json()["embedding"]
             # Guard against zero-magnitude vectors (cosine similarity rejects them)
@@ -137,7 +137,7 @@ async def search_neocortex(embedding: list, text: str = "",
                     "user_input": text
                 },
                 params={"domain": domain, "top_k": top_k},
-                timeout=5.0
+                timeout=30.0
             )
             return resp.json().get("data", {}).get("results", [])
         except Exception:

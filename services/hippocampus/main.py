@@ -69,7 +69,7 @@ async def embed(text: str) -> list:
             resp = await http.post(
                 f"{OLLAMA_URL}/api/embeddings",
                 json={"model": EMBED_MODEL, "prompt": text[:2000]},
-                timeout=5.0
+                timeout=30.0
             )
             vec = resp.json()["embedding"]
             # Guard against zero-magnitude vectors
@@ -105,7 +105,7 @@ async def quick_summarize(content: str) -> str:
                     "stream": False,
                     "options": {"num_predict": 80}
                 },
-                timeout=8.0
+                timeout=30.0
             )
             return resp.json().get("response", content[:200]).strip()
         except Exception:

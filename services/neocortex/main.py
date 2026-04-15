@@ -31,7 +31,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 knobs  = KnobsClient()
 events = EventBus()
-http   = httpx.AsyncClient(timeout=30.0)
+http   = httpx.AsyncClient(timeout=60.0)
 
 ES_URL     = os.getenv("ELASTICSEARCH_URL", "http://elasticsearch:9200")
 OLLAMA_URL = os.getenv("OLLAMA_URL",        "http://host.docker.internal:11434")
@@ -132,7 +132,7 @@ async def embed(text: str) -> list:
             resp = await http.post(
                 f"{OLLAMA_URL}/api/embeddings",
                 json={"model": EMBED_MODEL, "prompt": text[:2000]},
-                timeout=5.0
+                timeout=30.0
             )
             vec = resp.json()["embedding"]
             # Guard against zero-magnitude vectors (cosine similarity rejects them)

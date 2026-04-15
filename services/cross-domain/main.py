@@ -34,7 +34,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 knobs  = KnobsClient()
 events = EventBus()
-http   = httpx.AsyncClient(timeout=15.0)
+http   = httpx.AsyncClient(timeout=60.0)
 
 NEOCORTEX_URL = os.getenv("NEOCORTEX_URL",    "http://neocortex:8004")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",        "http://host.docker.internal:11434")
@@ -126,7 +126,7 @@ async def embed(text: str) -> list:
             resp = await http.post(
                 f"{OLLAMA_URL}/api/embeddings",
                 json={"model": EMBED_MODEL, "prompt": text[:2000]},
-                timeout=5.0
+                timeout=30.0
             )
             vec = resp.json()["embedding"]
             if all(v == 0.0 for v in vec[:10]):

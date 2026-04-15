@@ -129,7 +129,7 @@ async def complete(
     system:      str   = "",
     model_tier:  str   = "fast",
     model:       str   = None,
-    max_tokens:  int   = 4096,
+    max_tokens:  int   = 8192,
     temperature: float = 0.7,
     json_mode:   bool  = False,
 ) -> str:

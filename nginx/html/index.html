@@ -629,7 +629,16 @@ function chatHistoryKey(sid){return 'skynet_chat_'+(sid||SESSION)}
 function saveChatMessage(role,html,botData){
   var key=chatHistoryKey();
   var history=JSON.parse(localStorage.getItem(key)||'[]');
-  var entry={role:role,html:html,ts:Date.now()};
+  /* Strip trace/pre blocks from HTML before persisting — they're huge and
+     blow out localStorage. The trace is still visible in the live session. */
+  var cleanHtml=html;
+  if(role==='bot'){
+    /* Remove the trace toggle + trace div (contains full JSON dump) */
+    cleanHtml=html.replace(/<span class="trace-toggle"[^]*?<\/div>$/,'');
+    /* Also remove the raw JSON <pre> if somehow still present */
+    cleanHtml=cleanHtml.replace(/<pre[^>]*>[\s\S]*?<\/pre>/g,'');
+  }
+  var entry={role:role,html:cleanHtml,ts:Date.now()};
   if(botData){
     /* Store just enough of the response to recreate meta badges */
     entry.botData={
