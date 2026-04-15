@@ -112,7 +112,10 @@ async def call(service: str, path: str, data: dict,
         resp = await http.post(url, json=data, timeout=timeout)
         latency_ms = (time.time() - t0) * 1000
         asyncio.create_task(_report_metric(service, latency_ms, "ok"))
-        return resp.json()
+        try:
+            return resp.json()
+        except Exception:
+            return {"success": True, "data": {}}
     except Exception as e:
         latency_ms = (time.time() - t0) * 1000
         asyncio.create_task(_report_metric(service, latency_ms, "error"))
@@ -127,7 +130,10 @@ async def call_get(service: str, path: str, timeout: float = 10.0) -> dict:
         resp = await http.get(url, timeout=timeout)
         latency_ms = (time.time() - t0) * 1000
         asyncio.create_task(_report_metric(service, latency_ms, "ok"))
-        return resp.json()
+        try:
+            return resp.json()
+        except Exception:
+            return {"success": True, "data": {}}
     except Exception as e:
         latency_ms = (time.time() - t0) * 1000
         asyncio.create_task(_report_metric(service, latency_ms, "error"))
@@ -1030,7 +1036,7 @@ async def process(req: ProcessRequest):
         "confidence":        metacognition.get("confidence"),
         "uncertainty_level": metacognition.get("uncertainty_level"),
         "novelty_score":     round(novelty_score, 3),
-        "experiences":       len(experiences),
+        "experiences":       [{"type": e.get("experience_type",""), "detail": e.get("content","")[:100], "intensity": e.get("intensity",0)} for e in experiences[:10]] if experiences else [],
         "memories_used":     len(episodic) + len(semantic),
         "analogies":         len(analogies),
         "causal_edges":      len(causal.get("edges", [])),

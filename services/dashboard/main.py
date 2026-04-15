@@ -429,6 +429,24 @@ async def api_logs_record(body: dict):
     return JSONResponse({"ok": True})
 
 
+@app.get("/api/logs/all")
+async def api_logs_all(
+    limit: int = Query(50, ge=1, le=1000),
+):
+    """Get recent logs across all services."""
+    if redis_pool is None:
+        return JSONResponse({"logs": []})
+
+    raw = await redis_pool.lrange("logs:_all", 0, limit - 1)
+    logs = []
+    for r in raw:
+        try:
+            logs.append(json.loads(r))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return JSONResponse({"logs": logs})
+
+
 @app.get("/api/logs/{service}")
 async def api_logs_service(
     service: str,
@@ -449,24 +467,6 @@ async def api_logs_service(
         if level != "all" and entry.get("level") != level:
             continue
         logs.append(entry)
-    return JSONResponse({"logs": logs})
-
-
-@app.get("/api/logs/all")
-async def api_logs_all(
-    limit: int = Query(50, ge=1, le=1000),
-):
-    """Get recent logs across all services."""
-    if redis_pool is None:
-        return JSONResponse({"logs": []})
-
-    raw = await redis_pool.lrange("logs:_all", 0, limit - 1)
-    logs = []
-    for r in raw:
-        try:
-            logs.append(json.loads(r))
-        except (json.JSONDecodeError, TypeError):
-            continue
     return JSONResponse({"logs": logs})
 
 
@@ -2086,15 +2086,13 @@ function addLiveEvent(m){
 
 /* -- Knob Controls ---------------------------------------------------- */
 var knobGroups={
-  Personality:['openness','conscientiousness','extraversion','agreeableness','neuroticism',
-    'assertiveness','empathy','optimism','adventurousness','humility'],
-  Cognition:['creativity','focus','verbosity','humor','formality','confidence_threshold',
-    'curiosity','skepticism','patience','adaptability'],
-  Framework:['analogical_weight','first_principles_weight','bayesian_weight',
-    'dialectical_weight','systems_weight'],
-  Ethics:['moral_weight','caution','transparency','autonomy_level','privacy_sensitivity',
-    'fairness_weight'],
-  'Higher Emotions':['gratitude','belonging','regret','alarm']
+  Personality:['humor','honesty','empathy','formality','verbosity',
+    'creativity','skepticism','assertiveness','curiosity','warmth'],
+  Cognition:['reasoning_depth','analogy_seeking','verification_threshold',
+    'memory_weight','novelty_sensitivity'],
+  Framework:['swarm_preference','framework_threshold'],
+  Ethics:['ethical_weight','care_explicitness'],
+  'Higher Emotions':['gratitude_sensitivity','belonging_weight']
 };
 
 function loadKnobs(){
