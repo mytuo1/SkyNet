@@ -593,10 +593,10 @@ async def process(req: ProcessRequest):
     # ── STEPS 1-3: Amygdala + Working Memory + Cerebellum (parallel) ─────────
     t_early = time.time()
     ar_resp, wm_resp, cb_resp = await asyncio.gather(
-        call("amygdala", "/evaluate", base_req, timeout=10.0),
+        call("amygdala", "/evaluate", base_req),
         call("working_memory", "/context",
-             {"session_id": req.session_id, "action": "get_all"}, timeout=10.0),
-        call("cerebellum", "/recognize", base_req, timeout=10.0),
+             {"session_id": req.session_id, "action": "get_all"}),
+        call("cerebellum", "/recognize", base_req),
     )
     t_early_done = time.time()
 
@@ -648,25 +648,25 @@ async def process(req: ProcessRequest):
     pb_times: dict[str, float] = {}   # per-service timings inside the batch
     parallel_batch = [
         # Hippocampus
-        _timed("hippocampus", call("hippocampus", "/recall", base_req, timeout=3.0), pb_times)
+        _timed("hippocampus", call("hippocampus", "/recall", base_req), pb_times)
         if ar.get("needs_memory") else _timed("hippocampus", _noop({"data": {"episodes": []}}), pb_times),
         # Neocortex
         _timed("neocortex", call("neocortex", "/search", {
             **base_req,
             "domain": (ar.get("required_regions") or ["general"])[0]
-        }, timeout=3.0), pb_times),
+        }), pb_times),
         # Cross-domain
         _timed("cross_domain", call("cross_domain", "/find-analogies", {
             **base_req,
             "source_domain": (ar.get("required_regions") or ["general"])[0]
-        }, timeout=3.0), pb_times) if k.analogy_seeking > 0.3
+        }), pb_times) if k.analogy_seeking > 0.3
         else _timed("cross_domain", _noop({"data": {"analogies": []}}), pb_times),
         # Compass
-        _timed("compass", call("compass", "/read", {**base_req, "working_memory": wm}, timeout=3.0), pb_times),
+        _timed("compass", call("compass", "/read", {**base_req, "working_memory": wm}), pb_times),
         # Goals agenda
-        _timed("goals", call_get("goals", f"/agenda?session_id={req.session_id}", timeout=3.0), pb_times),
+        _timed("goals", call_get("goals", f"/agenda?session_id={req.session_id}"), pb_times),
         # Vision context (if requested or VISION_ENABLED)
-        _timed("vision", call_get("vision", "/current", timeout=3.0), pb_times)
+        _timed("vision", call_get("vision", "/current"), pb_times)
         if req.include_vision else _timed("vision", _noop({}), pb_times),
     ]
 
@@ -798,7 +798,7 @@ async def process(req: ProcessRequest):
         trace["reasoning_path"] = "framework"
         fw_resp      = await call("framework", "/process", {
             **base_req, "amygdala_result": ar, "context": context
-        }, timeout=180.0)
+        })
         raw_response = (
             fw_resp.get("data", {}).get("final_output") or
             fw_resp.get("data", {}).get("synthesis", "") or
@@ -1014,7 +1014,7 @@ async def process(req: ProcessRequest):
                 "confidence":   metacognition.get("confidence", 0.7)
             },
             "auto_apply": True
-        }, timeout=90.0))
+        }))
 
     # Causal graph extraction (background)
     asyncio.create_task(call("causal_graph", "/extract", {
