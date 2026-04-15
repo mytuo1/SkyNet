@@ -292,7 +292,7 @@ async def update_progress(goal_id: str, req: UpdateProgressRequest):
     }
 
 
-@app.post("/agenda")
+@app.get("/agenda")
 async def generate_agenda(session_id: str = ""):
     """
     Generate an autonomous work agenda based on active goals.

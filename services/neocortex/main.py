@@ -126,22 +126,29 @@ async def shutdown():
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 async def embed(text: str) -> list:
-    """Generate embedding via local Ollama with retry."""
+    """Generate embedding via local Ollama — 15s timeout per attempt."""
     for attempt in range(2):
         try:
+            t0 = time.time()
             resp = await http.post(
                 f"{OLLAMA_URL}/api/embeddings",
                 json={"model": EMBED_MODEL, "prompt": text[:2000]},
-                timeout=30.0
+                timeout=15.0
             )
+            elapsed = (time.time() - t0) * 1000
             vec = resp.json()["embedding"]
             # Guard against zero-magnitude vectors (cosine similarity rejects them)
             if all(v == 0.0 for v in vec[:10]):
+                print(f"[neocortex] embed returned zero vector after {elapsed:.0f}ms", flush=True)
                 return []
+            if elapsed > 3000:
+                print(f"[neocortex] embed slow: {elapsed:.0f}ms", flush=True)
             return vec
-        except Exception:
+        except Exception as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[neocortex] embed attempt {attempt+1} failed after {elapsed:.0f}ms ({type(e).__name__}): {e}", flush=True)
             if attempt == 0:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
     return []
 
 
@@ -229,6 +236,9 @@ async def search(req: BrainRequest, domain: str = None, top_k: int = 8):
     """
     start     = time.time()
     embedding = await embed(req.user_input)
+    embed_ms  = round((time.time() - start) * 1000, 1)
+    if embed_ms > 3000:
+        print(f"[neocortex] /search embed took {embed_ms:.0f}ms (empty={not embedding})", flush=True)
 
     must_clauses = []
     if domain and domain not in ("general", ""):

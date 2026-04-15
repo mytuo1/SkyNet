@@ -36,12 +36,16 @@ async def _noop(val=None):
 
 
 async def _timed(label: str, coro, timings: dict):
-    """Wrap an awaitable to record its wall-clock time in *timings*."""
+    """Wrap an awaitable to record its wall-clock time in *timings*.
+    Logs a warning to docker logs if any step exceeds 10 seconds."""
     t0 = time.time()
     try:
         result = await coro
     finally:
-        timings[label] = round((time.time() - t0) * 1000, 1)
+        elapsed_ms = round((time.time() - t0) * 1000, 1)
+        timings[label] = elapsed_ms
+        if elapsed_ms > 10_000:
+            print(f"[thalamus] SLOW STEP: {label} took {elapsed_ms:.0f}ms", flush=True)
     return result
 
 
@@ -52,7 +56,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 knobs  = KnobsClient()
 events = EventBus()
-http   = httpx.AsyncClient(timeout=120.0)
+http   = httpx.AsyncClient(timeout=30.0)
 
 # Dashboard URL for metrics reporting
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://dashboard:8080")
@@ -117,10 +121,9 @@ class ProcessRequest(BaseModel):
 
 
 async def call(service: str, path: str, data: dict,
-               timeout: float = 120.0, retries: int = 1) -> dict:
+               timeout: float = 30.0, retries: int = 1) -> dict:
     """Call a brain region. Returns {} on failure — brain degrades gracefully.
-    No aggressive retries — let services run as long as they need.
-    Errors are logged in the trace so the user sees what happened."""
+    Errors are logged to docker logs and included in the trace."""
     url = f"{SERVICES[service]}{path}"
     t0 = time.time()
     try:
@@ -134,6 +137,7 @@ async def call(service: str, path: str, data: dict,
     except Exception as e:
         latency_ms = (time.time() - t0) * 1000
         error_msg = f"{type(e).__name__}: {e}"
+        print(f"[thalamus] call FAILED {service}{path} after {latency_ms:.0f}ms: {error_msg[:200]}", flush=True)
         asyncio.create_task(_report_metric(service, latency_ms, "error"))
     return {
         "success": False,
@@ -142,9 +146,9 @@ async def call(service: str, path: str, data: dict,
     }
 
 
-async def call_get(service: str, path: str, timeout: float = 60.0,
+async def call_get(service: str, path: str, timeout: float = 30.0,
                    retries: int = 1) -> dict:
-    """GET call to a brain region. No aggressive retries."""
+    """GET call to a brain region. Errors logged to docker logs."""
     url = f"{SERVICES[service]}{path}"
     t0 = time.time()
     try:
@@ -158,6 +162,7 @@ async def call_get(service: str, path: str, timeout: float = 60.0,
     except Exception as e:
         latency_ms = (time.time() - t0) * 1000
         error_msg = f"{type(e).__name__}: {e}"
+        print(f"[thalamus] call_get FAILED {service}{path} after {latency_ms:.0f}ms: {error_msg[:200]}", flush=True)
         asyncio.create_task(_report_metric(service, latency_ms, "error"))
     return {
         "error": f"{service}{path}: {error_msg[:120]}",
@@ -699,6 +704,10 @@ async def process(req: ProcessRequest):
     results = await asyncio.gather(*parallel_batch, return_exceptions=True)
     step_times["parallel_batch"] = round((time.time() - t4) * 1000, 1)
     step_times["parallel_batch_detail"] = pb_times
+    pb_ms = step_times["parallel_batch"]
+    if pb_ms > 5000:
+        slow_parts = ", ".join(f"{k}={v:.0f}ms" for k, v in pb_times.items() if v > 3000)
+        print(f"[thalamus] parallel_batch took {pb_ms:.0f}ms — slow: {slow_parts}", flush=True)
 
     def safe(res, key=None, default=None):
         if isinstance(res, (Exception, BaseException)):
@@ -838,6 +847,9 @@ async def process(req: ProcessRequest):
         raw_response = await call_llm(req.user_input, context, ar, k,
                                        teacher_mode=req.teacher_mode)
     step_times["reasoning"] = round((time.time() - t9) * 1000, 1)
+    reasoning_ms = step_times["reasoning"]
+    if reasoning_ms > 10000:
+        print(f"[thalamus] reasoning ({trace.get('reasoning_path','?')}) took {reasoning_ms:.0f}ms", flush=True)
 
     # ── STEP 9b: Teacher mode — extract and apply emotion corrections ─────────
     if req.teacher_mode:
@@ -944,6 +956,9 @@ async def process(req: ProcessRequest):
                 "session_id":            req.session_id
             }))
     step_times["verification"] = round((time.time() - t11) * 1000, 1)
+    ver_ms = step_times["verification"]
+    if ver_ms > 5000:
+        print(f"[thalamus] verification took {ver_ms:.0f}ms", flush=True)
 
     # ── STEP 12: Compass enrichment ───────────────────────────────────────────
     t12 = time.time()
@@ -1065,6 +1080,13 @@ async def process(req: ProcessRequest):
     trace["db_operations"] = db_ops
     if errors:
         trace["errors"] = errors
+
+    # Log total pipeline time and slow steps to docker logs
+    slow = [f"{k}={v:.0f}ms" for k, v in step_times.items()
+            if isinstance(v, (int, float)) and v > 5000]
+    print(f"[thalamus] /process completed in {execution_ms:.0f}ms"
+          + (f" — slow steps: {', '.join(slow)}" if slow else ""),
+          flush=True)
 
     # Report thalamus-level metric (the overall /process latency)
     asyncio.create_task(_report_metric("thalamus", execution_ms, "ok"))

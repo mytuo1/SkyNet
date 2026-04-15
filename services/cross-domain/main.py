@@ -120,21 +120,28 @@ async def get_knobs():
 
 
 async def embed(text: str) -> list:
-    """Generate embedding via local Ollama with retry."""
+    """Generate embedding via local Ollama — 15s timeout per attempt."""
     for attempt in range(2):
+        t0 = time.time()
         try:
             resp = await http.post(
                 f"{OLLAMA_URL}/api/embeddings",
                 json={"model": EMBED_MODEL, "prompt": text[:2000]},
-                timeout=30.0
+                timeout=15.0
             )
+            elapsed = (time.time() - t0) * 1000
             vec = resp.json()["embedding"]
             if all(v == 0.0 for v in vec[:10]):
+                print(f"[cross-domain] embed returned zero vector after {elapsed:.0f}ms", flush=True)
                 return []
+            if elapsed > 3000:
+                print(f"[cross-domain] embed slow: {elapsed:.0f}ms", flush=True)
             return vec
-        except Exception:
+        except Exception as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[cross-domain] embed attempt {attempt+1} failed after {elapsed:.0f}ms ({type(e).__name__}): {e}", flush=True)
             if attempt == 0:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
     return []
 
 
@@ -246,7 +253,11 @@ async def find_analogies(req: FindAnalogiesRequest):
         )
 
     # Extract pattern from the query
+    t_extract = time.time()
     query_pattern = await extract_pattern(req.user_input, req.source_domain)
+    extract_ms = round((time.time() - t_extract) * 1000, 1)
+    if extract_ms > 3000:
+        print(f"[cross-domain] extract_pattern took {extract_ms:.0f}ms (includes LLM + embed)", flush=True)
 
     if not query_pattern:
         return BrainResponse(
