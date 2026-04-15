@@ -487,13 +487,23 @@ RESPONSE RETURNED TO USER
          │
          ▼ (background — non-blocking)
 STEP 13  CAUSAL GRAPH extracts cause-effect pairs from response
-STEP 14  WORKING MEMORY updated with new thought
+STEP 14  WORKING MEMORY updated with new thought (full text, no truncation)
 STEP 15  HIPPOCAMPUS encodes new episode (async)
          LEARNER logs interaction for continual training (async)
          SELF-UPDATE triggered if significance > 0.70 (async)
          CONSOLIDATION triggered if memory pressure > 0.72 (async)
 </pre>
 ---------------------------------------------------------------------------------
+
+### Reliability: Retries and Error Handling
+
+Every inter-service call in the pipeline uses automatic retry with exponential
+back-off (2 attempts). If a service is temporarily unreachable, the call is
+retried after a brief delay. Errors are logged and surfaced in the response
+trace (visible in the dashboard under ▶ trace) rather than causing silent
+failures. Embedding calls (Ollama) also retry on failure, with graceful
+fallback to empty results. The brain continues to function even when
+individual services are degraded — the remaining context fills in the gaps.
 
 ---
 
@@ -1203,7 +1213,7 @@ k3s (self-host)  Any VPS              Any tier  Full Kubernetes on $10/mo VPS
 
 ### One command starts everything:
 <pre>
-docker compose up -d
+./skynet.sh start     # or: docker compose up -d
 </pre>
 
 ### Then:
@@ -1226,12 +1236,22 @@ POST /autonomy/think-once        → trigger one thinking cycle
 GET  /autonomy/thoughts          → see what the brain has thought on its own
 </pre>
 
+### Conversation Persistence:
+<pre>
+- Chat history survives page refresh (localStorage)
+- Full conversations stored in working memory (Redis, no truncation)
+- LLM receives entire session history as context
+- Session switching restores full conversation thread
+- 24 turns kept per session in working memory
+</pre>
+
 ### Each service:
 <pre>
 - Independent Docker container
 - Its own FastAPI application
 - Reads knobs from Redis on every request
 - Publishes/subscribes to Redis event bus
+- Automatic retries (2 attempts with exponential back-off) on all inter-service calls
 - /health endpoint
 - /knobs endpoint (shows current parameters)
 - Restartable independently without affecting others

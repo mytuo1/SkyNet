@@ -56,6 +56,47 @@ events = EventBus()
 http   = httpx.AsyncClient(timeout=30.0)
 ```
 
+### Inter-service calls use retries:
+The thalamus `call()` and `call_get()` helpers automatically retry failed
+requests (2 attempts with exponential back-off). Errors are logged and
+surfaced in the response trace. If you add a new endpoint that calls
+other services, use the same httpx client with proper error handling:
+```python
+# Pattern for calling other services with retry
+async def call_with_retry(url, payload, retries=2):
+    last_error = None
+    for attempt in range(retries):
+        try:
+            resp = await http.post(url, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            last_error = e
+            if attempt < retries - 1:
+                await asyncio.sleep(0.5 * (attempt + 1))
+    return {"error": str(last_error)}
+```
+
+### Embedding calls must guard against failures:
+All embed() functions return `[]` on failure (never zero vectors, which
+crash Elasticsearch cosine similarity). Use 5s timeout and retry once:
+```python
+async def embed(text):
+    for attempt in range(2):
+        try:
+            r = await http.post(OLLAMA_URL + "/api/embeddings",
+                                json={"model": EMBED_MODEL, "prompt": text},
+                                timeout=5.0)
+            vec = r.json().get("embedding", [])
+            if not vec or all(v == 0.0 for v in vec[:10]):
+                return []
+            return vec
+        except Exception:
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+    return []
+```
+
 ### Every service has these two endpoints (mandatory):
 ```python
 @app.get("/health")
@@ -130,6 +171,10 @@ events.publish("experience.new", {
 - Never let unhandled exceptions crash the service
 - Never add a `if __name__ == "__main__":` block
 - Never hardcode API keys or service URLs
+- Never hardcode timeouts — use retries with exponential back-off
+- Never truncate conversation data stored in working memory
+- Never return zero-magnitude vectors from embed() — return `[]` instead
+- Never use `r.get()` on Redis list keys — check `r.type(key)` first
 
 ## Adding a new endpoint
 

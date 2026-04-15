@@ -49,6 +49,21 @@ git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
 ./skynet.sh dashboard  # opens http://localhost:8080
 ```
 
+### Available commands
+
+| Command | Description |
+|---------|-------------|
+| `./skynet.sh start` | Full startup: build, init DBs, start all services |
+| `./skynet.sh stop` | Graceful shutdown |
+| `./skynet.sh restart` | Quick restart — preserves all data and conversations |
+| `./skynet.sh status` | Show all service health |
+| `./skynet.sh logs [svc]` | Tail logs (all or specific service) |
+| `./skynet.sh dashboard` | Open the web dashboard |
+| `./skynet.sh think` | Activate autonomous thinking |
+| `./skynet.sh update` | Git pull + rebuild changed services |
+| `./skynet.sh rebuild` | Wipe databases and rebuild fresh (confirms first) |
+| `./skynet.sh reset` | Factory reset (alias for rebuild) |
+
 ---
 
 ## Prerequisites
@@ -570,6 +585,8 @@ Access the web dashboard at **http://localhost:8080** after startup.
 
 Features:
 - **Terminal**: Chat with the brain, voice input (STT), webcam emotional analysis
+- **Chat History**: Conversations are persisted in browser localStorage and survive page refresh. Switch between sessions in the sidebar — each session's full history is restored.
+- **Session Recall**: The brain remembers the entire conversation within a session. Full messages are stored in Redis working memory (no truncation) and fed to the LLM as context, so it can reference previous exchanges naturally.
 - **3D Brain**: Three.js rendered brain with 10 anatomical regions, auto-rotation, click-to-expand, drag to rotate, emissive glow on activation during cognitive processing
 - **Pixelated Face**: Pixel-art avatar (80x80) showing current emotion — 6 distinct expressions (neutral, joy, curiosity, alarm, regret, belonging)
 - **Emotion Tracker**: Glassmorphism panel (upper-left) with current feeling, overall mood bar, expandable history of last 20 interactions
