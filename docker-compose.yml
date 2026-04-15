@@ -96,7 +96,7 @@ services:
         condition: service_healthy
     <<: [*common-network, *common-restart]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/nginx-health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1"]
       <<: *common-healthcheck
 
   # ═══════════════════════════════════════════════════════════════════════════

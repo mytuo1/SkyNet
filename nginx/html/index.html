@@ -149,7 +149,7 @@ button{font-family:var(--font)}
   white-space:nowrap;display:none;color:var(--text);box-shadow:0 2px 10px rgba(0,0,0,.3)}
 
 /* == Terminal ========================================================= */
-#page-terminal{gap:0;position:relative;display:flex;flex-direction:column;overflow:hidden;
+#page-terminal{gap:0;display:flex;flex-direction:column;overflow:hidden;
   padding-bottom:0 !important}
 .chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
   padding:16px 40px;background:transparent;
@@ -684,67 +684,145 @@ var svcToRegion={thalamus:'thalamus',amygdala:'amygdala',hippocampus:'hippocampu
   vision:'occipital','framework-router':'brainstem',goals:'brainstem'};
 
 /* =====================================================================
-   Three.js 3D Brain
+   Three.js 3D Brain — Anatomical Layout
    ===================================================================== */
 var brainDefs={
-  neocortex:{px:0,py:1.2,pz:0,sx:2.5,sy:1.0,sz:2.0,color:0x7d8ea0,name:'Neocortex',svc:'neocortex'},
-  prefrontal:{px:-1.0,py:0.8,pz:1.0,sx:0.9,sy:0.8,sz:0.8,color:0x9e8eb3,name:'Prefrontal Cortex',svc:'compass'},
-  parietal:{px:0.2,py:1.5,pz:-0.2,sx:1.0,sy:0.6,sz:1.0,color:0x7da0b3,name:'Parietal Lobe',svc:'working-memory'},
-  occipital:{px:0,py:0.8,pz:-1.5,sx:0.9,sy:0.8,sz:0.7,color:0x8e7da0,name:'Occipital Lobe',svc:'vision'},
-  temporal:{px:-1.4,py:-0.2,pz:0.4,sx:0.7,sy:0.6,sz:1.1,color:0xb3a07d,name:'Temporal Lobe',svc:'cross-domain'},
-  thalamus:{px:0,py:0.2,pz:0,sx:0.7,sy:0.5,sz:0.6,color:0xd4c5a9,name:'Thalamus (Hub)',svc:'thalamus'},
-  amygdala:{px:-0.5,py:-0.1,pz:0.3,sx:0.4,sy:0.35,sz:0.35,color:0xc47d7d,name:'Amygdala',svc:'amygdala'},
-  hippocampus:{px:0.6,py:-0.1,pz:0.3,sx:0.6,sy:0.3,sz:0.5,color:0x6d9e9e,name:'Hippocampus',svc:'hippocampus'},
-  cerebellum:{px:0,py:-0.8,pz:-1.0,sx:1.2,sy:0.7,sz:0.9,color:0x7d9e7d,name:'Cerebellum',svc:'cerebellum'},
-  brainstem:{px:0,py:-1.5,pz:-0.3,sx:0.35,sy:0.8,sz:0.35,color:0xa09e7d,name:'Brainstem',svc:'framework-router'}
+  /* Left hemisphere — large cerebral cortex dome */
+  leftHemi:{px:-0.65,py:0.5,pz:0.0,sx:1.15,sy:1.25,sz:1.55,color:0x8e96aa,name:'Left Hemisphere (Neocortex)',svc:'neocortex',hemi:true},
+  /* Right hemisphere */
+  rightHemi:{px:0.65,py:0.5,pz:0.0,sx:1.15,sy:1.25,sz:1.55,color:0x7d8ea0,name:'Right Hemisphere (Neocortex)',svc:'neocortex',hemi:true},
+  /* Frontal / prefrontal — front of brain */
+  prefrontal:{px:0,py:0.6,pz:1.15,sx:0.9,sy:0.7,sz:0.6,color:0x9e8eb3,name:'Prefrontal Cortex',svc:'compass'},
+  /* Parietal — top-back */
+  parietal:{px:0,py:1.15,pz:-0.15,sx:0.85,sy:0.45,sz:0.8,color:0x7da0b3,name:'Parietal Lobe',svc:'working-memory'},
+  /* Occipital — back */
+  occipital:{px:0,py:0.4,pz:-1.25,sx:0.75,sy:0.65,sz:0.5,color:0x8e7da0,name:'Occipital Lobe',svc:'vision'},
+  /* Temporal lobes — sides, below */
+  temporalL:{px:-1.1,py:-0.15,pz:0.3,sx:0.55,sy:0.45,sz:0.9,color:0xb3a07d,name:'Temporal Lobe (L)',svc:'cross-domain'},
+  temporalR:{px:1.1,py:-0.15,pz:0.3,sx:0.55,sy:0.45,sz:0.9,color:0xb0997a,name:'Temporal Lobe (R)',svc:'perception'},
+  /* Thalamus — deep centre */
+  thalamus:{px:0,py:0.15,pz:0,sx:0.5,sy:0.4,sz:0.45,color:0xd4c5a9,name:'Thalamus (Hub)',svc:'thalamus'},
+  /* Amygdala — small, medial temporal */
+  amygdala:{px:-0.45,py:-0.1,pz:0.35,sx:0.3,sy:0.25,sz:0.25,color:0xc47d7d,name:'Amygdala',svc:'amygdala'},
+  /* Hippocampus — curved, medial temporal */
+  hippocampus:{px:0.45,py:-0.1,pz:0.35,sx:0.45,sy:0.2,sz:0.35,color:0x6d9e9e,name:'Hippocampus',svc:'hippocampus'},
+  /* Cerebellum — back bottom, has "ridges" */
+  cerebellum:{px:0,py:-0.65,pz:-0.85,sx:1.1,sy:0.55,sz:0.7,color:0x7d9e7d,name:'Cerebellum',svc:'cerebellum'},
+  /* Brainstem — extends down */
+  brainstem:{px:0,py:-1.15,pz:-0.35,sx:0.28,sy:0.7,sz:0.28,color:0xa09e7d,name:'Brainstem',svc:'framework-router'}
 };
 
 var brainScene,brainGroup,brainMeshes={};
 var thumbRenderer,thumbCamera,thumbAnimId;
 var modalRenderer,modalCamera,modalAnimId;
 var brainModalOpen=false;
+var thumbDrag=false,thumbPrevMX=0,thumbPrevMY=0;
+var modalDrag=false,modalPrevMX=0,modalPrevMY=0;
+
+/* Create a hemisphere geometry with a flat medial surface */
+function makeHemiGeom(side){
+  var geom=new THREE.SphereGeometry(0.5,32,24);
+  var pos=geom.attributes.position;
+  for(var i=0;i<pos.count;i++){
+    var x=pos.getX(i),y=pos.getY(i),z=pos.getZ(i);
+    /* Flatten the medial (inner) side */
+    if(side==='left'&&x>-0.02) x=Math.min(x,0.02);
+    if(side==='right'&&x<0.02) x=Math.max(x,-0.02);
+    /* Add sulci (wavy surface) for organic look */
+    var wave=Math.sin(y*14)*0.015+Math.sin(z*10)*0.012+Math.sin((y+z)*8)*0.01;
+    var len=Math.sqrt(x*x+y*y+z*z);
+    if(len>0.01){x+=x/len*wave;y+=y/len*wave;z+=z/len*wave}
+    pos.setXYZ(i,x,y,z);
+  }
+  pos.needsUpdate=true;
+  geom.computeVertexNormals();
+  return geom;
+}
+
+/* Add subtle wrinkles/bumps to a sphere for organic brain look */
+function makeBrainSphere(segs,wrinkle){
+  var geom=new THREE.SphereGeometry(0.5,segs||24,segs?Math.round(segs*0.7):16);
+  if(wrinkle){
+    var pos=geom.attributes.position;
+    for(var i=0;i<pos.count;i++){
+      var x=pos.getX(i),y=pos.getY(i),z=pos.getZ(i);
+      var wave=Math.sin(y*12+z*8)*wrinkle+Math.sin(x*10+y*6)*wrinkle*0.7;
+      var len=Math.sqrt(x*x+y*y+z*z);
+      if(len>0.01){x+=x/len*wave;y+=y/len*wave;z+=z/len*wave}
+      pos.setXYZ(i,x,y,z);
+    }
+    pos.needsUpdate=true;
+    geom.computeVertexNormals();
+  }
+  return geom;
+}
 
 function initBrainScene(){
   brainScene=new THREE.Scene();
   brainScene.background=new THREE.Color(0x0a0e17);
-  brainScene.add(new THREE.AmbientLight(0x404060,0.6));
-  var pt1=new THREE.PointLight(0xffffff,0.8,20);pt1.position.set(3,3,5);brainScene.add(pt1);
-  var pt2=new THREE.PointLight(0x4488ff,0.3,15);pt2.position.set(-3,-2,3);brainScene.add(pt2);
+  brainScene.add(new THREE.AmbientLight(0x506080,0.7));
+  var pt1=new THREE.PointLight(0xffffff,0.9,25);pt1.position.set(4,4,6);brainScene.add(pt1);
+  var pt2=new THREE.PointLight(0x4488ff,0.35,18);pt2.position.set(-4,-2,4);brainScene.add(pt2);
+  var pt3=new THREE.PointLight(0xff8844,0.15,15);pt3.position.set(0,3,-5);brainScene.add(pt3);
   brainGroup=new THREE.Group();
   brainScene.add(brainGroup);
   var keys=Object.keys(brainDefs);
   for(var i=0;i<keys.length;i++){
     var key=keys[i];var def=brainDefs[key];
-    var geom=new THREE.SphereGeometry(0.5,20,14);
+    var geom;
+    if(key==='leftHemi') geom=makeHemiGeom('left');
+    else if(key==='rightHemi') geom=makeHemiGeom('right');
+    else if(key==='cerebellum') geom=makeBrainSphere(28,0.025);
+    else geom=makeBrainSphere(22,def.hemi?0.015:0.008);
     geom.scale(def.sx,def.sy,def.sz);
+    var baseOp=def.hemi?0.22:0.18;
     var mat=new THREE.MeshPhongMaterial({
-      color:def.color,transparent:true,opacity:0.15,
-      emissive:def.color,emissiveIntensity:0.05,
-      shininess:30,specular:0x222222
+      color:def.color,transparent:true,opacity:baseOp,
+      emissive:def.color,emissiveIntensity:0.06,
+      shininess:40,specular:0x333344,side:THREE.DoubleSide
     });
     var mesh=new THREE.Mesh(geom,mat);
     mesh.position.set(def.px,def.py,def.pz);
-    mesh.userData={key:key,name:def.name,svc:def.svc,baseColor:def.color};
+    mesh.userData={key:key,name:def.name,svc:def.svc,baseColor:def.color,baseOpacity:baseOp};
     brainGroup.add(mesh);
     brainMeshes[key]=mesh;
   }
 }
 
+/* Resize renderer to match current container dimensions */
+function resizeThumb(){
+  var container=$('#brain-thumb');
+  var w=container.clientWidth-8, h=container.clientHeight-8;
+  if(w<10||h<10)return;
+  thumbRenderer.setSize(w,h);
+  thumbCamera.aspect=w/h;
+  thumbCamera.updateProjectionMatrix();
+}
+
 function initThumbRenderer(){
   var canvas=$('#brain-canvas-sm');
-  var w=180,h=140;
   thumbRenderer=new THREE.WebGLRenderer({canvas:canvas,antialias:true,alpha:false});
-  thumbRenderer.setSize(w,h);
   thumbRenderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
-  thumbCamera=new THREE.PerspectiveCamera(38,w/h,0.1,100);
+  thumbCamera=new THREE.PerspectiveCamera(38,1,0.1,100);
   thumbCamera.position.set(0,0.5,6.5);
   thumbCamera.lookAt(0,0,0);
+  resizeThumb();
+
+  /* Drag rotation on thumbnail */
+  canvas.addEventListener('mousedown',function(e){e.stopPropagation();thumbDrag=true;thumbPrevMX=e.clientX;thumbPrevMY=e.clientY});
+  canvas.addEventListener('mousemove',function(e){
+    if(!thumbDrag)return;
+    brainGroup.rotation.y+=(e.clientX-thumbPrevMX)*0.008;
+    brainGroup.rotation.x+=(e.clientY-thumbPrevMY)*0.008;
+    thumbPrevMX=e.clientX;thumbPrevMY=e.clientY;
+  });
+  canvas.addEventListener('mouseup',function(){thumbDrag=false});
+  canvas.addEventListener('mouseleave',function(){thumbDrag=false});
+
   function animate(){
     thumbAnimId=requestAnimationFrame(animate);
-    if(!brainModalOpen){
-      brainGroup.rotation.y+=0.002;
-      thumbRenderer.render(brainScene,thumbCamera);
-    }
+    if(!thumbDrag&&!modalDrag) brainGroup.rotation.y+=0.002;
+    thumbRenderer.render(brainScene,thumbCamera);
   }
   animate();
 }
@@ -759,20 +837,19 @@ function initModalRenderer(){
   modalCamera.position.set(0,0.5,6.5);
   modalCamera.lookAt(0,0,0);
 
-  var isDrag=false,prevMX=0,prevMY=0;
-  canvas.addEventListener('mousedown',function(e){isDrag=true;prevMX=e.clientX;prevMY=e.clientY});
+  canvas.addEventListener('mousedown',function(e){modalDrag=true;modalPrevMX=e.clientX;modalPrevMY=e.clientY});
   document.addEventListener('mousemove',function(e){
-    if(!isDrag||!brainModalOpen)return;
-    brainGroup.rotation.y+=(e.clientX-prevMX)*0.005;
-    brainGroup.rotation.x+=(e.clientY-prevMY)*0.005;
-    prevMX=e.clientX;prevMY=e.clientY;
+    if(!modalDrag||!brainModalOpen)return;
+    brainGroup.rotation.y+=(e.clientX-modalPrevMX)*0.005;
+    brainGroup.rotation.x+=(e.clientY-modalPrevMY)*0.005;
+    modalPrevMX=e.clientX;modalPrevMY=e.clientY;
   });
-  document.addEventListener('mouseup',function(){isDrag=false});
+  document.addEventListener('mouseup',function(){modalDrag=false});
 
   var raycaster=new THREE.Raycaster();
   var mouse=new THREE.Vector2();
   canvas.addEventListener('mousemove',function(e){
-    if(isDrag)return;
+    if(modalDrag)return;
     var rect=canvas.getBoundingClientRect();
     mouse.x=((e.clientX-rect.left)/rect.width)*2-1;
     mouse.y=-((e.clientY-rect.top)/rect.height)*2+1;
@@ -793,7 +870,7 @@ function initModalRenderer(){
   function animate(){
     modalAnimId=requestAnimationFrame(animate);
     if(brainModalOpen){
-      if(!isDrag)brainGroup.rotation.y+=0.002;
+      if(!modalDrag) brainGroup.rotation.y+=0.002;
       modalRenderer.render(brainScene,modalCamera);
     }
   }
@@ -801,15 +878,17 @@ function initModalRenderer(){
 }
 
 /* -- Brain open/close ------------------------------------------------- */
-$('#brain-thumb').addEventListener('click',function(){
+$('#brain-thumb').addEventListener('click',function(e){
+  /* Ignore if it was a drag */
+  if(e.target.tagName==='CANVAS')return;
   var thumb=$('#brain-thumb');
   if(thumb.classList.contains('expanded')){
     thumb.classList.remove('expanded');
-    brainModalOpen=false;
   }else{
     thumb.classList.add('expanded');
-    brainModalOpen=true;
   }
+  /* Resize renderer after CSS transition completes */
+  setTimeout(resizeThumb,400);
 });
 $('#brain-thumb').addEventListener('dblclick',function(){
   /* Double-click opens the full modal for detailed inspection */
@@ -828,10 +907,20 @@ function lightRegion(regionKey,duration){
   var mesh=brainMeshes[regionKey];
   if(!mesh)return;
   var mat=mesh.material;
+  var baseOp=mesh.userData.baseOpacity||0.18;
   mat.opacity=0.85;
-  mat.emissiveIntensity=0.4;
-  setTimeout(function(){mat.opacity=0.15;mat.emissiveIntensity=0.05},duration||1600);
+  mat.emissiveIntensity=0.45;
+  setTimeout(function(){mat.opacity=baseOp;mat.emissiveIntensity=0.06},duration||1600);
 }
+
+/* Map services to brain regions for lighting */
+var svcToRegions={
+  thalamus:['thalamus'],amygdala:['amygdala'],hippocampus:['hippocampus'],
+  cerebellum:['cerebellum'],neocortex:['leftHemi','rightHemi'],
+  compass:['prefrontal'],'cross-domain':['temporalL','temporalR'],
+  perception:['temporalR'],'working-memory':['parietal'],
+  vision:['occipital'],'framework-router':['brainstem'],goals:['brainstem']
+};
 
 function animateBrainPipeline(cogPath){
   lightRegion('thalamus',1400);
@@ -839,8 +928,8 @@ function animateBrainPipeline(cogPath){
   setTimeout(function(){lightRegion('parietal',1200)},600);
   if(Array.isArray(cogPath)){
     cogPath.forEach(function(svc,i){
-      var region=svcToRegion[svc];
-      if(region) setTimeout(function(){lightRegion(region,1000)},900+i*300);
+      var regions=svcToRegions[svc]||[svcToRegion[svc]];
+      regions.forEach(function(r){if(r)setTimeout(function(){lightRegion(r,1000)},900+i*300)});
     });
   }
 }
@@ -1505,7 +1594,9 @@ function renderServiceMetrics(services){
   grid.innerHTML=ALL_SVC_LIST.map(function(name){
     var s=services[name]||{total_requests:0,avg_latency_ms:0,error_rate:0,p95_latency:0,last_24h_requests:[],uptime_pct:100};
     var h=_healthCache[name];
-    var dotCls=(h&&h.status==='alive')?'dot-alive':'dot-unreachable';
+    var dotCls='dot-unreachable';
+    if(h&&h.status==='alive') dotCls='dot-alive';
+    else if(h&&(h.status==='degraded'||h.status==='error')) dotCls='dot-degraded';
     var healthMs=(h&&h.ms)?h.ms.toFixed(0)+'ms':'—';
     var buckets=s.last_24h_requests||[];
     var maxReq=Math.max.apply(null,buckets.map(function(b){return b.requests||0}).concat([1]));

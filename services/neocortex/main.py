@@ -129,11 +129,16 @@ async def embed(text: str) -> list:
     try:
         resp = await http.post(
             f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]}
+            json={"model": EMBED_MODEL, "prompt": text[:2000]},
+            timeout=5.0
         )
-        return resp.json()["embedding"]
+        vec = resp.json()["embedding"]
+        # Guard against zero-magnitude vectors (cosine similarity rejects them)
+        if all(v == 0.0 for v in vec[:10]):
+            return []
+        return vec
     except Exception:
-        return [0.0] * 768
+        return []
 
 
 # ── API Endpoints ─────────────────────────────────────────────────────────────
@@ -171,6 +176,17 @@ async def store_knowledge(req: StoreRequest):
     now   = datetime.now(timezone.utc).isoformat()
 
     embedding = req.embedding or await embed(req.content)
+
+    # Skip store if embedding failed (zero-magnitude vectors crash cosine index)
+    if not embedding:
+        return BrainResponse(
+            request_id = "store",
+            service    = "neocortex",
+            success    = False,
+            error      = "embedding unavailable",
+            latency_ms = round((time.time() - start) * 1000, 2),
+            data       = {}
+        )
 
     doc = {
         "content":          req.content[:10000],
@@ -214,15 +230,16 @@ async def search(req: BrainRequest, domain: str = None, top_k: int = 8):
     if domain and domain not in ("general", ""):
         must_clauses.append({"term": {"domain": domain}})
 
-    body: dict = {
-        "knn": {
+    body: dict = {"size": top_k}
+
+    # Only use knn when we have a valid embedding (non-empty, non-zero)
+    if embedding:
+        body["knn"] = {
             "field":          "embedding",
             "query_vector":   embedding,
             "k":              top_k * 2,
             "num_candidates": 200,
-        },
-        "size": top_k
-    }
+        }
 
     if req.user_input.strip():
         body["query"] = {
@@ -304,6 +321,10 @@ async def update_knowledge(doc_id: str, updates: dict):
 @app.post("/store-pattern")
 async def store_pattern(pattern: dict):
     """Store a logical pattern for the cross-domain reasoning engine."""
+    # Reject zero-magnitude embeddings — cosine similarity index will crash
+    emb = pattern.get("embedding", [])
+    if not emb or all(v == 0.0 for v in emb[:10]):
+        return {"error": "empty or zero embedding, skipping store", "pattern_id": None}
     pattern["created_at"] = datetime.now(timezone.utc).isoformat()
     result = await es.index(index="neocortex_patterns", document=pattern)
     events.publish("pattern.registered", {"pattern_id": result["_id"],
@@ -318,15 +339,16 @@ async def search_patterns(body: dict):
     pattern_type = body.get("pattern_type")
     top_k        = body.get("top_k", 20)
 
-    search_body: dict = {
-        "knn": {
+    search_body: dict = {"size": top_k}
+
+    # Only use knn when we have a valid (non-empty) embedding
+    if embedding:
+        search_body["knn"] = {
             "field":          "embedding",
             "query_vector":   embedding,
             "k":              top_k,
             "num_candidates": 200,
-        },
-        "size": top_k
-    }
+        }
 
     if pattern_type:
         search_body["query"] = {

@@ -34,7 +34,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 knobs  = KnobsClient()
 events = EventBus()
-http   = httpx.AsyncClient(timeout=60.0)
+http   = httpx.AsyncClient(timeout=15.0)
 
 NEOCORTEX_URL = os.getenv("NEOCORTEX_URL",    "http://neocortex:8004")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",        "http://host.docker.internal:11434")
@@ -123,11 +123,15 @@ async def embed(text: str) -> list:
     try:
         resp = await http.post(
             f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]}
+            json={"model": EMBED_MODEL, "prompt": text[:2000]},
+            timeout=5.0
         )
-        return resp.json()["embedding"]
+        vec = resp.json()["embedding"]
+        if all(v == 0.0 for v in vec[:10]):
+            return []
+        return vec
     except Exception:
-        return [0.0] * 768
+        return []
 
 
 def cosine_similarity(a: list, b: list) -> float:
@@ -251,7 +255,7 @@ async def find_analogies(req: FindAnalogiesRequest):
     # Search for similar patterns in neocortex
     candidates = await search_similar_patterns(query_pattern, top_k=30)
 
-    query_vec = np.array(query_pattern.get("embedding", [0.0]*768),
+    query_vec = np.array(query_pattern.get("embedding") or [0.0]*768,
                          dtype=np.float32)
 
     analogies = []
@@ -315,6 +319,10 @@ async def find_analogies(req: FindAnalogiesRequest):
 
 async def store_pattern(pattern: dict, domain: str):
     """Store extracted pattern in neocortex for future retrieval."""
+    # Skip if embedding is empty/zero — neocortex cosine index rejects zero vectors
+    emb = pattern.get("embedding", [])
+    if not emb:
+        return
     try:
         await http.post(
             f"{NEOCORTEX_URL}/store-pattern",
