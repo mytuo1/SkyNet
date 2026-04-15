@@ -593,6 +593,7 @@ function switchSession(sid){
   SESSION=sid;localStorage.setItem('skynet_session',sid);
   $('#session-display').textContent='session: '+sid.slice(0,8);
   $('#chat-log').innerHTML='';
+  loadChatHistory();
   renderSessionList();
 }
 function newSession(){
@@ -617,6 +618,59 @@ function renderSessionList(){
 }
 $('#new-session-btn').addEventListener('click',newSession);
 renderSessionList();
+
+/* -- Chat History Persistence ----------------------------------------- */
+/* Store chat messages in localStorage so they survive page refresh.     */
+/* Key: skynet_chat_{session_id}  Value: JSON array of message objects.  */
+var CHAT_HISTORY_MAX=200; /* max messages per session */
+
+function chatHistoryKey(sid){return 'skynet_chat_'+(sid||SESSION)}
+
+function saveChatMessage(role,html,botData){
+  var key=chatHistoryKey();
+  var history=JSON.parse(localStorage.getItem(key)||'[]');
+  var entry={role:role,html:html,ts:Date.now()};
+  if(botData){
+    /* Store just enough of the response to recreate meta badges */
+    entry.botData={
+      emotion:botData.emotion||botData.dominant_emotion||null,
+      urgency:botData.urgency||null,
+      confidence:botData.confidence||null,
+      cognitive_path:botData.cognitive_path||botData.path||null,
+      execution_ms:botData.execution_ms||null,
+      teacher_mode:botData.teacher_mode||false,
+      response:botData.response||botData.reply||botData.text||null
+    };
+  }
+  history.push(entry);
+  if(history.length>CHAT_HISTORY_MAX) history=history.slice(-CHAT_HISTORY_MAX);
+  try{localStorage.setItem(key,JSON.stringify(history))}catch(e){/* storage full — evict oldest */
+    history=history.slice(-Math.floor(CHAT_HISTORY_MAX/2));
+    try{localStorage.setItem(key,JSON.stringify(history))}catch(e2){}
+  }
+}
+
+function loadChatHistory(){
+  var key=chatHistoryKey();
+  var history=JSON.parse(localStorage.getItem(key)||'[]');
+  if(!history.length)return;
+  var log=$('#chat-log');
+  for(var i=0;i<history.length;i++){
+    var m=history[i];
+    var div=document.createElement('div');
+    var cls=m.role.split(' ')[0];
+    div.className='msg '+cls;
+    if(m.role.indexOf('teacher')>=0){
+      div.style.borderLeft='3px solid var(--warning)';
+    }
+    div.innerHTML=m.html;
+    log.appendChild(div);
+  }
+  log.scrollTop=log.scrollHeight;
+}
+
+/* Load chat history for the initial session on page load */
+loadChatHistory();
 
 /* -- Hamburger Menu --------------------------------------------------- */
 var slideOpen=false;
