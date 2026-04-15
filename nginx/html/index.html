@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>SkyNet Brain</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0e17;--surface:#141926;--surface2:#1b2236;--border:#232b42;
+  --text:#e0e6ed;--text-dim:#7b8a9e;--accent:#00d4ff;
+  --success:#00c853;--warning:#ffd600;--error:#ff1744;
+  --radius:8px;
+  --font:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --mono:'SF Mono',SFMono-Regular,ui-monospace,'Cascadia Code',Menlo,monospace;
+}
+html,body{height:100%;overflow:hidden}
+body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.5}
+a{color:var(--accent);text-decoration:none}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:var(--surface)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* ── Layout ─────────────────────────────────────────────────── */
+#app{display:flex;flex-direction:column;height:100vh}
+
+/* Header */
+.header{display:flex;align-items:center;gap:12px;padding:10px 20px;
+  background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;z-index:10}
+.header h1{font-size:1.1rem;font-weight:700;
+  background:linear-gradient(135deg,var(--accent),#a78bfa);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.pulse-dot{width:8px;height:8px;border-radius:50%;background:var(--success);
+  box-shadow:0 0 8px var(--success);animation:pulse 2s infinite;flex-shrink:0}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.header .meta{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:.75rem;color:var(--text-dim);font-family:var(--mono)}
+.status-badge{font-size:.7rem;padding:2px 10px;border-radius:12px;font-weight:600}
+
+/* Tabs */
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--surface)}
+.tab{padding:8px 20px;font-size:.8rem;color:var(--text-dim);cursor:pointer;border-bottom:2px solid transparent;
+  font-weight:500;transition:all .15s}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* Main content area */
+.main{flex:1;display:flex;overflow:hidden}
+.page{display:none;flex:1;overflow:hidden}
+.page.active{display:flex}
+
+/* ── Chat page ──────────────────────────────────────────────── */
+.chat-page{flex-direction:column}
+
+/* Sidebar */
+.sidebar{width:170px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);
+  padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
+.sidebar .emotion-label{font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px}
+.sidebar .emotion-value{font-size:1rem;font-weight:600}
+.sidebar .badge{font-size:.65rem;padding:2px 8px;border-radius:8px;display:inline-block}
+.sidebar .session-id{font-size:.65rem;font-family:var(--mono);color:var(--text-dim);word-break:break-all}
+.sidebar .mood-bar{height:6px;border-radius:3px;background:linear-gradient(90deg,var(--error),var(--warning),var(--success));margin-top:4px}
+.sidebar h4{font-size:.72rem;color:var(--text-dim);margin-bottom:4px}
+.session-item{padding:4px 6px;font-size:.65rem;font-family:var(--mono);color:var(--text-dim);
+  border-radius:4px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-item:hover{background:var(--surface2);color:var(--text)}
+.session-item.active{background:var(--border);color:var(--accent)}
+.new-session-btn{font-size:.7rem;padding:4px 10px;border-radius:6px;border:1px solid var(--border);
+  background:transparent;color:var(--accent);cursor:pointer;width:100%}
+.new-session-btn:hover{background:var(--surface2)}
+
+/* Chat area */
+.chat-container{flex:1;display:flex;flex-direction:column;min-width:0}
+.messages{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:12px}
+.msg{max-width:80%;padding:10px 14px;border-radius:var(--radius);font-size:.88rem;line-height:1.6;word-wrap:break-word}
+.msg.user{align-self:flex-end;background:var(--accent);color:#111;border-bottom-right-radius:2px}
+.msg.bot{align-self:flex-start;background:var(--surface2);border:1px solid var(--border);border-bottom-left-radius:2px}
+.msg .meta-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;font-size:.68rem}
+.msg .badge{padding:1px 8px;border-radius:10px;font-weight:600;font-size:.65rem}
+.trace-toggle{font-size:.68rem;color:var(--accent);cursor:pointer;user-select:none;margin-top:4px;display:inline-block}
+.trace-toggle:hover{text-decoration:underline}
+.trace-box{display:none;margin-top:6px;padding:8px;background:rgba(0,0,0,.3);border-radius:6px;font-size:.7rem;font-family:var(--mono)}
+
+/* Input bar — always at the bottom */
+.input-bar{flex-shrink:0;display:flex;gap:10px;padding:12px 20px;background:var(--surface);border-top:1px solid var(--border)}
+.input-bar input{flex:1;padding:10px 14px;border-radius:var(--radius);border:1px solid var(--border);
+  background:var(--surface2);color:var(--text);font-size:.9rem;outline:none;font-family:var(--font)}
+.input-bar input:focus{border-color:var(--accent)}
+.input-bar button{padding:10px 24px;border-radius:var(--radius);border:none;
+  background:var(--accent);color:#111;font-weight:700;cursor:pointer;font-size:.85rem;flex-shrink:0}
+.input-bar button:hover{opacity:.85}
+.input-bar button:disabled{opacity:.4;cursor:not-allowed}
+
+/* ── Monitoring page ────────────────────────────────────────── */
+.monitor-page{flex-direction:column;overflow-y:auto;padding:20px}
+.overview-cards{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:20px}
+.ov-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px 18px;min-width:120px;flex:1}
+.ov-card .ov-label{font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px}
+.ov-card .ov-val{font-size:1.3rem;font-weight:700;margin-top:4px}
+.svc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.svc-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px}
+.svc-card .svc-name{display:flex;align-items:center;gap:8px;font-size:.82rem;font-weight:600;margin-bottom:6px}
+.svc-card .svc-stats{font-size:.68rem;color:var(--text-dim);display:grid;grid-template-columns:1fr auto;gap:2px 8px}
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot.alive{background:var(--success);box-shadow:0 0 4px var(--success)}
+.dot.dead{background:var(--error);box-shadow:0 0 4px var(--error)}
+
+/* ── Utilities ──────────────────────────────────────────────── */
+.error-text{color:var(--error)}
+@media(max-width:700px){
+  .sidebar{display:none}
+  .msg{max-width:95%}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <div class="header">
+    <span class="pulse-dot" id="pulse"></span>
+    <h1>SkyNet Brain</h1>
+    <div class="meta">
+      <span class="status-badge" id="global-status" style="background:var(--text-dim);color:#111">…</span>
+      <span id="session-display"></span>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab active" data-page="page-chat">Chat</div>
+    <div class="tab" data-page="page-monitor">Monitoring</div>
+  </div>
+
+  <!-- Chat Page -->
+  <div class="page active" id="page-chat">
+    <div class="sidebar" id="sidebar">
+      <div>
+        <div class="emotion-label">Emotion</div>
+        <div class="emotion-value" id="emo-current">—</div>
+        <span class="badge" id="emo-badge" style="background:var(--text-dim);color:#111">—</span>
+      </div>
+      <div>
+        <div class="emotion-label">Confidence</div>
+        <div class="emotion-value" id="emo-confidence">—</div>
+      </div>
+      <div>
+        <div class="emotion-label">Urgency</div>
+        <div class="emotion-value" id="emo-urgency">—</div>
+      </div>
+      <div class="mood-bar"></div>
+      <hr style="border:0;border-top:1px solid var(--border)">
+      <div>
+        <h4>Session</h4>
+        <div class="session-id" id="sidebar-session"></div>
+        <button class="new-session-btn" id="new-session-btn">+ New Session</button>
+      </div>
+      <div>
+        <h4>History</h4>
+        <div id="session-list"></div>
+      </div>
+    </div>
+    <div class="chat-container">
+      <div class="messages" id="messages"></div>
+      <div class="input-bar">
+        <input type="text" id="chat-input" placeholder="Talk to the brain… (type /teach to enter teacher mode)" autocomplete="off"/>
+        <button id="chat-send">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Monitoring Page -->
+  <div class="page" id="page-monitor">
+    <div class="monitor-page">
+      <div class="overview-cards">
+        <div class="ov-card"><div class="ov-label">Services</div><div class="ov-val" id="ov-alive">—</div></div>
+        <div class="ov-card"><div class="ov-label">Status</div><div class="ov-val" id="ov-status">—</div></div>
+      </div>
+      <div class="svc-grid" id="svc-grid"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ── Helpers ──────────────────────────────────────────────────── */
+var $=function(s){return document.querySelector(s)};
+var esc=function(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML};
+
+var EMOTION_COLORS={
+  admiration:'#ffd700',amusement:'#ffb300',approval:'#66bb6a',caring:'#f48fb1',
+  desire:'#ff7043',excitement:'#ff5722',gratitude:'#ffd700',joy:'#00e676',
+  love:'#e91e63',optimism:'#ffeb3b',pride:'#7e57c2',relief:'#81c784',
+  anger:'#f44336',annoyance:'#ef5350',disappointment:'#9e9e9e',disapproval:'#78909c',
+  disgust:'#795548',embarrassment:'#ce93d8',fear:'#ff1744',grief:'#5c6bc0',
+  nervousness:'#ffb74d',remorse:'#ce93d8',sadness:'#42a5f5',
+  confusion:'#b0bec5',curiosity:'#26c6da',realization:'#ffee58',surprise:'#ff9100',
+  neutral:'#90a4ae',belonging:'#4fc3f7',urgency:'#ff9100',distress:'#ef5350',
+  alarm:'#ff1744',regret:'#ce93d8',creative:'#7e57c2'
+};
+function emoColor(e){return EMOTION_COLORS[e]||EMOTION_COLORS.neutral}
+
+/* ── Session management ──────────────────────────────────────── */
+var SESSION=localStorage.getItem('skynet_session');
+if(!SESSION){SESSION=crypto.randomUUID();localStorage.setItem('skynet_session',SESSION)}
+var sessionList=JSON.parse(localStorage.getItem('skynet_sessions')||'[]');
+if(!sessionList.find(function(s){return s.id===SESSION})){
+  sessionList.unshift({id:SESSION,created:Date.now()});
+  localStorage.setItem('skynet_sessions',JSON.stringify(sessionList));
+}
+$('#session-display').textContent='session: '+SESSION.slice(0,8);
+$('#sidebar-session').textContent=SESSION.slice(0,8);
+
+function switchSession(sid){
+  SESSION=sid;localStorage.setItem('skynet_session',sid);
+  $('#session-display').textContent='session: '+sid.slice(0,8);
+  $('#sidebar-session').textContent=sid.slice(0,8);
+  $('#messages').innerHTML='';
+  renderSessionList();
+}
+function newSession(){
+  var sid=crypto.randomUUID();
+  sessionList.unshift({id:sid,created:Date.now()});
+  localStorage.setItem('skynet_sessions',JSON.stringify(sessionList));
+  switchSession(sid);
+}
+function renderSessionList(){
+  var c=$('#session-list');if(!c)return;
+  c.innerHTML=sessionList.slice(0,15).map(function(s){
+    var cls=s.id===SESSION?'session-item active':'session-item';
+    return '<div class="'+cls+'" data-sid="'+s.id+'">'+s.id.slice(0,8)+'</div>';
+  }).join('');
+  c.querySelectorAll('.session-item').forEach(function(el){
+    el.addEventListener('click',function(){switchSession(el.dataset.sid)});
+  });
+}
+$('#new-session-btn').addEventListener('click',newSession);
+renderSessionList();
+
+/* ── Tab switching ────────────────────────────────────────────── */
+document.querySelectorAll('.tab').forEach(function(t){
+  t.addEventListener('click',function(){
+    document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active')});
+    document.querySelectorAll('.page').forEach(function(x){x.classList.remove('active')});
+    t.classList.add('active');
+    $('#'+t.dataset.page).classList.add('active');
+    if(t.dataset.page==='page-monitor') refreshMonitoring();
+  });
+});
+
+/* ── Chat ─────────────────────────────────────────────────────── */
+var busy=false;
+var teacherMode=false;
+
+function appendMsg(role,html){
+  var el=document.createElement('div');
+  el.className='msg '+role;
+  el.innerHTML=html;
+  var m=$('#messages');
+  m.appendChild(el);
+  m.scrollTop=m.scrollHeight;
+}
+
+function buildTrace(d){
+  var trace='';
+  if(!d.trace)return '';
+  var st=d.trace.step_times_ms;
+  if(st){
+    var totalMs=d.execution_ms||0;
+    trace+='<div class="trace-box" style="display:none">';
+    trace+='<div style="font-weight:700;margin-bottom:6px;color:var(--accent)">Step Timing (ms)</div>';
+    var steps=Object.keys(st);
+    for(var i=0;i<steps.length;i++){
+      var sn=steps[i],sv=st[sn];
+      if(sn==='parallel_batch_detail')continue;
+      if(typeof sv!=='number')continue;
+      var pct=totalMs>0?Math.min(100,Math.round(sv/totalMs*100)):0;
+      var barColor=sv>5000?'var(--error)':sv>2000?'var(--warning)':'var(--accent)';
+      trace+='<div style="display:flex;align-items:center;gap:6px;margin:2px 0">';
+      trace+='<span style="width:130px;color:var(--text-dim);text-align:right;flex-shrink:0">'+esc(sn)+'</span>';
+      trace+='<div style="flex:1;height:8px;background:var(--border);border-radius:3px;overflow:hidden">';
+      trace+='<div style="width:'+pct+'%;height:100%;background:'+barColor+';border-radius:3px"></div></div>';
+      trace+='<span style="width:55px;text-align:right;color:'+(sv>5000?'var(--error)':'var(--text-dim)')+'">'+Math.round(sv)+'</span>';
+      trace+='</div>';
+      /* Parallel batch sub-steps */
+      if(sn==='parallel_batch'&&st.parallel_batch_detail){
+        var pb=st.parallel_batch_detail;
+        var pbKeys=Object.keys(pb);
+        for(var j=0;j<pbKeys.length;j++){
+          var pn=pbKeys[j],pv=pb[pn];
+          var ppct=totalMs>0?Math.min(100,Math.round(pv/totalMs*100)):0;
+          var pbColor=pv>3000?'var(--error)':pv>1000?'var(--warning)':'rgba(0,212,255,.5)';
+          trace+='<div style="display:flex;align-items:center;gap:6px;margin:1px 0;padding-left:18px">';
+          trace+='<span style="width:112px;color:var(--text-dim);text-align:right;flex-shrink:0;font-size:.65rem;opacity:.8">\u2514 '+esc(pn)+'</span>';
+          trace+='<div style="flex:1;height:5px;background:var(--border);border-radius:3px;overflow:hidden">';
+          trace+='<div style="width:'+ppct+'%;height:100%;background:'+pbColor+';border-radius:3px"></div></div>';
+          trace+='<span style="width:55px;text-align:right;font-size:.65rem;color:'+(pv>3000?'var(--error)':'var(--text-dim)')+'">'+Math.round(pv)+'</span>';
+          trace+='</div>';
+        }
+      }
+    }
+    trace+='<div style="margin-top:4px;color:var(--text-dim)">Total: '+Math.round(totalMs)+'ms</div>';
+    trace+='</div>';
+  }
+  /* DB operations */
+  var dbOps=d.trace.db_operations;
+  if(dbOps&&dbOps.length>0){
+    /* Append inside the trace box — reopen if needed */
+    var dbHtml='<div style="margin-top:6px;font-size:.68rem;color:var(--text-dim)">\uD83D\uDCBE DB Operations<br>';
+    for(var k=0;k<dbOps.length;k++){
+      var op=dbOps[k];
+      dbHtml+=(op.ok?'\u2713':'\u2717')+' '+esc(op.op)+(op.error?' <span class="error-text">'+esc(op.error)+'</span>':'')+'<br>';
+    }
+    dbHtml+='</div>';
+    /* Insert before closing trace-box div */
+    if(trace){
+      trace=trace.slice(0,-6)+dbHtml+'</div>';
+    }
+  }
+  /* Errors */
+  if(d.trace.errors&&d.trace.errors.length>0){
+    var errHtml='<div style="margin-top:6px;font-size:.68rem">';
+    errHtml+='<span style="color:var(--error);font-weight:700">\u26A0 Errors ('+d.trace.errors.length+')</span><br>';
+    for(var e=0;e<d.trace.errors.length;e++){
+      var er=d.trace.errors[e];
+      errHtml+='<span class="error-text">'+esc(er.step)+': '+esc(String(er.error).slice(0,120))+'</span><br>';
+    }
+    errHtml+='</div>';
+    if(trace){trace=trace.slice(0,-6)+errHtml+'</div>'}
+  }
+  return trace;
+}
+
+function appendBotMsg(d,latency){
+  var emotion=d.emotion||d.dominant_emotion||'neutral';
+  var urgency=d.urgency;
+  var confidence=d.confidence;
+  var path=d.cognitive_path||d.path||'';
+  var text=d.response||d.reply||d.text||JSON.stringify(d);
+
+  /* Update sidebar */
+  $('#emo-current').textContent=emotion;
+  $('#emo-badge').textContent=emotion;
+  $('#emo-badge').style.background=emoColor(emotion);
+  $('#emo-badge').style.color='#111';
+  if(confidence!==undefined&&confidence!==null)$('#emo-confidence').textContent=Math.round(confidence*100)+'%';
+  if(urgency!==undefined&&urgency!==null)$('#emo-urgency').textContent=urgency;
+
+  var html=esc(text);
+  html+='<div class="meta-row">';
+  html+='<span class="badge" style="background:'+emoColor(emotion)+';color:#111">'+esc(emotion)+'</span>';
+  if(urgency!==undefined&&urgency!==null)html+='<span class="badge" style="background:rgba(255,145,0,.2);color:var(--warning)">urgency '+urgency+'</span>';
+  if(confidence!==undefined&&confidence!==null)html+='<span class="badge" style="background:rgba(0,212,255,.15);color:var(--accent)">\u2691 '+Math.round(confidence*100)+'%</span>';
+  html+='<span style="color:var(--text-dim)">\u23F1 '+latency+'s</span>';
+  if(d.execution_ms)html+='<span style="color:var(--text-dim)">\u2699 '+Math.round(d.execution_ms)+'ms server</span>';
+  if(path)html+='<span style="color:var(--text-dim)">\u21A3 '+esc(Array.isArray(path)?path.join(' \u2192 '):path)+'</span>';
+  html+='</div>';
+
+  /* Trace toggle + content */
+  var traceHtml=buildTrace(d);
+  if(traceHtml){
+    html+='<span class="trace-toggle" onclick="var b=this.nextElementSibling;b.style.display=b.style.display===\'block\'?\'none\':\'block\'">\u25B6 trace</span>';
+    html+=traceHtml;
+  }
+
+  /* Full JSON toggle */
+  html+='<span class="trace-toggle" onclick="var b=this.nextElementSibling;b.style.display=b.style.display===\'block\'?\'none\':\'block\'" style="margin-left:10px">\u25B6 json</span>';
+  html+='<pre class="trace-box" style="display:none;white-space:pre-wrap;max-height:300px;overflow-y:auto">'+esc(JSON.stringify(d,null,2))+'</pre>';
+
+  appendMsg('bot',html);
+}
+
+function sendMessage(){
+  var inp=$('#chat-input');
+  var text=inp.value.trim();
+  if(!text||busy)return;
+
+  /* Slash commands */
+  if(text.toLowerCase()==='/teach'){
+    inp.value='';
+    teacherMode=!teacherMode;
+    appendMsg('bot',teacherMode?'\uD83D\uDCDA Teacher mode ON — your corrections will be learned':'\uD83D\uDCDA Teacher mode OFF');
+    return;
+  }
+  if(text.toLowerCase()==='/help'){
+    inp.value='';
+    appendMsg('bot','<b>Commands:</b><br><code>/teach</code> — toggle teacher mode<br><code>/help</code> — show this help');
+    return;
+  }
+
+  busy=true;inp.value='';$('#chat-send').disabled=true;
+  appendMsg('user',esc(text));
+  var t0=performance.now();
+
+  fetch('/brain/process',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({user_input:text,session_id:SESSION,teacher_mode:teacherMode})
+  })
+  .then(function(r){return r.json()})
+  .then(function(d){
+    var latency=((performance.now()-t0)/1000).toFixed(2);
+    appendBotMsg(d,latency);
+  })
+  .catch(function(e){appendMsg('bot','<span class="error-text">Error: '+esc(e.message)+'</span>')})
+  .finally(function(){busy=false;$('#chat-send').disabled=false;$('#chat-input').focus()});
+}
+
+$('#chat-send').addEventListener('click',sendMessage);
+$('#chat-input').addEventListener('keydown',function(e){if(e.key==='Enter'&&!busy)sendMessage()});
+
+/* ── Monitoring ───────────────────────────────────────────────── */
+function refreshMonitoring(){
+  fetch('/health').then(function(r){return r.json()}).then(function(d){
+    var regions=d.regions||{};
+    /* thalamus itself is alive if we got a response */
+    regions['thalamus']='alive';
+    var total=Object.keys(regions).length;
+    var alive=Object.values(regions).filter(function(v){return v==='alive'}).length;
+
+    $('#ov-alive').textContent=alive+'/'+total;
+    $('#ov-status').textContent=d.status||'unknown';
+    $('#ov-status').style.color=d.status==='alive'?'var(--success)':'var(--error)';
+
+    var grid=$('#svc-grid');
+    var names=Object.keys(regions).sort();
+    grid.innerHTML=names.map(function(name){
+      var st=regions[name];
+      var isAlive=st==='alive';
+      return '<div class="svc-card">'+
+        '<div class="svc-name"><span class="dot '+(isAlive?'alive':'dead')+'"></span>'+esc(name)+'</div>'+
+        '<div class="svc-stats"><span>Status</span><span style="color:'+(isAlive?'var(--success)':'var(--error)')+'">'+esc(st)+'</span></div>'+
+        '</div>';
+    }).join('');
+  }).catch(function(e){
+    $('#ov-status').textContent='offline';
+    $('#ov-status').style.color='var(--error)';
+  });
+}
+
+/* ── Init ─────────────────────────────────────────────────────── */
+fetch('/health').then(function(r){
+  if(!r.ok)throw new Error('offline');
+  return r.json();
+}).then(function(d){
+  var el=$('#global-status');
+  el.style.background=d.status==='alive'?'var(--success)':'var(--error)';
+  el.style.color='#111';
+  el.textContent=d.status==='alive'?'Online':'Degraded';
+  $('#pulse').style.background=d.status==='alive'?'var(--success)':'var(--error)';
+}).catch(function(){
+  $('#global-status').style.background='var(--error)';
+  $('#global-status').textContent='Offline';
+  $('#pulse').style.background='var(--error)';
+});
+</script>
+</body>
+</html>

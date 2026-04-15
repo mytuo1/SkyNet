@@ -79,6 +79,9 @@ SERVICES = {
     "goals":           os.getenv("GOALS_URL",             "http://goals:8015"),
     "learner":         os.getenv("LEARNER_URL",           "http://learner:8016"),
     "vision":          os.getenv("VISION_URL",            "http://vision:8017"),
+    # Auxiliary services (not called during processing but health-checked)
+    "dashboard":       os.getenv("DASHBOARD_URL",         "http://dashboard:8080"),
+    "autonomy":        os.getenv("AUTONOMY_URL",          "http://autonomy:8018"),
 }
 
 # Map internal service names (with underscores) to dashboard names (with hyphens)

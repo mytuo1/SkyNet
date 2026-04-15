@@ -44,6 +44,8 @@ ALL_SERVICES = {
     "causal-graph": 8012, "simulator": 8013, "metacognition": 8014,
     "goals": 8015, "learner": 8016, "vision": 8017, "knobs": 8090,
     "autonomy": 8018, "dashboard": 8080,
+    # Infrastructure
+    "gateway": 80, "redis": 6379, "elasticsearch": 9200,
 }
 
 PUBSUB_CHANNELS = [
@@ -149,6 +151,65 @@ async def _proxy_patch(url: str, params: dict | None = None, body: dict | None =
 @app.get("/api/health")
 async def api_health():
     return await _proxy_get(f"{THALAMUS_URL}/health")
+
+
+@app.get("/api/services/health")
+async def api_services_health():
+    """Real health check — ping every service /health endpoint (incl. infra)."""
+    results: dict = {}
+
+    async def _check(name: str, url: str):
+        try:
+            r = await http_client.get(url, timeout=2.5)
+            data = r.json() if r.status_code == 200 else {}
+            results[name] = {"status": data.get("status", "alive" if r.status_code == 200 else "error"), "ms": round(r.elapsed.total_seconds() * 1000, 1)}
+        except Exception:
+            results[name] = {"status": "unreachable", "ms": 0}
+
+    # Application services
+    svc_checks = {name: f"http://{name}:{port}/health" for name, port in ALL_SERVICES.items()
+                  if name not in ("redis", "elasticsearch", "gateway")}
+    # Infrastructure — different health endpoints
+    infra_checks = {
+        "redis": ("redis", REDIS_URL),
+        "elasticsearch": ("elasticsearch", "http://elasticsearch:9200/_cluster/health"),
+        "gateway": ("gateway", "http://gateway:80/health"),
+    }
+
+    tasks = [_check(name, url) for name, url in svc_checks.items()]
+    # Elasticsearch
+    async def _check_es():
+        try:
+            r = await http_client.get("http://elasticsearch:9200/_cluster/health", timeout=2.5)
+            results["elasticsearch"] = {"status": "alive" if r.status_code == 200 else "error", "ms": round(r.elapsed.total_seconds() * 1000, 1)}
+        except Exception:
+            results["elasticsearch"] = {"status": "unreachable", "ms": 0}
+    tasks.append(_check_es())
+    # Redis
+    async def _check_redis():
+        if redis_pool:
+            try:
+                t0 = time.time()
+                await redis_pool.ping()
+                results["redis"] = {"status": "alive", "ms": round((time.time() - t0) * 1000, 1)}
+            except Exception:
+                results["redis"] = {"status": "unreachable", "ms": 0}
+        else:
+            results["redis"] = {"status": "unreachable", "ms": 0}
+    tasks.append(_check_redis())
+    # Gateway — if dashboard is being served, gateway is reachable
+    async def _check_gateway():
+        try:
+            r = await http_client.get("http://gateway:80/health", timeout=2.5)
+            results["gateway"] = {"status": "alive" if r.status_code == 200 else "error", "ms": round(r.elapsed.total_seconds() * 1000, 1)}
+        except Exception:
+            results["gateway"] = {"status": "unreachable", "ms": 0}
+    tasks.append(_check_gateway())
+
+    await asyncio.gather(*tasks)
+
+    alive = sum(1 for v in results.values() if v["status"] == "alive")
+    return JSONResponse({"services": results, "alive": alive, "total": len(results)})
 
 
 @app.post("/api/process")
@@ -1806,6 +1867,8 @@ function appendBotMsg(d,latency){
       var steps=Object.keys(st);
       for(var si=0;si<steps.length;si++){
         var sn=steps[si],sv=st[sn];
+        if(sn==='parallel_batch_detail')continue; /* rendered inline below parallel_batch */
+        if(typeof sv!=='number')continue;
         var pct=totalMs>0?Math.min(100,Math.round(sv/totalMs*100)):0;
         var barColor=sv>5000?'var(--error)':sv>2000?'var(--warning)':'var(--accent)';
         traceContent+='<div style="display:flex;align-items:center;gap:6px;margin:2px 0">';
@@ -1814,6 +1877,22 @@ function appendBotMsg(d,latency){
         traceContent+='<div style="width:'+pct+'%;height:100%;background:'+barColor+';border-radius:3px;transition:width .3s"></div></div>';
         traceContent+='<span style="width:60px;text-align:right;color:'+(sv>5000?'var(--error)':'var(--text)')+'">'+Math.round(sv)+'</span>';
         traceContent+='</div>';
+        /* Show parallel_batch sub-steps right after the batch row */
+        if(sn==='parallel_batch'&&st.parallel_batch_detail){
+          var pb=st.parallel_batch_detail;
+          var pbKeys=Object.keys(pb);
+          for(var pi=0;pi<pbKeys.length;pi++){
+            var pn=pbKeys[pi],pv=pb[pn];
+            var ppct=totalMs>0?Math.min(100,Math.round(pv/totalMs*100)):0;
+            var pbColor=pv>3000?'var(--error)':pv>1000?'var(--warning)':'rgba(0,212,255,.5)';
+            traceContent+='<div style="display:flex;align-items:center;gap:6px;margin:1px 0;padding-left:20px">';
+            traceContent+='<span style="width:120px;color:var(--text-dim);text-align:right;flex-shrink:0;font-size:.66rem;opacity:.8">\u2514 '+esc(pn)+'</span>';
+            traceContent+='<div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden">';
+            traceContent+='<div style="width:'+ppct+'%;height:100%;background:'+pbColor+';border-radius:3px"></div></div>';
+            traceContent+='<span style="width:60px;text-align:right;font-size:.66rem;color:'+(pv>3000?'var(--error)':'var(--text-dim)')+'">'+Math.round(pv)+'</span>';
+            traceContent+='</div>';
+          }
+        }
       }
       traceContent+='<div style="margin-top:4px;color:var(--text-dim)">Total: '+Math.round(totalMs)+'ms</div>';
       traceContent+='</div>';
@@ -1980,14 +2059,16 @@ $$('#time-range button').forEach(function(b){b.addEventListener('click',function
   b.classList.add('active');refreshMonitoring();
 })});
 
+var _healthCache={};
 function refreshMonitoring(){
-  Promise.all([fetch('/api/metrics/summary'),fetch('/api/metrics/overview')])
+  Promise.all([fetch('/api/metrics/summary'),fetch('/api/metrics/overview'),fetch('/api/services/health')])
     .then(function(rs){return Promise.all(rs.map(function(r){return r.json()}))})
     .then(function(arr){
-      var summary=arr[0],overview=arr[1];
+      var summary=arr[0],overview=arr[1],health=arr[2];
+      _healthCache=health.services||{};
       $('#ov-reqs').textContent=summary.total_requests.toLocaleString();
       $('#ov-latency').textContent=summary.avg_response_time_ms.toFixed(1)+'ms';
-      $('#ov-active').textContent=summary.active_services;
+      $('#ov-active').textContent=(health.alive||0)+'/'+ALL_SVC_LIST.length;
       $('#ov-uptime').textContent=summary.uptime_hours.toFixed(1)+'h';
       renderServiceMetrics(overview.services||{});
     })
@@ -1996,24 +2077,27 @@ function refreshMonitoring(){
 
 var ALL_SVC_LIST=["thalamus","amygdala","hippocampus","cerebellum","neocortex","working-memory",
   "perception","verification","cross-domain","compass","framework-router","self-update",
-  "causal-graph","simulator","metacognition","goals","learner","vision","knobs","autonomy","dashboard"];
+  "causal-graph","simulator","metacognition","goals","learner","vision","knobs","autonomy","dashboard",
+  "gateway","redis","elasticsearch"];
 
 function renderServiceMetrics(services){
   var grid=$('#svc-metrics-grid');
   grid.innerHTML=ALL_SVC_LIST.map(function(name){
     var s=services[name]||{total_requests:0,avg_latency_ms:0,error_rate:0,p95_latency:0,last_24h_requests:[],uptime_pct:100};
-    var dotCls=s.total_requests>0?'dot-alive':'dot-unreachable';
+    var h=_healthCache[name];
+    var dotCls=(h&&h.status==='alive')?'dot-alive':'dot-unreachable';
+    var healthMs=(h&&h.ms)?h.ms.toFixed(0)+'ms':'—';
     var buckets=s.last_24h_requests||[];
     var maxReq=Math.max.apply(null,buckets.map(function(b){return b.requests||0}).concat([1]));
     var bars=buckets.map(function(b){
-      var h=Math.max(Math.round((b.requests||0)/maxReq*100),2);
-      return '<div class="bar" style="height:'+h+'%"></div>';
+      var ht=Math.max(Math.round((b.requests||0)/maxReq*100),2);
+      return '<div class="bar" style="height:'+ht+'%"></div>';
     }).join('');
     return '<div class="svc-metric-card"><div class="svc-m-name"><span class="dot-sm '+dotCls+'"></span>'+esc(name)+'</div>'+
-      '<div class="svc-stats"><span class="stat-label">Requests</span><span class="stat-val">'+s.total_requests+'</span>'+
+      '<div class="svc-stats"><span class="stat-label">Health</span><span class="stat-val">'+healthMs+'</span>'+
+      '<span class="stat-label">Requests</span><span class="stat-val">'+s.total_requests+'</span>'+
       '<span class="stat-label">Avg Latency</span><span class="stat-val">'+s.avg_latency_ms.toFixed(1)+'ms</span>'+
-      '<span class="stat-label">Error Rate</span><span class="stat-val">'+s.error_rate.toFixed(1)+'%</span>'+
-      '<span class="stat-label">P95 Latency</span><span class="stat-val">'+s.p95_latency.toFixed(1)+'ms</span></div>'+
+      '<span class="stat-label">Error Rate</span><span class="stat-val">'+s.error_rate.toFixed(1)+'%</span></div>'+
       '<div class="sparkline">'+bars+'</div></div>';
   }).join('');
 }
