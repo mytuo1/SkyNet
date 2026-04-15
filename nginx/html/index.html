@@ -1358,6 +1358,7 @@ function sendMessage(){
   busy=true;inp.value='';$('#chat-send').disabled=true;
   var role=teacherMode?'user teacher':'user';
   appendMsg(role,esc(text));
+  saveChatMessage(role,esc(text));
   animateBrainPipeline([]);
   var t0=performance.now();
   var payload={user_input:text,session_id:SESSION,teacher_mode:teacherMode};
@@ -1366,9 +1367,12 @@ function sendMessage(){
     .then(function(r){return r.json()})
     .then(function(d){
       var latency=((performance.now()-t0)/1000).toFixed(2);
-      appendBotMsg(d,latency);
+      var botHtml=buildBotMsgHtml(d,latency);
+      appendMsg('bot',botHtml);
+      saveChatMessage('bot',botHtml,d);
       if(d.cognitive_path||d.path) animateBrainPipeline(d.cognitive_path||d.path);
       if(d.experiences) addExperiences(d.experiences);
+      updateEmotionTracker(d.emotion||d.dominant_emotion||'neutral',d.confidence||null,d.emotions||[]);
     })
     .catch(function(e){appendMsg('bot','<span class="error-box">Error: '+esc(e.message)+'</span>')})
     .finally(function(){busy=false;$('#chat-send').disabled=false});
@@ -1387,7 +1391,7 @@ function appendMsg(role,html){
   log.appendChild(div);log.scrollTop=log.scrollHeight;
 }
 
-function appendBotMsg(d,latency){
+function buildBotMsgHtml(d,latency){
   var emotion=d.emotion||d.dominant_emotion||'neutral';
   var urgency=d.urgency;if(urgency===undefined||urgency===null)urgency='';
   var confidence=d.confidence;if(confidence===undefined||confidence===null)confidence='';
@@ -1488,8 +1492,13 @@ function appendBotMsg(d,latency){
     traceContent+='<pre style="margin:0;font-size:.68rem">'+esc(JSON.stringify(d.trace,null,2))+'</pre>';
     trace+='<div class="trace" style="display:none">'+traceContent+'</div>';
   }
-  appendMsg('bot',esc(text)+meta+trace);
-  updateEmotionTracker(emotion,confidence||null,mixedEmotions);
+  return esc(text)+meta+trace;
+}
+
+function appendBotMsg(d,latency){
+  var html=buildBotMsgHtml(d,latency);
+  appendMsg('bot',html);
+  updateEmotionTracker(d.emotion||d.dominant_emotion||'neutral',d.confidence||null,d.emotions||[]);
 }
 
 /* -- Speech-to-Text + Audio Waveform ---------------------------------- */

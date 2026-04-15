@@ -35,7 +35,7 @@ r     = redis.from_url(
 DEFAULT_TTL  = 3600   # 1 hour
 SHORT_TTL    = 300    # 5 minutes
 LONG_TTL     = 86400  # 24 hours
-MAX_THOUGHTS = 12     # mirrors 7±2 + buffer
+MAX_THOUGHTS = 24     # conversation turns to keep (was 7±2, now deeper recall)
 
 
 class ContextRequest(BaseModel):

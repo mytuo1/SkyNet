@@ -278,8 +278,24 @@ cmd_stop() {
 }
 
 cmd_restart() {
-    cmd_stop
-    cmd_start
+    banner
+    info "Restarting services (preserving all data)..."
+    $COMPOSE stop
+    $COMPOSE up -d
+    info "Waiting for system health..."
+    local health_retries=0
+    while [ $health_retries -lt 30 ]; do
+        if curl -sf "$GATEWAY_URL/health" &>/dev/null; then
+            break
+        fi
+        sleep 3
+        health_retries=$((health_retries + 1))
+    done
+    if curl -sf "$GATEWAY_URL/health" &>/dev/null; then
+        success "All services restarted — data preserved"
+    else
+        warn "Some services may still be starting — check: ./skynet.sh status"
+    fi
 }
 
 cmd_status() {
@@ -376,6 +392,28 @@ cmd_reset() {
     success "Factory reset complete — SkyNet has no memory of the past"
 }
 
+cmd_rebuild() {
+    banner
+    warn "REBUILD — This will wipe ALL databases and rebuild everything fresh"
+    echo ""
+    read -rp "Type 'REBUILD' to confirm: " confirm
+    if [ "$confirm" != "REBUILD" ]; then
+        info "Rebuild cancelled"
+        exit 0
+    fi
+
+    info "Stopping all services and removing volumes..."
+    $COMPOSE down -v --remove-orphans
+
+    info "Rebuilding all containers..."
+    compose_build --no-cache
+
+    info "Starting fresh system..."
+    cmd_start
+
+    success "Rebuild complete — fresh environment, all databases recreated"
+}
+
 cmd_help() {
     banner
     cat <<EOF
@@ -384,23 +422,26 @@ Usage: ./skynet.sh <command> [options]
 Commands:
   start       Full startup: check deps, build, init DBs, start all services
   stop        Graceful shutdown of all services
-  restart     Stop + start
+  restart     Quick restart (preserves all data and conversations)
   status      Show all service health
   logs [svc]  Tail logs for a service (or all)
   dashboard   Open the dashboard in your browser
   think       Activate autonomy mode
   setup       First-time setup wizard (installs Docker, Ollama, creates .env)
   update      Git pull + rebuild changed services
-  reset       Factory reset (stop, remove volumes, rebuild)
+  rebuild     Wipe databases and rebuild fresh (new environment)
+  reset       Factory reset (alias for rebuild)
   help        Show this help message
 
 Examples:
   ./skynet.sh setup          # First time? Start here
   ./skynet.sh start          # Launch everything
+  ./skynet.sh restart        # Quick restart, keeps conversations
   ./skynet.sh status         # Check system health
   ./skynet.sh logs thalamus  # Watch the orchestrator
   ./skynet.sh think          # Enable autonomous thinking
   ./skynet.sh dashboard      # Open the web dashboard
+  ./skynet.sh rebuild        # Fresh environment, wipes all data
 EOF
 }
 
@@ -415,6 +456,7 @@ case "${1:-help}" in
     think)     cmd_think ;;
     setup)     cmd_setup ;;
     update)    cmd_update ;;
+    rebuild)   cmd_rebuild ;;
     reset)     cmd_reset ;;
     help|--help|-h) cmd_help ;;
     *)         error "Unknown command: $1"; cmd_help; exit 1 ;;

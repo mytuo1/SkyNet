@@ -229,7 +229,7 @@ async def call_llm(user_input: str, context: str, amygdala: dict, k,
         prompt     = user_message,
         system     = system,
         model_tier = "main",
-        max_tokens = 2048
+        max_tokens = 4096
     )
 
 
@@ -301,18 +301,18 @@ def assemble_context(
     if compass.get("integrated_direction"):
         compass_parts = [
             f"\n## Ethical Compass\n"
-            f"Empathy: {compass.get('empathy_perception','')[:80]}\n"
-            f"Direction: {compass.get('integrated_direction','')[:100]}"
+            f"Empathy: {compass.get('empathy_perception','')}\n"
+            f"Direction: {compass.get('integrated_direction','')}"
         ]
         if compass.get("gratitude_perception") and \
            compass.get("gratitude_perception") != "No specific gratitude detected":
             compass_parts.append(
-                f"Gratitude: {compass.get('gratitude_perception','')[:80]}"
+                f"Gratitude: {compass.get('gratitude_perception','')}"
             )
         if compass.get("belonging_perception") and \
            compass.get("belonging_perception") != "No specific belonging signal detected":
             compass_parts.append(
-                f"Belonging: {compass.get('belonging_perception','')[:80]}"
+                f"Belonging: {compass.get('belonging_perception','')}"
             )
         parts.append("\n".join(compass_parts))
 
@@ -347,25 +347,25 @@ def assemble_context(
     # Conversation history (including emotional state per turn)
     thoughts = wm.get("thought_stream", [])
     if thoughts:
-        recent = [t for t in thoughts[:8]
+        recent = [t for t in thoughts
                   if isinstance(t, dict) and t.get("type") == "interaction"]
-        corrections = [t for t in thoughts[:8]
+        corrections = [t for t in thoughts
                        if isinstance(t, dict) and t.get("type") == "emotion_correction"]
         if recent:
             parts.append("\n## Recent Conversation")
-            for t in recent[:5]:
+            for t in recent:
                 emo_tag = ""
                 if t.get("emotion"):
                     emo_tag = f" [felt: {t['emotion']}]"
                 parts.append(
-                    f"User: {t.get('input','')[:100]}\n"
-                    f"You: {t.get('response','')[:100]}{emo_tag}"
+                    f"User: {t.get('input','')}\n"
+                    f"You: {t.get('response','')}{emo_tag}"
                 )
         if corrections:
             parts.append("\n## Emotion Corrections (Teacher Feedback)")
-            for c in corrections[:3]:
+            for c in corrections[:5]:
                 parts.append(
-                    f"- For \"{c.get('input','')[:60]}\" you detected "
+                    f"- For \"{c.get('input','')}\" you detected "
                     f"'{c.get('detected_emotion','')}' but the correct "
                     f"emotion was '{c.get('correct_emotion','')}'."
                 )
@@ -375,7 +375,7 @@ def assemble_context(
     if last_emo and last_emo.get("emotion") and last_emo["emotion"] != "neutral":
         parts.append(
             f"\n## Your Previous Emotional State\n"
-            f"For input \"{last_emo.get('input','')[:60]}\" you felt "
+            f"For input \"{last_emo.get('input','')}\" you felt "
             f"'{last_emo.get('emotion','')}' with urgency "
             f"'{last_emo.get('urgency','low')}'."
         )
@@ -384,14 +384,14 @@ def assemble_context(
     if episodic:
         parts.append("\n## Relevant Past Episodes")
         for ep in episodic[:4]:
-            parts.append(f"- [{ep.get('similarity',0):.2f}] {ep.get('summary','')[:100]}")
+            parts.append(f"- [{ep.get('similarity',0):.2f}] {ep.get('summary','')}")
 
     # Semantic knowledge
     if semantic:
         parts.append("\n## Relevant Knowledge")
         for item in semantic[:5]:
             parts.append(
-                f"- [{item.get('domain','')}] {item.get('content','')[:120]}"
+                f"- [{item.get('domain','')}] {item.get('content','')}"
             )
 
     # Cross-domain analogies
@@ -401,7 +401,7 @@ def assemble_context(
             insight = a.get("concept_mapping", {}).get("transfer_insight", "")
             parts.append(
                 f"- [{a.get('source_domain','')}] {a.get('pattern_type','')} "
-                f"→ {insight[:100]}"
+                f"→ {insight}"
             )
 
     # New experiences
@@ -416,7 +416,7 @@ def assemble_context(
     if novel_exps:
         parts.append("\n## New Experiences This Interaction")
         for e in novel_exps[:3]:
-            parts.append(f"- {e.get('experience_type')}: {e.get('content','')[:80]}")
+            parts.append(f"- {e.get('experience_type')}: {e.get('content','')}")
 
     # What I've learned (when user asks about learnings)
     if learnings:
@@ -428,7 +428,7 @@ def assemble_context(
             for c in wm_corr[:3]:
                 parts.append(
                     f"- Corrected '{c.get('detected_emotion','')}' to "
-                    f"'{c.get('correct_emotion','')}' for: \"{c.get('input','')[:50]}\""
+                    f"'{c.get('correct_emotion','')}' for: \"{c.get('input','')}\""
                 )
         learned_emos = learnings.get("emotions", {}).get("learned", [])
         if learned_emos:
@@ -973,16 +973,15 @@ async def process(req: ProcessRequest):
     step_times["compass_enrich"] = round((time.time() - t12) * 1000, 1)
 
     # ── STEP 13: Update Working Memory ────────────────────────────────────────
-    # Store the emotional assessment alongside the interaction so the bot
-    # can recall its own feelings when asked about them later.
+    # Store the full interaction so the bot can recall the conversation.
     t14 = time.time()
     await asyncio.gather(
         call("working_memory", "/context", {
             "session_id": req.session_id, "action": "push_thought",
             "data": {
                 "type":      "interaction",
-                "input":     req.user_input[:200],
-                "response":  final_response[:200],
+                "input":     req.user_input,
+                "response":  final_response,
                 "emotion":   ar.get("emotion", "neutral"),
                 "urgency":   ar.get("urgency", "low"),
                 "timestamp": time.time()
@@ -991,7 +990,7 @@ async def process(req: ProcessRequest):
         call("working_memory", "/context", {
             "session_id": req.session_id, "action": "set",
             "key":        "last_response",
-            "data":       {"content": final_response[:300], "ts": time.time()}
+            "data":       {"content": final_response, "ts": time.time()}
         }),
         # Persist last emotional state so the bot can introspect
         call("working_memory", "/context", {
@@ -1001,7 +1000,7 @@ async def process(req: ProcessRequest):
                 "emotion":  ar.get("emotion", "neutral"),
                 "urgency":  ar.get("urgency", "low"),
                 "threat":   ar.get("threat_detected", False),
-                "input":    req.user_input[:100],
+                "input":    req.user_input[:200],
                 "ts":       time.time()
             }
         }),
@@ -1024,7 +1023,7 @@ async def process(req: ProcessRequest):
     # Fire-and-forget: these write ops don't affect the response
     asyncio.create_task(call("hippocampus", "/encode", {
         **base_req,
-        "content":   f"Q: {req.user_input}\nA: {final_response[:400]}",
+        "content":   f"Q: {req.user_input}\nA: {final_response}",
         "emotion":   ar.get("emotion", "neutral"),
         "importance": ar.get("importance", 0.5),
         "concepts":  ar.get("required_regions", [])
@@ -1032,7 +1031,7 @@ async def process(req: ProcessRequest):
     asyncio.create_task(call("learner", "/experience", {
         "session_id": req.session_id,
         "user_input": req.user_input,
-        "response":   final_response[:600],
+        "response":   final_response,
         "quality":    quality,
         "domain":     (ar.get("required_regions") or ["general"])[0],
         "emotion":    ar.get("emotion", "neutral"),
