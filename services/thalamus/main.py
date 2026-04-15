@@ -422,6 +422,19 @@ def assemble_context(
 
 @app.get("/health")
 async def health():
+    """Fast health check — just confirms thalamus is alive and LLM is configured.
+    Does NOT fan-out to all services (that was causing 2.5s × 20+ timeouts,
+    making thalamus appear 'unreachable' to the dashboard health monitor)."""
+    return {
+        "status":      "alive",
+        "service":     "thalamus",
+        "llm_provider": provider_info()
+    }
+
+
+@app.get("/health/detailed")
+async def health_detailed():
+    """Detailed health check — pings every registered service."""
     checks = {}
     async def check(name: str, url: str):
         try:
@@ -893,7 +906,7 @@ async def process(req: ProcessRequest):
             "claim":      raw_response[:400],
             "context":    req.user_input[:200],
             "domain":     (ar.get("required_regions") or ["general"])[0]
-        })
+        }, timeout=5.0)
         verification = ver_resp.get("data", {})
         trace["verification"] = {
             "status":     verification.get("status"),

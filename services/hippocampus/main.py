@@ -67,12 +67,16 @@ async def embed(text: str) -> list:
     try:
         resp = await http.post(
             f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]}
+            json={"model": EMBED_MODEL, "prompt": text[:2000]},
+            timeout=5.0
         )
-        return resp.json()["embedding"]
-    except Exception as e:
-        print(f"Embed error: {e}")
-        return [0.0] * 768
+        vec = resp.json()["embedding"]
+        # Guard against zero-magnitude vectors
+        if all(v == 0.0 for v in vec[:10]):
+            return []
+        return vec
+    except Exception:
+        return []
 
 
 def cosine_similarity(a: list, b: list) -> float:
@@ -120,6 +124,8 @@ async def find_related_episodes(embedding: list,
                                   threshold: float = 0.72,
                                   limit: int = 6) -> list:
     """Find past episodes similar to a given embedding."""
+    if not embedding:
+        return []
     try:
         episodes = await db.query("""
             SELECT Episode {
@@ -204,7 +210,7 @@ async def encode_episode(req: EncodeRequest,
 
     embedding = await embed(content)
     summary   = await quick_summarize(content)
-    related   = await find_related_episodes(embedding, limit=5)
+    related   = await find_related_episodes(embedding, limit=5) if embedding else []
 
     try:
         episode = await db.query_single("""
@@ -281,7 +287,7 @@ async def recall(req: BrainRequest):
     """Recall relevant past episodes for a given query."""
     start     = time.time()
     embedding = await embed(req.user_input)
-    episodes  = await find_related_episodes(embedding, limit=6)
+    episodes  = await find_related_episodes(embedding, limit=6) if embedding else []
 
     # Boost importance of accessed episodes (reconsolidation effect)
     async def boost_importance():
@@ -332,6 +338,8 @@ async def consolidate(max_items: int = 10):
             concepts = [c.name for c in (ep.concepts or [])]
             text     = ep.summary or ep.content[:400]
             embedding = await embed(text)
+            if not embedding:
+                continue  # skip if embeddings unavailable
 
             knowledge = {
                 "content":          text,

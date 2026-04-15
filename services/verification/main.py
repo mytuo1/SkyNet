@@ -36,7 +36,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 knobs  = KnobsClient()
 events = EventBus()
-http   = httpx.AsyncClient(timeout=45.0)
+http   = httpx.AsyncClient(timeout=10.0)
 
 NEOCORTEX_URL = os.getenv("NEOCORTEX_URL",    "http://neocortex:8004")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",        "http://host.docker.internal:11434")
@@ -108,11 +108,16 @@ async def embed(text: str) -> list:
     try:
         resp = await http.post(
             f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]}
+            json={"model": EMBED_MODEL, "prompt": text[:2000]},
+            timeout=5.0
         )
-        return resp.json()["embedding"]
+        vec = resp.json()["embedding"]
+        # Guard against zero-magnitude vectors (cosine similarity rejects them)
+        if all(v == 0.0 for v in vec[:10]):
+            return []
+        return vec
     except Exception:
-        return [0.0] * 768
+        return []
 
 
 async def search_neocortex(embedding: list, text: str = "",
@@ -155,6 +160,9 @@ async def check_internal_consistency(claim: str, domain: str) -> dict:
     Searches for both the claim and its logical negation.
     """
     embedding        = await embed(claim)
+    if not embedding:
+        return {"supporting": [], "contradicting": [], "consistency_score": 0.5}
+
     negation         = generate_negation(claim)
     negation_embedding = await embed(negation)
 
@@ -162,9 +170,11 @@ async def check_internal_consistency(claim: str, domain: str) -> dict:
     supporting = await search_neocortex(embedding, claim, domain, top_k=8)
 
     # Search for contradicting evidence (negation search)
-    contradicting_raw = await search_neocortex(
-        negation_embedding, negation, domain, top_k=6
-    )
+    contradicting_raw = []
+    if negation_embedding:
+        contradicting_raw = await search_neocortex(
+            negation_embedding, negation, domain, top_k=6
+        )
     contradicting = [r for r in contradicting_raw
                      if float(r.get("score", 0)) > 0.72]
 
@@ -185,6 +195,10 @@ async def check_corroboration(claim: str, domain: str) -> dict:
     Independence across domains is stronger than same-domain agreement.
     """
     embedding = await embed(claim)
+    if not embedding:
+        return {"independent_domains": [], "corroborating_count": 0,
+                "corroboration_score": 0.2, "top_sources": []}
+
     all_results = await search_neocortex(embedding, claim, top_k=20)
 
     # Group by domain

@@ -125,11 +125,13 @@ button{font-family:var(--font)}
 
 /* == 3D Brain ========================================================= */
 .brain-thumb{position:fixed;top:54px;right:12px;width:160px;height:120px;z-index:10;
-  cursor:pointer;background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
+  cursor:grab;background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
   border:1px solid var(--border);border-radius:var(--radius);
-  padding:4px;transition:all .35s ease;overflow:hidden;transform-origin:top right}
-.brain-thumb.expanded{width:270px;height:210px;z-index:25;
+  padding:4px;transition:width .35s ease, height .35s ease, border-color .35s ease, box-shadow .35s ease;
+  overflow:hidden}
+.brain-thumb.expanded{width:320px;height:260px;z-index:25;
   box-shadow:0 8px 30px rgba(0,0,0,.5);border-color:rgba(0,212,255,.3)}
+.brain-thumb:active{cursor:grabbing}
 .brain-thumb:hover{border-color:rgba(0,212,255,.4);box-shadow:0 0 15px var(--glow-accent)}
 .brain-thumb canvas{width:100%;height:100%;display:block;border-radius:calc(var(--radius) - 4px)}
 .brain-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;
@@ -808,8 +810,10 @@ function initThumbRenderer(){
   thumbCamera.lookAt(0,0,0);
   resizeThumb();
 
-  /* Drag rotation on thumbnail */
-  canvas.addEventListener('mousedown',function(e){e.stopPropagation();thumbDrag=true;thumbPrevMX=e.clientX;thumbPrevMY=e.clientY});
+  /* Rotate brain on canvas drag (right button or ctrl+left) */
+  canvas.addEventListener('mousedown',function(e){
+    if(e.button===2||e.ctrlKey){e.preventDefault();e.stopPropagation();thumbDrag=true;thumbPrevMX=e.clientX;thumbPrevMY=e.clientY}
+  });
   canvas.addEventListener('mousemove',function(e){
     if(!thumbDrag)return;
     brainGroup.rotation.y+=(e.clientX-thumbPrevMX)*0.008;
@@ -818,6 +822,7 @@ function initThumbRenderer(){
   });
   canvas.addEventListener('mouseup',function(){thumbDrag=false});
   canvas.addEventListener('mouseleave',function(){thumbDrag=false});
+  canvas.addEventListener('contextmenu',function(e){e.preventDefault()});
 
   function animate(){
     thumbAnimId=requestAnimationFrame(animate);
@@ -877,24 +882,40 @@ function initModalRenderer(){
   animate();
 }
 
-/* -- Brain open/close ------------------------------------------------- */
-$('#brain-thumb').addEventListener('click',function(e){
-  /* Ignore if it was a drag */
-  if(e.target.tagName==='CANVAS')return;
+/* -- Brain drag-to-move + dblclick-to-expand -------------------------- */
+var _brainDrag=false,_brainDragMoved=false,_brainDragX=0,_brainDragY=0,_brainStartLeft=0,_brainStartTop=0;
+$('#brain-thumb').addEventListener('mousedown',function(e){
+  if(e.button!==0||e.ctrlKey)return; /* only left-click, not ctrl */
+  _brainDrag=true;_brainDragMoved=false;
+  _brainDragX=e.clientX;_brainDragY=e.clientY;
   var thumb=$('#brain-thumb');
-  if(thumb.classList.contains('expanded')){
-    thumb.classList.remove('expanded');
-  }else{
-    thumb.classList.add('expanded');
-  }
-  /* Resize renderer after CSS transition completes */
+  var rect=thumb.getBoundingClientRect();
+  _brainStartLeft=rect.left;_brainStartTop=rect.top;
+  /* Switch from right-anchored to left-anchored positioning on first drag */
+  thumb.style.right='auto';
+  thumb.style.left=_brainStartLeft+'px';
+  thumb.style.top=_brainStartTop+'px';
+  e.preventDefault();
+});
+document.addEventListener('mousemove',function(e){
+  if(!_brainDrag)return;
+  var dx=e.clientX-_brainDragX,dy=e.clientY-_brainDragY;
+  if(Math.abs(dx)>3||Math.abs(dy)>3)_brainDragMoved=true;
+  var thumb=$('#brain-thumb');
+  thumb.style.left=(_brainStartLeft+dx)+'px';
+  thumb.style.top=(_brainStartTop+dy)+'px';
+});
+document.addEventListener('mouseup',function(){_brainDrag=false});
+
+$('#brain-thumb').addEventListener('dblclick',function(e){
+  /* Double-click toggles expand/collapse in-place */
+  e.preventDefault();
+  var thumb=$('#brain-thumb');
+  thumb.classList.toggle('expanded');
   setTimeout(resizeThumb,400);
 });
-$('#brain-thumb').addEventListener('dblclick',function(){
-  /* Double-click opens the full modal for detailed inspection */
-  brainModalOpen=true;
-  $('#brain-modal-overlay').classList.add('open');
-});
+
+/* Modal still works for detailed inspection via menu or programmatic open */
 $('#brain-modal-close').addEventListener('click',function(){
   brainModalOpen=false;$('#brain-modal-overlay').classList.remove('open');
 });
