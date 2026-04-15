@@ -187,6 +187,21 @@ Override the default max_tokens for LLM calls. When 0, uses built-in defaults
 (4096 for complete(), 2048 for complete_json()). Increase if you need longer
 responses from the brain or if the LLM is truncating output.
 
+### Working Memory
+
+Working memory stores full conversation history in Redis so the brain can
+recall every previous exchange in the current session. Key parameters:
+
+- **MAX_THOUGHTS**: 24 turns kept per session (configurable in working-memory/main.py)
+- **LONG_TTL**: 7200 seconds (2 hours) before idle session data expires
+- **Conversation data**: full input and response text stored (no truncation)
+- **Thought stream**: Redis list at `wm:{session_id}:thought_stream`
+
+The thalamus feeds the entire thought stream into the LLM context under
+`## Recent Conversation`, so the brain can reference any previous exchange
+in the session. No character limits are applied — context window management
+is left to the LLM provider's token limit.
+
 ### Autonomy (Self-Improvement)
 
 ```
@@ -692,6 +707,28 @@ docker compose logs -f learner
 
 There are four types of redeployment. Use the right one for your situation.
 
+### Using skynet.sh (recommended)
+
+The `skynet.sh` script provides simple commands for common operations:
+
+| Command | What it does | Data preserved? |
+|---------|-------------|-----------------|
+| `./skynet.sh restart` | Quick restart — `docker compose stop` + `up -d` | ✅ Yes |
+| `./skynet.sh update` | Git pull + rebuild changed images + restart | ✅ Yes |
+| `./skynet.sh rebuild` | Wipe all volumes, rebuild from scratch (confirms first) | ❌ No |
+| `./skynet.sh reset` | Factory reset (alias for rebuild, confirms first) | ❌ No |
+
+**restart** is the safest option — it stops and restarts containers without
+removing them, so all data (conversations, memories, models) is preserved.
+Use this when you just need to pick up code or config changes.
+
+**rebuild** is for when you want a completely fresh environment, as if
+deploying for the first time. It removes all Docker volumes (Redis data,
+Elasticsearch indices, EdgeDB data, downloaded models) and rebuilds all
+images with `--no-cache`.
+
+### Manual redeployment types
+
 ---
 
 ### Type 1: Rolling restart (code changes, no data wipe)
@@ -795,6 +832,9 @@ skills are gone. The brain has no past.
 ### Redeployment decision tree
 
 ```
+Quick restart? (code changes, .env changes)
+  └── ./skynet.sh restart                    (fastest, data preserved)
+
 Did you change .env?
   └── YES → docker compose up -d        (rolling restart, no rebuild needed)
              Then restart affected services
@@ -815,13 +855,10 @@ Did you change databases/*/init.py or schema?
   └── YES → docker compose up db-init   (safe to rerun, idempotent)
 
 Is everything broken and you don't know why?
-  └── → docker compose down
-        docker compose up -d
-        docker compose logs -f
+  └── → ./skynet.sh restart              (preserves all data)
 
-Is it totally corrupted and you want to start over?
-  └── → docker compose down -v
-        docker compose up -d
+Want a completely fresh environment?
+  └── → ./skynet.sh rebuild              (wipes everything, confirms first)
 ```
 
 ---
@@ -931,7 +968,7 @@ docker compose up -d
 
 ### Changing shared/knobs.py (KnobsClient)
 
-All 19 services use this. Rebuild everything.
+All 21 services use this. Rebuild everything.
 
 ```bash
 docker compose build
@@ -1323,6 +1360,49 @@ curl -X DELETE http://localhost:9200/neocortex_knowledge
 docker compose up db-init
 ```
 
+### Working memory "WRONGTYPE Operation against a key"
+
+This error occurred when `r.get()` was called on Redis list-type keys
+(e.g. `thought_stream`) during the `get_all` action. It has been fixed —
+the working memory service now checks key types before reading them.
+If you still see this error, restart working memory:
+```bash
+docker compose up -d --no-deps working-memory
+```
+
+### Learner "data did not match any variant of untagged enum ModelWrapper"
+
+This is a fast tokenizer compatibility issue with some HuggingFace models
+(e.g. `microsoft/phi-4-mini-instruct`). The learner now automatically falls
+back to `use_fast=False` when the fast tokenizer fails, and clears corrupted
+cache on the third attempt. If you still see this error, try changing the model:
+```env
+LOCAL_MODEL_NAME=Qwen/Qwen2.5-1.5B-Instruct
+```
+
+### Learner "cannot import name 'SlidingWindowCache'"
+
+The installed `transformers` library is too old for `phi-4-mini-instruct`.
+The learner now requires `transformers>=4.46.3`. Rebuild the learner:
+```bash
+docker compose build --no-cache learner
+docker compose up -d --no-deps learner
+```
+
+### ReadTimeout errors in neocortex, cross-domain, or verification
+
+These services call Ollama for embeddings and LLM APIs for reasoning.
+On cold start, Ollama can take 30+ seconds to load models into memory.
+All timeouts have been raised to 60s for service calls and 30s for
+Ollama embedding calls. Aggressive retries have been removed — each
+service gets one attempt with generous time, and errors are reported
+in the trace without blocking.
+
+If you still see timeouts:
+1. Check that Ollama is running: `ollama list`
+2. Pull the embedding model: `ollama pull nomic-embed-text`
+3. Increase the httpx client timeout in the service's `main.py`
+
 ### Thalamus health check failing but all other services healthy
 
 Thalamus requires ALL services to be healthy before it starts. Check which
@@ -1447,6 +1527,20 @@ curl -s http://localhost:8000/brain/learner/training-history | tail -5
 ---
 
 ## Quick Reference
+
+### skynet.sh commands
+```bash
+./skynet.sh start      # Full startup (build + init DBs + start all)
+./skynet.sh stop       # Graceful shutdown
+./skynet.sh restart    # Quick restart (preserves all data and conversations)
+./skynet.sh status     # Show all service health
+./skynet.sh logs       # Tail all logs (or: ./skynet.sh logs thalamus)
+./skynet.sh dashboard  # Open the web dashboard
+./skynet.sh think      # Activate autonomous thinking
+./skynet.sh update     # Git pull + rebuild changed services
+./skynet.sh rebuild    # Wipe databases and rebuild fresh (confirms first)
+./skynet.sh reset      # Factory reset (alias for rebuild)
+```
 
 ### Start the brain
 ```bash

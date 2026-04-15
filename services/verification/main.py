@@ -36,7 +36,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 knobs  = KnobsClient()
 events = EventBus()
-http   = httpx.AsyncClient(timeout=45.0)
+http   = httpx.AsyncClient(timeout=60.0)
 
 NEOCORTEX_URL = os.getenv("NEOCORTEX_URL",    "http://neocortex:8004")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",        "http://host.docker.internal:11434")
@@ -105,32 +105,59 @@ async def get_knobs():
 
 
 async def embed(text: str) -> list:
-    try:
-        resp = await http.post(
-            f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]}
-        )
-        return resp.json()["embedding"]
-    except Exception:
-        return [0.0] * 768
+    """Generate embedding via local Ollama — 15s timeout per attempt."""
+    for attempt in range(2):
+        t0 = time.time()
+        try:
+            resp = await http.post(
+                f"{OLLAMA_URL}/api/embeddings",
+                json={"model": EMBED_MODEL, "prompt": text[:2000]},
+                timeout=15.0
+            )
+            elapsed = (time.time() - t0) * 1000
+            vec = resp.json()["embedding"]
+            # Guard against zero-magnitude vectors (cosine similarity rejects them)
+            if all(v == 0.0 for v in vec[:10]):
+                print(f"[verification] embed returned zero vector after {elapsed:.0f}ms", flush=True)
+                return []
+            if elapsed > 3000:
+                print(f"[verification] embed slow: {elapsed:.0f}ms", flush=True)
+            return vec
+        except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[verification] ERROR: Ollama unreachable at {OLLAMA_URL} after {elapsed:.0f}ms ({type(e).__name__}) — skipping embed (no retry)", flush=True)
+            return []
+        except Exception as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[verification] embed attempt {attempt+1} failed after {elapsed:.0f}ms ({type(e).__name__}): {e}", flush=True)
+            if attempt == 0:
+                await asyncio.sleep(0.3)
+    return []
 
 
 async def search_neocortex(embedding: list, text: str = "",
                              domain: str = None, top_k: int = 12) -> list:
-    """Search neocortex for relevant knowledge."""
-    try:
-        resp = await http.post(
-            f"{NEOCORTEX_URL}/search",
-            json={
-                "request_id": "verify",
-                "session_id": "verify",
-                "user_input": text
-            },
-            params={"domain": domain, "top_k": top_k}
-        )
-        return resp.json().get("data", {}).get("results", [])
-    except Exception:
-        return []
+    """Search neocortex for relevant knowledge — fail fast on timeout."""
+    for attempt in range(2):
+        try:
+            resp = await http.post(
+                f"{NEOCORTEX_URL}/search",
+                json={
+                    "request_id": "verify",
+                    "session_id": "verify",
+                    "user_input": text
+                },
+                params={"domain": domain, "top_k": top_k},
+                timeout=10.0
+            )
+            return resp.json().get("data", {}).get("results", [])
+        except Exception as e:
+            if attempt == 0:
+                print(f"[verification] search_neocortex attempt 1 failed ({type(e).__name__}): {e}", flush=True)
+                await asyncio.sleep(0.3)
+            else:
+                print(f"[verification] search_neocortex failed after 2 attempts", flush=True)
+    return []
 
 
 def generate_negation(claim: str) -> str:
@@ -154,7 +181,13 @@ async def check_internal_consistency(claim: str, domain: str) -> dict:
     Stage 1: Does this claim contradict anything already in the neocortex?
     Searches for both the claim and its logical negation.
     """
+    t0 = time.time()
     embedding        = await embed(claim)
+    if not embedding:
+        elapsed = (time.time() - t0) * 1000
+        print(f"[verification] check_internal_consistency early-return (no embedding) after {elapsed:.0f}ms", flush=True)
+        return {"supporting": [], "contradicting": [], "consistency_score": 0.5}
+
     negation         = generate_negation(claim)
     negation_embedding = await embed(negation)
 
@@ -162,9 +195,11 @@ async def check_internal_consistency(claim: str, domain: str) -> dict:
     supporting = await search_neocortex(embedding, claim, domain, top_k=8)
 
     # Search for contradicting evidence (negation search)
-    contradicting_raw = await search_neocortex(
-        negation_embedding, negation, domain, top_k=6
-    )
+    contradicting_raw = []
+    if negation_embedding:
+        contradicting_raw = await search_neocortex(
+            negation_embedding, negation, domain, top_k=6
+        )
     contradicting = [r for r in contradicting_raw
                      if float(r.get("score", 0)) > 0.72]
 
@@ -184,7 +219,14 @@ async def check_corroboration(claim: str, domain: str) -> dict:
     Stage 2: Do independent sources agree with this claim?
     Independence across domains is stronger than same-domain agreement.
     """
+    t0 = time.time()
     embedding = await embed(claim)
+    if not embedding:
+        elapsed = (time.time() - t0) * 1000
+        print(f"[verification] check_corroboration early-return (no embedding) after {elapsed:.0f}ms", flush=True)
+        return {"independent_domains": [], "corroborating_count": 0,
+                "corroboration_score": 0.2, "top_sources": []}
+
     all_results = await search_neocortex(embedding, claim, top_k=20)
 
     # Group by domain
@@ -297,6 +339,7 @@ async def verify(req: VerifyRequest):
         )
 
     # Run all three checks in parallel
+    print(f"[verification] /verify starting 3 parallel checks...", flush=True)
     consistency_task    = asyncio.create_task(
         check_internal_consistency(req.claim, req.domain)
     )
@@ -310,6 +353,8 @@ async def verify(req: VerifyRequest):
     consistency, corroboration, coherence = await asyncio.gather(
         consistency_task, corroboration_task, coherence_task
     )
+    gather_ms = round((time.time() - start) * 1000, 1)
+    print(f"[verification] /verify 3 checks completed in {gather_ms:.0f}ms", flush=True)
 
     # ── Synthesize ────────────────────────────────────────────────────────────
     # Weighting: coherence 40% | consistency 35% | corroboration 25%

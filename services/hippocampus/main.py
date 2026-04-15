@@ -44,7 +44,8 @@ db: Optional[edgedb.AsyncIOClient] = None
 async def startup():
     global db
     dsn = os.getenv("EDGEDB_DSN", "edgedb://edgedb/main")
-    db  = edgedb.create_async_client(dsn=dsn)
+    tls = os.getenv("EDGEDB_CLIENT_TLS_SECURITY", "insecure")
+    db  = edgedb.create_async_client(dsn=dsn, tls_security=tls)
     # Run migrations if needed
     try:
         await db.query("SELECT 1")
@@ -62,16 +63,34 @@ async def shutdown():
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 async def embed(text: str) -> list:
-    """Generate embedding via local Ollama."""
-    try:
-        resp = await http.post(
-            f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]}
-        )
-        return resp.json()["embedding"]
-    except Exception as e:
-        print(f"Embed error: {e}")
-        return [0.0] * 768
+    """Generate embedding via local Ollama — 15s timeout per attempt."""
+    for attempt in range(2):
+        t0 = time.time()
+        try:
+            resp = await http.post(
+                f"{OLLAMA_URL}/api/embeddings",
+                json={"model": EMBED_MODEL, "prompt": text[:2000]},
+                timeout=15.0
+            )
+            elapsed = (time.time() - t0) * 1000
+            vec = resp.json()["embedding"]
+            # Guard against zero-magnitude vectors
+            if all(v == 0.0 for v in vec[:10]):
+                print(f"[hippocampus] embed returned zero vector after {elapsed:.0f}ms", flush=True)
+                return []
+            if elapsed > 3000:
+                print(f"[hippocampus] embed slow: {elapsed:.0f}ms", flush=True)
+            return vec
+        except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[hippocampus] ERROR: Ollama unreachable at {OLLAMA_URL} after {elapsed:.0f}ms ({type(e).__name__}) — skipping embed (no retry)", flush=True)
+            return []
+        except Exception as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[hippocampus] embed attempt {attempt+1} failed after {elapsed:.0f}ms ({type(e).__name__}): {e}", flush=True)
+            if attempt == 0:
+                await asyncio.sleep(0.3)
+    return []
 
 
 def cosine_similarity(a: list, b: list) -> float:
@@ -87,20 +106,28 @@ async def quick_summarize(content: str) -> str:
     """Summarize content locally without using Claude API."""
     if len(content.split()) <= 35:
         return content
-    try:
-        resp = await http.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model":  OLLAMA_MODEL,
-                "prompt": f"Summarize in one concise sentence:\n{content[:600]}",
-                "stream": False,
-                "options": {"num_predict": 80}
-            }
-        )
-        return resp.json().get("response", content[:200]).strip()
-    except Exception:
-        sentences = content.replace("! ", ". ").replace("? ", ". ").split(". ")
-        return ". ".join(sentences[:2]) + "."
+    for attempt in range(2):
+        try:
+            resp = await http.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model":  OLLAMA_MODEL,
+                    "prompt": f"Summarize in one concise sentence:\n{content[:600]}",
+                    "stream": False,
+                    "options": {"num_predict": 80}
+                },
+                timeout=30.0
+            )
+            return resp.json().get("response", content[:200]).strip()
+        except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+            print(f"[hippocampus] ERROR: Ollama unreachable at {OLLAMA_URL} ({type(e).__name__}) — skipping summarize", flush=True)
+            break
+        except Exception:
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+    # Final fallback: mechanical truncation
+    sentences = content.replace("! ", ". ").replace("? ", ". ").split(". ")
+    return ". ".join(sentences[:2]) + "."
 
 
 def classify_domain(concepts: list) -> str:
@@ -119,6 +146,8 @@ async def find_related_episodes(embedding: list,
                                   threshold: float = 0.72,
                                   limit: int = 6) -> list:
     """Find past episodes similar to a given embedding."""
+    if not embedding:
+        return []
     try:
         episodes = await db.query("""
             SELECT Episode {
@@ -203,7 +232,7 @@ async def encode_episode(req: EncodeRequest,
 
     embedding = await embed(content)
     summary   = await quick_summarize(content)
-    related   = await find_related_episodes(embedding, limit=5)
+    related   = await find_related_episodes(embedding, limit=5) if embedding else []
 
     try:
         episode = await db.query_single("""
@@ -280,7 +309,7 @@ async def recall(req: BrainRequest):
     """Recall relevant past episodes for a given query."""
     start     = time.time()
     embedding = await embed(req.user_input)
-    episodes  = await find_related_episodes(embedding, limit=6)
+    episodes  = await find_related_episodes(embedding, limit=6) if embedding else []
 
     # Boost importance of accessed episodes (reconsolidation effect)
     async def boost_importance():
@@ -331,6 +360,8 @@ async def consolidate(max_items: int = 10):
             concepts = [c.name for c in (ep.concepts or [])]
             text     = ep.summary or ep.content[:400]
             embedding = await embed(text)
+            if not embedding:
+                continue  # skip if embeddings unavailable
 
             knowledge = {
                 "content":          text,

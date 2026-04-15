@@ -1,53 +1,46 @@
 # services/self-update/Dockerfile
 # ── Multi-Stage Build ─────────────────────────────────────────────────────────
-# Stage 1: Rust — builds the claw binary
-# Stage 2: Python — runtime with claw binary copied in
+# Stage 1: Bun — clones supergrokie, installs deps, builds dist/cli.js
+# Stage 2: Python — runtime with bun + supergrokie project copied in
 #
-# BUILD ARG: CLAW_GIT_REF
-#   Passed from docker-compose.yml via: args: CLAW_GIT_REF: ${CLAW_GIT_REF:-main}
+# supergrokie is a TypeScript/Bun project (like claude-code).
+# install.sh installs bun, runs `bun install` + `bun run build`, and
+# symlinks bin/supergrokie (a bash wrapper that runs `bun dist/cli.js`).
+#
+# BUILD ARG: SUPERGROKIE_GIT_REF
+#   Passed from docker-compose.yml via: args: SUPERGROKIE_GIT_REF: ${SUPERGROKIE_GIT_REF:-main}
 #   Values:
 #     main         → latest commit (default, may change)
-#     <commit-sha> → pinned build, e.g. CLAW_GIT_REF=a3f91b2
-#     <tag>        → pinned release tag once claw cuts one
+#     <commit-sha> → pinned build, e.g. SUPERGROKIE_GIT_REF=a3f91b2
+#     <tag>        → pinned release tag once supergrokie cuts one
 #
-#   To change: set CLAW_GIT_REF in .env, then:
+#   To change: set SUPERGROKIE_GIT_REF in .env, then:
 #     docker compose build --no-cache self-update
 
-# ── Stage 1: Build claw from source ──────────────────────────────────────────
-FROM rust:1.78-slim AS claw-builder
+# ── Stage 1: Build supergrokie from source ───────────────────────────────────
+FROM oven/bun:1 AS supergrokie-builder
 
-# Declare the build arg — WITHOUT this, ARG is invisible and
-# git checkout ${CLAW_GIT_REF} would silently use an empty string
-ARG CLAW_GIT_REF=main
+ARG SUPERGROKIE_GIT_REF=main
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    build-essential \
-    pkg-config \
-    libssl-dev \
-    ca-certificates \
+    git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone the full repo (not --depth 1) so we can checkout any ref
-RUN git clone https://github.com/ultraworkers/claw-code /tmp/claw-code
+# Clone the full repo so we can checkout any ref (branch, tag, SHA)
+RUN git clone https://github.com/mytuo1/supergrokie /tmp/supergrokie
 
-WORKDIR /tmp/claw-code
+WORKDIR /tmp/supergrokie
 
-# Checkout the pinned ref — this is why CLAW_GIT_REF exists
-# git fetch --tags ensures tags are available, not just branches
 RUN git fetch --tags && \
-    git checkout ${CLAW_GIT_REF} && \
-    echo "Building claw at ref: ${CLAW_GIT_REF} ($(git rev-parse --short HEAD))"
+    git checkout ${SUPERGROKIE_GIT_REF} && \
+    echo "Building supergrokie at ref: ${SUPERGROKIE_GIT_REF} ($(git rev-parse --short HEAD))"
 
-WORKDIR /tmp/claw-code/rust
+# Install dependencies and build the TypeScript bundle → dist/cli.js
+RUN bun install --frozen-lockfile 2>/dev/null || bun install
+RUN bun run build
 
-# Build release binary
-# Cargo registry is cached by Docker layer unless Cargo.toml changes
-RUN cargo build --release --bin claw 2>&1 | tail -10
-
-# Verify the binary was produced
-RUN ls -lh target/release/claw && \
-    ./target/release/claw --version || true
+# Verify the build produced dist/cli.js
+RUN ls -lh dist/cli.js && echo "supergrokie build OK"
 
 # ── Stage 2: Python runtime ───────────────────────────────────────────────────
 FROM python:3.12-slim
@@ -55,18 +48,23 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    git \
-    ca-certificates \
+    curl git ca-certificates unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy claw binary from stage 1
-COPY --from=claw-builder /tmp/claw-code/rust/target/release/claw /usr/local/bin/claw
-RUN chmod +x /usr/local/bin/claw
+# Install bun runtime (needed to execute supergrokie's dist/cli.js)
+RUN curl -fsSL https://bun.sh/install | bash
+ENV BUN_INSTALL="/root/.bun"
+ENV PATH="$BUN_INSTALL/bin:$PATH"
 
-# Verify claw is callable in the final image
-RUN /usr/local/bin/claw --version || echo "claw installed (version flag not available)"
+# Copy the full built supergrokie project from stage 1
+COPY --from=supergrokie-builder /tmp/supergrokie /opt/supergrokie
+
+# Symlink bin/supergrokie wrapper into PATH
+RUN chmod +x /opt/supergrokie/bin/supergrokie && \
+    ln -sf /opt/supergrokie/bin/supergrokie /usr/local/bin/supergrokie
+
+# Verify supergrokie is callable in the final image
+RUN supergrokie --help 2>&1 | head -5 || echo "supergrokie installed (help not available)"
 
 # Python dependencies
 COPY shared /shared
@@ -79,6 +77,6 @@ VOLUME ["/workspace", "/services"]
 
 EXPOSE 8011
 
-# Single worker — claw sessions are subprocess-based, not threaded
+# Single worker — supergrokie sessions are subprocess-based, not threaded
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8011", \
      "--workers", "1", "--timeout-keep-alive", "120"]

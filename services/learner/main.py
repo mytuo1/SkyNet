@@ -315,12 +315,36 @@ def _load_models_sync():
             print(f"  Downloading from HuggingFace: {LOCAL_MODEL_NAME}")
             print(f"  This may take 10-30 minutes on first run...")
 
-        # Load tokenizer
+        # Load tokenizer — try fast first, then slow, then with cache cleanup
         tok_kwargs = {"trust_remote_code": True}
         if HF_TOKEN:
             tok_kwargs["token"] = HF_TOKEN
 
-        _tokenizer = AutoTokenizer.from_pretrained(model_source, **tok_kwargs)
+        _tokenizer = None
+        for attempt_label, attempt_kwargs in [
+            ("fast tokenizer", {}),
+            ("slow tokenizer", {"use_fast": False}),
+            ("slow tokenizer (fresh cache)", {"use_fast": False}),
+        ]:
+            try:
+                if attempt_label == "slow tokenizer (fresh cache)":
+                    # Clear corrupted HF cache for this model
+                    import shutil
+                    cache_dir = Path("/models/hf_cache/modules/transformers_modules/microsoft/phi-4-mini-instruct")
+                    if cache_dir.exists():
+                        shutil.rmtree(cache_dir, ignore_errors=True)
+                        print("  Cleared corrupted model cache, retrying...")
+                merged = {**tok_kwargs, **attempt_kwargs}
+                _tokenizer = AutoTokenizer.from_pretrained(model_source, **merged)
+                print(f"  Tokenizer loaded ({attempt_label})")
+                break
+            except Exception as e:
+                print(f"  {attempt_label} failed: {e}")
+                continue
+
+        if _tokenizer is None:
+            raise RuntimeError("All tokenizer loading attempts failed")
+
         if _tokenizer.pad_token is None:
             _tokenizer.pad_token = _tokenizer.eos_token
 

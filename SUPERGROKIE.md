@@ -1,6 +1,6 @@
 # Brain System — Architecture Guide for supergrokie
 
-This repository contains a 19-service cognitive AI architecture.
+This repository contains a 21-service cognitive AI architecture.
 Each service is a FastAPI microservice in a Docker container.
 Services communicate only via HTTP — they never import each other.
 
@@ -14,7 +14,7 @@ PORT    SERVICE           PURPOSE
 8003    cerebellum        Skill registry — EdgeDB
 8004    neocortex         Semantic knowledge — Elasticsearch
 8005    working-memory    Active context — Redis
-8006    perception        Experience detection (18 types)
+8006    perception        Experience detection (21 types)
 8007    verification      3-stage fact checking
 8008    cross-domain      Structural analogy reasoning
 8009    compass           Ethical orientation (7 dimensions)
@@ -26,6 +26,8 @@ PORT    SERVICE           PURPOSE
 8015    goals             Long-horizon planning — Redis
 8016    learner           Continual local model learning
 8017    vision            Camera + CLIP visual memory
+8018    autonomy          Autonomous self-improvement loop
+8080    dashboard         Web UI — terminal, monitoring, logs, controls
 8090    knobs             Dynamic behavioral parameters — Redis
 ```
 
@@ -52,6 +54,47 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 knobs  = KnobsClient()
 events = EventBus()
 http   = httpx.AsyncClient(timeout=30.0)
+```
+
+### Inter-service calls use retries:
+The thalamus `call()` and `call_get()` helpers automatically retry failed
+requests (2 attempts with exponential back-off). Errors are logged and
+surfaced in the response trace. If you add a new endpoint that calls
+other services, use the same httpx client with proper error handling:
+```python
+# Pattern for calling other services with retry
+async def call_with_retry(url, payload, retries=2):
+    last_error = None
+    for attempt in range(retries):
+        try:
+            resp = await http.post(url, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            last_error = e
+            if attempt < retries - 1:
+                await asyncio.sleep(0.5 * (attempt + 1))
+    return {"error": str(last_error)}
+```
+
+### Embedding calls must guard against failures:
+All embed() functions return `[]` on failure (never zero vectors, which
+crash Elasticsearch cosine similarity). Use 5s timeout and retry once:
+```python
+async def embed(text):
+    for attempt in range(2):
+        try:
+            r = await http.post(OLLAMA_URL + "/api/embeddings",
+                                json={"model": EMBED_MODEL, "prompt": text},
+                                timeout=5.0)
+            vec = r.json().get("embedding", [])
+            if not vec or all(v == 0.0 for v in vec[:10]):
+                return []
+            return vec
+        except Exception:
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+    return []
 ```
 
 ### Every service has these two endpoints (mandatory):
@@ -128,6 +171,10 @@ events.publish("experience.new", {
 - Never let unhandled exceptions crash the service
 - Never add a `if __name__ == "__main__":` block
 - Never hardcode API keys or service URLs
+- Never hardcode timeouts — use retries with exponential back-off
+- Never truncate conversation data stored in working memory
+- Never return zero-magnitude vectors from embed() — return `[]` instead
+- Never use `r.get()` on Redis list keys — check `r.type(key)` first
 
 ## Adding a new endpoint
 

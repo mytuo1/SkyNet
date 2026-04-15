@@ -129,7 +129,7 @@ async def complete(
     system:      str   = "",
     model_tier:  str   = "fast",
     model:       str   = None,
-    max_tokens:  int   = 4096,
+    max_tokens:  int   = 8192,
     temperature: float = 0.7,
     json_mode:   bool  = False,
 ) -> str:
@@ -269,10 +269,14 @@ async def _openai_compatible_complete(
 
     body: dict = {
         "model":       model,
-        "max_tokens":  max_tokens,
         "temperature": temperature,
         "messages":    messages,
     }
+    # GPT-5.x models use max_completion_tokens instead of max_tokens
+    if model and ("gpt-5" in model or "o1" in model or "o3" in model):
+        body["max_completion_tokens"] = max_tokens
+    else:
+        body["max_tokens"] = max_tokens
     if json_mode:
         body["response_format"] = {"type": "json_object"}
 
@@ -367,6 +371,9 @@ async def _ollama_complete(prompt: str, system: str, model: str,
         if msg.get("content"):
             return msg["content"]
         return f"[Ollama error: {data.get('error', data)}]"
+    except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+        print(f"[llm_provider] ERROR: Ollama unreachable at {OLLAMA_URL} ({type(e).__name__})", flush=True)
+        return f"[Ollama unreachable at {OLLAMA_URL}: {type(e).__name__}]"
     except Exception as e:
         return f"[Ollama call failed: {str(e)[:80]}]"
 

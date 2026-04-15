@@ -22,10 +22,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 COMPOSE="docker compose"
+BUILD_MAX_RETRIES=3
 GATEWAY_URL="http://localhost:8000"
-KNOBS_URL="http://localhost:8090"
-DASHBOARD_URL="http://localhost:8080"
 AUTONOMY_URL="http://localhost:8018"
+
+# ── Build with Retry ──────────────────────────────────────────────────────────
+# Docker image pulls can fail with transient network errors (EOF, timeout).
+# This wrapper retries the build up to BUILD_MAX_RETRIES times.
+compose_build() {
+    local attempt=1
+    while [ $attempt -le "$BUILD_MAX_RETRIES" ]; do
+        if $COMPOSE build "$@"; then
+            return 0
+        fi
+        if [ $attempt -lt "$BUILD_MAX_RETRIES" ]; then
+            local wait_secs=$((attempt * 5))
+            warn "Build failed (attempt $attempt/$BUILD_MAX_RETRIES) — retrying in ${wait_secs}s..."
+            sleep "$wait_secs"
+        fi
+        attempt=$((attempt + 1))
+    done
+    die "Build failed after $BUILD_MAX_RETRIES attempts"
+}
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 banner() {
@@ -197,7 +215,7 @@ cmd_start() {
     check_deps
 
     info "Building containers..."
-    $COMPOSE build --quiet 2>/dev/null || $COMPOSE build
+    compose_build
 
     info "Starting databases..."
     $COMPOSE up -d redis elasticsearch edgedb
@@ -238,9 +256,16 @@ cmd_start() {
 
     echo ""
     success "SkyNet is online"
-    info "Gateway:   $GATEWAY_URL"
-    info "Dashboard: $DASHBOARD_URL"
-    info "Knobs:     $KNOBS_URL"
+    echo ""
+    info "  Dashboard:  $GATEWAY_URL              (main UI)"
+    info "  Health:     $GATEWAY_URL/health        (system health)"
+    info "  Knobs API:  $GATEWAY_URL/knobs/current (behavioral parameters)"
+    info ""
+    info "Management:"
+    info "  ./skynet.sh stop      Graceful shutdown"
+    info "  ./skynet.sh restart   Stop + start"
+    info "  ./skynet.sh status    Service health overview"
+    info "  ./skynet.sh logs      Tail all logs"
     info ""
     info "Try: curl -X POST $GATEWAY_URL/brain/process -H 'Content-Type: application/json' -d '{\"session_id\":\"s1\",\"user_input\":\"Hello\"}'"
 }
@@ -253,8 +278,24 @@ cmd_stop() {
 }
 
 cmd_restart() {
-    cmd_stop
-    cmd_start
+    banner
+    info "Restarting services (preserving all data)..."
+    $COMPOSE stop
+    $COMPOSE up -d
+    info "Waiting for system health..."
+    local health_retries=0
+    while [ $health_retries -lt 30 ]; do
+        if curl -sf "$GATEWAY_URL/health" &>/dev/null; then
+            break
+        fi
+        sleep 3
+        health_retries=$((health_retries + 1))
+    done
+    if curl -sf "$GATEWAY_URL/health" &>/dev/null; then
+        success "All services restarted — data preserved"
+    else
+        warn "Some services may still be starting — check: ./skynet.sh status"
+    fi
 }
 
 cmd_status() {
@@ -285,15 +326,15 @@ cmd_logs() {
 
 cmd_dashboard() {
     banner
-    info "Dashboard URL: $DASHBOARD_URL"
+    info "Dashboard URL: $GATEWAY_URL"
     if command -v xdg-open &>/dev/null; then
-        xdg-open "$DASHBOARD_URL" 2>/dev/null &
+        xdg-open "$GATEWAY_URL" 2>/dev/null &
         success "Opening dashboard in browser..."
     elif command -v open &>/dev/null; then
-        open "$DASHBOARD_URL" 2>/dev/null &
+        open "$GATEWAY_URL" 2>/dev/null &
         success "Opening dashboard in browser..."
     else
-        info "Open manually: $DASHBOARD_URL"
+        info "Open manually: $GATEWAY_URL"
     fi
 }
 
@@ -320,7 +361,7 @@ cmd_update() {
     git pull --rebase || git pull
 
     info "Rebuilding changed services..."
-    $COMPOSE build
+    compose_build
 
     info "Restarting updated services..."
     $COMPOSE up -d
@@ -343,12 +384,34 @@ cmd_reset() {
     $COMPOSE down -v --remove-orphans
 
     info "Rebuilding from scratch..."
-    $COMPOSE build
+    compose_build --no-cache
 
     info "Starting fresh system..."
     cmd_start
 
     success "Factory reset complete — SkyNet has no memory of the past"
+}
+
+cmd_rebuild() {
+    banner
+    warn "REBUILD — This will wipe ALL databases and rebuild everything fresh"
+    echo ""
+    read -rp "Type 'REBUILD' to confirm: " confirm
+    if [ "$confirm" != "REBUILD" ]; then
+        info "Rebuild cancelled"
+        exit 0
+    fi
+
+    info "Stopping all services and removing volumes..."
+    $COMPOSE down -v --remove-orphans
+
+    info "Rebuilding all containers..."
+    compose_build --no-cache
+
+    info "Starting fresh system..."
+    cmd_start
+
+    success "Rebuild complete — fresh environment, all databases recreated"
 }
 
 cmd_help() {
@@ -359,23 +422,26 @@ Usage: ./skynet.sh <command> [options]
 Commands:
   start       Full startup: check deps, build, init DBs, start all services
   stop        Graceful shutdown of all services
-  restart     Stop + start
+  restart     Quick restart (preserves all data and conversations)
   status      Show all service health
   logs [svc]  Tail logs for a service (or all)
   dashboard   Open the dashboard in your browser
   think       Activate autonomy mode
   setup       First-time setup wizard (installs Docker, Ollama, creates .env)
   update      Git pull + rebuild changed services
-  reset       Factory reset (stop, remove volumes, rebuild)
+  rebuild     Wipe databases and rebuild fresh (new environment)
+  reset       Factory reset (alias for rebuild)
   help        Show this help message
 
 Examples:
   ./skynet.sh setup          # First time? Start here
   ./skynet.sh start          # Launch everything
+  ./skynet.sh restart        # Quick restart, keeps conversations
   ./skynet.sh status         # Check system health
   ./skynet.sh logs thalamus  # Watch the orchestrator
   ./skynet.sh think          # Enable autonomous thinking
   ./skynet.sh dashboard      # Open the web dashboard
+  ./skynet.sh rebuild        # Fresh environment, wipes all data
 EOF
 }
 
@@ -390,6 +456,7 @@ case "${1:-help}" in
     think)     cmd_think ;;
     setup)     cmd_setup ;;
     update)    cmd_update ;;
+    rebuild)   cmd_rebuild ;;
     reset)     cmd_reset ;;
     help|--help|-h) cmd_help ;;
     *)         error "Unknown command: $1"; cmd_help; exit 1 ;;

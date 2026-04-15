@@ -31,7 +31,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 knobs  = KnobsClient()
 events = EventBus()
-http   = httpx.AsyncClient(timeout=30.0)
+http   = httpx.AsyncClient(timeout=60.0)
 
 ES_URL     = os.getenv("ELASTICSEARCH_URL", "http://elasticsearch:9200")
 OLLAMA_URL = os.getenv("OLLAMA_URL",        "http://host.docker.internal:11434")
@@ -126,14 +126,34 @@ async def shutdown():
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 async def embed(text: str) -> list:
-    try:
-        resp = await http.post(
-            f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]}
-        )
-        return resp.json()["embedding"]
-    except Exception:
-        return [0.0] * 768
+    """Generate embedding via local Ollama — 15s timeout per attempt."""
+    for attempt in range(2):
+        try:
+            t0 = time.time()
+            resp = await http.post(
+                f"{OLLAMA_URL}/api/embeddings",
+                json={"model": EMBED_MODEL, "prompt": text[:2000]},
+                timeout=15.0
+            )
+            elapsed = (time.time() - t0) * 1000
+            vec = resp.json()["embedding"]
+            # Guard against zero-magnitude vectors (cosine similarity rejects them)
+            if all(v == 0.0 for v in vec[:10]):
+                print(f"[neocortex] embed returned zero vector after {elapsed:.0f}ms", flush=True)
+                return []
+            if elapsed > 3000:
+                print(f"[neocortex] embed slow: {elapsed:.0f}ms", flush=True)
+            return vec
+        except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[neocortex] ERROR: Ollama unreachable at {OLLAMA_URL} after {elapsed:.0f}ms ({type(e).__name__}) — skipping embed (no retry)", flush=True)
+            return []
+        except Exception as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[neocortex] embed attempt {attempt+1} failed after {elapsed:.0f}ms ({type(e).__name__}): {e}", flush=True)
+            if attempt == 0:
+                await asyncio.sleep(0.3)
+    return []
 
 
 # ── API Endpoints ─────────────────────────────────────────────────────────────
@@ -172,6 +192,17 @@ async def store_knowledge(req: StoreRequest):
 
     embedding = req.embedding or await embed(req.content)
 
+    # Skip store if embedding failed (zero-magnitude vectors crash cosine index)
+    if not embedding:
+        return BrainResponse(
+            request_id = "store",
+            service    = "neocortex",
+            success    = False,
+            error      = "embedding unavailable",
+            latency_ms = round((time.time() - start) * 1000, 2),
+            data       = {}
+        )
+
     doc = {
         "content":          req.content[:10000],
         "summary":          req.summary or req.content[:300],
@@ -209,20 +240,24 @@ async def search(req: BrainRequest, domain: str = None, top_k: int = 8):
     """
     start     = time.time()
     embedding = await embed(req.user_input)
+    embed_ms  = round((time.time() - start) * 1000, 1)
+    if embed_ms > 3000:
+        print(f"[neocortex] /search embed took {embed_ms:.0f}ms (empty={not embedding})", flush=True)
 
     must_clauses = []
     if domain and domain not in ("general", ""):
         must_clauses.append({"term": {"domain": domain}})
 
-    body: dict = {
-        "knn": {
+    body: dict = {"size": top_k}
+
+    # Only use knn when we have a valid embedding (non-empty, non-zero)
+    if embedding:
+        body["knn"] = {
             "field":          "embedding",
             "query_vector":   embedding,
             "k":              top_k * 2,
             "num_candidates": 200,
-        },
-        "size": top_k
-    }
+        }
 
     if req.user_input.strip():
         body["query"] = {
@@ -304,6 +339,10 @@ async def update_knowledge(doc_id: str, updates: dict):
 @app.post("/store-pattern")
 async def store_pattern(pattern: dict):
     """Store a logical pattern for the cross-domain reasoning engine."""
+    # Reject zero-magnitude embeddings — cosine similarity index will crash
+    emb = pattern.get("embedding", [])
+    if not emb or all(v == 0.0 for v in emb[:10]):
+        return {"error": "empty or zero embedding, skipping store", "pattern_id": None}
     pattern["created_at"] = datetime.now(timezone.utc).isoformat()
     result = await es.index(index="neocortex_patterns", document=pattern)
     events.publish("pattern.registered", {"pattern_id": result["_id"],
@@ -318,15 +357,16 @@ async def search_patterns(body: dict):
     pattern_type = body.get("pattern_type")
     top_k        = body.get("top_k", 20)
 
-    search_body: dict = {
-        "knn": {
+    search_body: dict = {"size": top_k}
+
+    # Only use knn when we have a valid (non-empty) embedding
+    if embedding:
+        search_body["knn"] = {
             "field":          "embedding",
             "query_vector":   embedding,
             "k":              top_k,
             "num_candidates": 200,
-        },
-        "size": top_k
-    }
+        }
 
     if pattern_type:
         search_body["query"] = {

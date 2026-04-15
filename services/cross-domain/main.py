@@ -120,14 +120,33 @@ async def get_knobs():
 
 
 async def embed(text: str) -> list:
-    try:
-        resp = await http.post(
-            f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]}
-        )
-        return resp.json()["embedding"]
-    except Exception:
-        return [0.0] * 768
+    """Generate embedding via local Ollama — 15s timeout per attempt."""
+    for attempt in range(2):
+        t0 = time.time()
+        try:
+            resp = await http.post(
+                f"{OLLAMA_URL}/api/embeddings",
+                json={"model": EMBED_MODEL, "prompt": text[:2000]},
+                timeout=15.0
+            )
+            elapsed = (time.time() - t0) * 1000
+            vec = resp.json()["embedding"]
+            if all(v == 0.0 for v in vec[:10]):
+                print(f"[cross-domain] embed returned zero vector after {elapsed:.0f}ms", flush=True)
+                return []
+            if elapsed > 3000:
+                print(f"[cross-domain] embed slow: {elapsed:.0f}ms", flush=True)
+            return vec
+        except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[cross-domain] ERROR: Ollama unreachable at {OLLAMA_URL} after {elapsed:.0f}ms ({type(e).__name__}) — skipping embed (no retry)", flush=True)
+            return []
+        except Exception as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[cross-domain] embed attempt {attempt+1} failed after {elapsed:.0f}ms ({type(e).__name__}): {e}", flush=True)
+            if attempt == 0:
+                await asyncio.sleep(0.3)
+    return []
 
 
 def cosine_similarity(a: list, b: list) -> float:
@@ -238,7 +257,11 @@ async def find_analogies(req: FindAnalogiesRequest):
         )
 
     # Extract pattern from the query
+    t_extract = time.time()
     query_pattern = await extract_pattern(req.user_input, req.source_domain)
+    extract_ms = round((time.time() - t_extract) * 1000, 1)
+    if extract_ms > 3000:
+        print(f"[cross-domain] extract_pattern took {extract_ms:.0f}ms (includes LLM + embed)", flush=True)
 
     if not query_pattern:
         return BrainResponse(
@@ -251,7 +274,7 @@ async def find_analogies(req: FindAnalogiesRequest):
     # Search for similar patterns in neocortex
     candidates = await search_similar_patterns(query_pattern, top_k=30)
 
-    query_vec = np.array(query_pattern.get("embedding", [0.0]*768),
+    query_vec = np.array(query_pattern.get("embedding") or [0.0]*768,
                          dtype=np.float32)
 
     analogies = []
@@ -315,6 +338,10 @@ async def find_analogies(req: FindAnalogiesRequest):
 
 async def store_pattern(pattern: dict, domain: str):
     """Store extracted pattern in neocortex for future retrieval."""
+    # Skip if embedding is empty/zero — neocortex cosine index rejects zero vectors
+    emb = pattern.get("embedding", [])
+    if not emb:
+        return
     try:
         await http.post(
             f"{NEOCORTEX_URL}/store-pattern",

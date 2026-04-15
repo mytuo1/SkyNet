@@ -9,4 +9,5 @@ transformers==4.41.0
 torch==2.3.0+cpu
 numpy==1.26.4
 elasticsearch==8.13.0
+aiohttp==3.9.5
 --extra-index-url https://download.pytorch.org/whl/cpu

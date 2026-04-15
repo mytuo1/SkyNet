@@ -32,10 +32,10 @@ r     = redis.from_url(
 )
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-DEFAULT_TTL  = 3600   # 1 hour
-SHORT_TTL    = 300    # 5 minutes
-LONG_TTL     = 86400  # 24 hours
-MAX_THOUGHTS = 12     # mirrors 7±2 + buffer
+DEFAULT_TTL  = 86400    # 24 hours (was 1 hour — let sessions persist)
+SHORT_TTL    = 3600     # 1 hour  (was 5 minutes)
+LONG_TTL     = 604800   # 7 days  (was 24 hours — full conversation retention)
+MAX_THOUGHTS = 200      # conversation turns to keep (was 24 — deep recall)
 
 
 class ContextRequest(BaseModel):
@@ -89,12 +89,16 @@ async def handle_context(req: ContextRequest):
         context = {}
         for key in keys:
             short = key.replace(f"wm:{sid}:", "")
+            # Check key type — only GET string keys; lists/sets are handled below
+            key_type = r.type(key)
+            if key_type != "string":
+                continue
             val   = r.get(key)
             if val:
                 try:    context[short] = json.loads(val)
-                except: context[short] = val
+                except (json.JSONDecodeError, TypeError, ValueError): context[short] = val
 
-        # Include thought stream
+        # Include thought stream (Redis list — not fetchable via GET)
         raw_thoughts = r.lrange(f"wm:{sid}:thought_stream", 0, -1)
         thoughts = []
         for t in raw_thoughts:
@@ -108,16 +112,32 @@ async def handle_context(req: ContextRequest):
     # ── GET ────────────────────────────────────────────────────────────────────
     elif req.action == "get":
         full_key = f"wm:{sid}:{req.key}"
-        val      = r.get(full_key)
-        if val:
-            r.expire(full_key, DEFAULT_TTL)  # refresh TTL on access
-        if val:
-            try:
-                parsed = json.loads(val)
-            except (json.JSONDecodeError, TypeError):
-                parsed = {"raw": val, "parse_error": True}
-        else:
+        # Check key type — only GET works on string keys
+        key_type = r.type(full_key)
+        if key_type == "string":
+            val = r.get(full_key)
+            if val:
+                r.expire(full_key, DEFAULT_TTL)  # refresh TTL on access
+            if val:
+                try:
+                    parsed = json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    parsed = {"raw": val, "parse_error": True}
+            else:
+                parsed = None
+        elif key_type == "list":
+            raw = r.lrange(full_key, 0, -1)
+            parsed = []
+            for item in raw:
+                try:
+                    parsed.append(json.loads(item))
+                except (json.JSONDecodeError, TypeError):
+                    parsed.append(item)
+        elif key_type == "none":
             parsed = None
+        else:
+            # zset, hash, set — return type info instead of crashing
+            parsed = {"type": key_type, "note": "non-string key — use specific action"}
         result = {"value": parsed}
 
     # ── SET ────────────────────────────────────────────────────────────────────

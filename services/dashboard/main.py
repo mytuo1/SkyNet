@@ -44,6 +44,8 @@ ALL_SERVICES = {
     "causal-graph": 8012, "simulator": 8013, "metacognition": 8014,
     "goals": 8015, "learner": 8016, "vision": 8017, "knobs": 8090,
     "autonomy": 8018, "dashboard": 8080,
+    # Infrastructure
+    "gateway": 80, "redis": 6379, "elasticsearch": 9200, "edgedb": 5656,
 }
 
 PUBSUB_CHANNELS = [
@@ -98,33 +100,46 @@ app = FastAPI(title="SkyNet Dashboard", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 
 
+import logging as _log
+
+def _parse_response(r: httpx.Response) -> JSONResponse:
+    """Return upstream JSON when possible; fall back to raw text so errors are never swallowed."""
+    try:
+        return JSONResponse(content=r.json(), status_code=r.status_code)
+    except Exception:
+        return JSONResponse({"error": r.text or f"Upstream returned {r.status_code}"}, status_code=r.status_code)
+
+
 async def _proxy_get(url: str) -> JSONResponse:
     try:
         r = await http_client.get(url)
-        return JSONResponse(content=r.json(), status_code=r.status_code)
+        return _parse_response(r)
     except httpx.ConnectError:
         return JSONResponse({"error": "Service unreachable"}, status_code=502)
-    except Exception:
+    except Exception as exc:
+        _log.exception("proxy GET %s failed", url)
         return JSONResponse({"error": "Internal proxy error"}, status_code=500)
 
 
 async def _proxy_post(url: str, body: dict) -> JSONResponse:
     try:
         r = await http_client.post(url, json=body)
-        return JSONResponse(content=r.json(), status_code=r.status_code)
+        return _parse_response(r)
     except httpx.ConnectError:
         return JSONResponse({"error": "Service unreachable"}, status_code=502)
-    except Exception:
+    except Exception as exc:
+        _log.exception("proxy POST %s failed", url)
         return JSONResponse({"error": "Internal proxy error"}, status_code=500)
 
 
 async def _proxy_patch(url: str, params: dict | None = None, body: dict | None = None) -> JSONResponse:
     try:
         r = await http_client.patch(url, params=params, json=body)
-        return JSONResponse(content=r.json(), status_code=r.status_code)
+        return _parse_response(r)
     except httpx.ConnectError:
         return JSONResponse({"error": "Service unreachable"}, status_code=502)
-    except Exception:
+    except Exception as exc:
+        _log.exception("proxy PATCH %s failed", url)
         return JSONResponse({"error": "Internal proxy error"}, status_code=500)
 
 
@@ -138,9 +153,100 @@ async def api_health():
     return await _proxy_get(f"{THALAMUS_URL}/health")
 
 
+@app.get("/api/services/health")
+async def api_services_health():
+    """Real health check — ping every service /health endpoint (incl. infra)."""
+    results: dict = {}
+
+    async def _check(name: str, url: str):
+        try:
+            r = await http_client.get(url, timeout=2.5)
+            data = r.json() if r.status_code == 200 else {}
+            results[name] = {"status": data.get("status", "alive" if r.status_code == 200 else "error"), "ms": round(r.elapsed.total_seconds() * 1000, 1)}
+        except Exception:
+            results[name] = {"status": "unreachable", "ms": 0}
+
+    # Application services
+    svc_checks = {name: f"http://{name}:{port}/health" for name, port in ALL_SERVICES.items()
+                  if name not in ("redis", "elasticsearch", "gateway", "edgedb")}
+    # Infrastructure — different health endpoints
+    infra_checks = {
+        "redis": ("redis", REDIS_URL),
+        "elasticsearch": ("elasticsearch", "http://elasticsearch:9200/_cluster/health"),
+        "gateway": ("gateway", "http://gateway:80/nginx-health"),
+        "edgedb": ("edgedb", "http://edgedb:5656"),
+    }
+
+    tasks = [_check(name, url) for name, url in svc_checks.items()]
+    # Elasticsearch
+    es_url = infra_checks["elasticsearch"][1]
+    async def _check_es():
+        try:
+            r = await http_client.get(es_url, timeout=2.5)
+            results["elasticsearch"] = {"status": "alive" if r.status_code == 200 else "error", "ms": round(r.elapsed.total_seconds() * 1000, 1)}
+        except Exception:
+            results["elasticsearch"] = {"status": "unreachable", "ms": 0}
+    tasks.append(_check_es())
+    # Redis
+    async def _check_redis():
+        if redis_pool:
+            try:
+                t0 = time.time()
+                await redis_pool.ping()
+                results["redis"] = {"status": "alive", "ms": round((time.time() - t0) * 1000, 1)}
+            except Exception:
+                results["redis"] = {"status": "unreachable", "ms": 0}
+        else:
+            results["redis"] = {"status": "unreachable", "ms": 0}
+    tasks.append(_check_redis())
+    # Gateway
+    gw_url = infra_checks["gateway"][1]
+    async def _check_gateway():
+        try:
+            r = await http_client.get(gw_url, timeout=2.5)
+            results["gateway"] = {"status": "alive" if r.status_code == 200 else "error", "ms": round(r.elapsed.total_seconds() * 1000, 1)}
+        except Exception:
+            results["gateway"] = {"status": "unreachable", "ms": 0}
+    tasks.append(_check_gateway())
+    # EdgeDB — try a TCP connect; EdgeDB doesn't expose a simple HTTP health endpoint
+    async def _check_edgedb():
+        try:
+            t0 = time.time()
+            r = await http_client.get("http://edgedb:5656/server/status/ready", timeout=2.5)
+            results["edgedb"] = {"status": "alive" if r.status_code == 200 else "error", "ms": round((time.time() - t0) * 1000, 1)}
+        except Exception:
+            # EdgeDB may not have HTTP health; try a basic TCP connect as fallback
+            import asyncio as _aio
+            try:
+                t0 = time.time()
+                _, writer = await _aio.wait_for(_aio.open_connection("edgedb", 5656), timeout=2.5)
+                writer.close()
+                await writer.wait_closed()
+                results["edgedb"] = {"status": "alive", "ms": round((time.time() - t0) * 1000, 1)}
+            except Exception:
+                results["edgedb"] = {"status": "unreachable", "ms": 0}
+    tasks.append(_check_edgedb())
+
+    await asyncio.gather(*tasks)
+
+    alive = sum(1 for v in results.values() if v["status"] == "alive")
+    return JSONResponse({"services": results, "alive": alive, "total": len(results)})
+
+
 @app.post("/api/process")
 async def api_process(body: dict):
     return await _proxy_post(f"{THALAMUS_URL}/process", body)
+
+
+@app.post("/api/teach-emotion")
+async def api_teach_emotion(body: dict):
+    return await _proxy_post(f"{THALAMUS_URL}/teach-emotion", body)
+
+
+@app.get("/api/recent-learnings")
+async def api_recent_learnings(session_id: str = ""):
+    return await _proxy_get(
+        f"{THALAMUS_URL}/recent-learnings?session_id={session_id}&limit=20")
 
 
 @app.get("/api/knobs")
@@ -405,6 +511,24 @@ async def api_logs_record(body: dict):
     return JSONResponse({"ok": True})
 
 
+@app.get("/api/logs/all")
+async def api_logs_all(
+    limit: int = Query(50, ge=1, le=1000),
+):
+    """Get recent logs across all services."""
+    if redis_pool is None:
+        return JSONResponse({"logs": []})
+
+    raw = await redis_pool.lrange("logs:_all", 0, limit - 1)
+    logs = []
+    for r in raw:
+        try:
+            logs.append(json.loads(r))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return JSONResponse({"logs": logs})
+
+
 @app.get("/api/logs/{service}")
 async def api_logs_service(
     service: str,
@@ -425,24 +549,6 @@ async def api_logs_service(
         if level != "all" and entry.get("level") != level:
             continue
         logs.append(entry)
-    return JSONResponse({"logs": logs})
-
-
-@app.get("/api/logs/all")
-async def api_logs_all(
-    limit: int = Query(50, ge=1, le=1000),
-):
-    """Get recent logs across all services."""
-    if redis_pool is None:
-        return JSONResponse({"logs": []})
-
-    raw = await redis_pool.lrange("logs:_all", 0, limit - 1)
-    logs = []
-    for r in raw:
-        try:
-            logs.append(json.loads(r))
-        except (json.JSONDecodeError, TypeError):
-            continue
     return JSONResponse({"logs": logs})
 
 
@@ -469,11 +575,30 @@ async def ws_events(ws: WebSocket):
                     data = json.loads(msg["data"])
                 except (json.JSONDecodeError, TypeError):
                     data = {"raw": msg["data"]}
+                channel = msg["channel"]
+                ts = time.time()
                 await ws.send_json({
-                    "channel": msg["channel"],
+                    "channel": channel,
                     "data": data,
-                    "ts": time.time(),
+                    "ts": ts,
                 })
+                # Also persist to service logs so the Logging page shows them
+                svc_name = _channel_to_service(channel, data)
+                log_entry = json.dumps({
+                    "service":   svc_name,
+                    "level":     "info",
+                    "message":   f"[{channel}] {json.dumps(data)[:200]}",
+                    "timestamp": ts,
+                })
+                try:
+                    pipe = redis_pool.pipeline()
+                    pipe.lpush(f"logs:{svc_name}", log_entry)
+                    pipe.ltrim(f"logs:{svc_name}", 0, MAX_LOGS_PER_SERVICE - 1)
+                    pipe.lpush("logs:_all", log_entry)
+                    pipe.ltrim("logs:_all", 0, MAX_LOGS_PER_SERVICE - 1)
+                    await pipe.execute()
+                except Exception:
+                    pass
             await asyncio.sleep(0.05)
     except WebSocketDisconnect:
         pass
@@ -482,6 +607,30 @@ async def ws_events(ws: WebSocket):
     finally:
         await pubsub.unsubscribe(*PUBSUB_CHANNELS)
         await pubsub.aclose()
+
+
+# Map pubsub channels to service names for log storage
+_CHANNEL_SERVICE_MAP = {
+    "experience.new": "perception",
+    "memory.consolidate": "hippocampus",
+    "knowledge.updated": "neocortex",
+    "skill.learned": "cerebellum",
+    "knobs.updated": "knobs",
+    "verification.failed": "verification",
+    "verification.contested": "verification",
+    "self.update.triggered": "self-update",
+    "session.started": "thalamus",
+    "session.ended": "thalamus",
+    "analogical.insight": "cross-domain",
+    "pattern.registered": "learner",
+}
+
+
+def _channel_to_service(channel: str, data: dict) -> str:
+    """Derive a service name from a pubsub channel and payload."""
+    if isinstance(channel, bytes):
+        channel = channel.decode()
+    return _CHANNEL_SERVICE_MAP.get(channel, data.get("service", "system"))
 
 
 # ---------------------------------------------------------------------------
@@ -573,12 +722,14 @@ button{font-family:var(--font)}
 .main{overflow:hidden;position:relative}
 .page{display:none;position:absolute;inset:0;overflow-y:auto;padding:16px 20px;opacity:0;transition:opacity .3s ease}
 .page.active{display:flex;flex-direction:column;opacity:1}
+#page-terminal.active{padding:8px 0 0 0}
 
 /* == Emotion Panel ==================================================== */
-.emotion-panel{position:absolute;top:12px;left:12px;width:200px;z-index:10;
+.emotion-panel{position:fixed;top:54px;left:12px;width:200px;z-index:10;
   background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
   border:1px solid var(--border);border-radius:var(--radius);padding:12px;
-  transition:all .3s ease;box-shadow:0 4px 20px rgba(0,0,0,.3)}
+  transition:all .3s ease;box-shadow:0 4px 20px rgba(0,0,0,.3);
+  max-height:calc(100vh - 70px);overflow-y:auto}
 .emotion-panel:hover{border-color:rgba(0,212,255,.25);box-shadow:0 4px 20px rgba(0,0,0,.3),0 0 15px var(--glow-accent)}
 .emotion-panel.expanded{width:320px;max-height:500px;overflow-y:auto}
 .emo-face-wrap{text-align:center;margin-bottom:8px}
@@ -612,10 +763,12 @@ button{font-family:var(--font)}
 .emo-hist-mixed{font-size:.62rem;color:var(--text-dim);margin-left:4px}
 
 /* == 3D Brain ========================================================= */
-.brain-thumb{position:fixed;top:54px;right:12px;width:180px;height:140px;z-index:30;
+.brain-thumb{position:fixed;top:54px;right:12px;width:180px;height:140px;z-index:10;
   cursor:pointer;background:var(--glass-bg);backdrop-filter:blur(var(--glass-blur));
   border:1px solid var(--border);border-radius:var(--radius);
-  padding:4px;transition:all .25s ease;overflow:hidden}
+  padding:4px;transition:all .35s ease;overflow:hidden;transform-origin:top right}
+.brain-thumb.expanded{width:270px;height:210px;z-index:25;
+  box-shadow:0 8px 30px rgba(0,0,0,.5);border-color:rgba(0,212,255,.3)}
 .brain-thumb:hover{border-color:rgba(0,212,255,.4);box-shadow:0 0 15px var(--glow-accent)}
 .brain-thumb canvas{width:100%;height:100%;display:block;border-radius:calc(var(--radius) - 4px)}
 .brain-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;
@@ -635,10 +788,12 @@ button{font-family:var(--font)}
   white-space:nowrap;display:none;color:var(--text);box-shadow:0 2px 10px rgba(0,0,0,.3)}
 
 /* == Terminal ========================================================= */
-#page-terminal{gap:0;position:relative;display:flex;flex-direction:column}
+#page-terminal{gap:0;position:relative;display:flex;flex-direction:column;overflow:hidden;
+  padding-bottom:0 !important}
 .chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
-  padding:10px;padding-left:224px;padding-top:10px;background:var(--glass-bg);backdrop-filter:blur(8px);
-  border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease}
+  padding:10px 12%;background:var(--glass-bg);backdrop-filter:blur(8px);
+  border-radius:var(--radius);border:1px solid var(--border);min-height:0;transition:all .25s ease;
+  margin:0 0 0 0}
 .chat-log:hover{border-color:rgba(0,212,255,.12)}
 
 /* == Media Bar (above chat input) ===================================== */
@@ -830,6 +985,20 @@ button{font-family:var(--font)}
 .error-box{padding:10px 14px;border-radius:var(--radius);background:rgba(255,23,68,.1);
   border:1px solid var(--error);color:var(--error);font-size:.82rem}
 .scroll-area{flex:1;overflow-y:auto;min-height:0}
+.brain-thumb.hidden-panel,.emotion-panel.hidden-panel{display:none !important}
+
+/* == Session History ==================================================== */
+.session-history{margin-top:12px}
+.session-history .sh-label{font-size:.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;padding:0 14px 6px;font-weight:700}
+.session-item{display:flex;align-items:center;gap:8px;padding:8px 14px;margin-bottom:2px;
+  border-radius:var(--radius);color:var(--text-dim);cursor:pointer;font-size:.78rem;transition:all .2s ease;border:1px solid transparent}
+.session-item:hover{background:rgba(0,212,255,.06);color:var(--text);border-color:rgba(0,212,255,.15)}
+.session-item.active-session{background:rgba(0,212,255,.1);color:var(--accent);border-color:rgba(0,212,255,.25)}
+.session-item .si-id{font-family:var(--mono);font-size:.72rem;letter-spacing:.3px}
+.session-item .si-ts{font-size:.66rem;color:var(--text-dim);margin-left:auto}
+.session-new-btn{width:100%;padding:8px;margin-top:4px;border:1px dashed var(--border);border-radius:var(--radius);
+  background:none;color:var(--text-dim);cursor:pointer;font-size:.78rem;transition:all .2s ease}
+.session-new-btn:hover{border-color:var(--accent);color:var(--accent)}
 </style>
 </head>
 <body>
@@ -848,6 +1017,12 @@ button{font-family:var(--font)}
   <div class="menu-item" data-page="page-monitoring"><span class="mi-icon">&#x1F4CA;</span> Monitoring</div>
   <div class="menu-item" data-page="page-logging"><span class="mi-icon">&#x1F4DC;</span> Logging</div>
   <div class="menu-item" data-page="page-controls"><span class="mi-icon">&#x1F39B;</span> Controls</div>
+  <div class="menu-divider"></div>
+  <div class="session-history" id="session-history">
+    <div class="sh-label">Sessions</div>
+    <div id="session-list"></div>
+    <button class="session-new-btn" id="new-session-btn">+ New Session</button>
+  </div>
 </div>
 
 <!-- == Header ========================================================= -->
@@ -873,29 +1048,8 @@ button{font-family:var(--font)}
 
 <!-- PAGE: Terminal -->
 <div class="page active" id="page-terminal">
-  <div class="emotion-panel" id="emotion-tracker">
-    <div class="emo-face-wrap">
-      <canvas id="pixel-face" width="80" height="80"></canvas>
-      <div class="emo-face-label" id="emo-face-label">neutral</div>
-    </div>
-    <div class="emo-current">
-      <span class="emo-emoji" id="emo-emoji">&#x1F610;</span>
-      <span class="emo-name" id="emo-name">neutral</span>
-    </div>
-    <div style="margin-bottom:6px"><span class="emo-badge" id="emo-badge" style="background:var(--emo-neutral)">neutral</span></div>
-    <div class="emo-mixed-wrap" id="emo-mixed-wrap" style="display:none">
-      <div class="emo-mixed-label">Mixed Feelings</div>
-      <div class="emo-mixed-list" id="emo-mixed-list"></div>
-    </div>
-    <div class="emo-mood">
-      <div class="emo-mood-label">Overall Mood</div>
-      <div class="emo-mood-bar"><div class="emo-mood-bar-fill" id="mood-bar-fill" style="width:50%"></div></div>
-    </div>
-    <button class="emo-expand-btn" id="emo-expand-btn">&#x25BC; History</button>
-    <div class="emo-history" id="emo-history"></div>
-  </div>
-  <div class="chat-log" id="chat-log"></div>
-  <div class="media-bar" id="media-bar">
+  <div class="chat-log" id="chat-log" style="margin:0 210px"></div>
+  <div class="media-bar" id="media-bar" style="margin:0 210px">
     <button class="media-btn" id="btn-stt" title="Microphone">&#x1F3A4;<span class="rec-dot"></span></button>
     <button class="media-btn" id="btn-cam" title="Webcam">&#x1F4F7;<span class="rec-dot"></span></button>
     <video id="cam-preview" class="webcam-preview" autoplay muted playsinline></video>
@@ -904,9 +1058,14 @@ button{font-family:var(--font)}
     </div>
     <span class="media-label" id="media-label"></span>
   </div>
-  <div class="chat-controls">
-    <input type="text" id="chat-input" placeholder="Talk to the brain..." autocomplete="off"/>
+  <div class="chat-controls" style="margin:0 210px">
+    <input type="text" id="chat-input" placeholder="Talk to the brain... (type /teach to enter teacher mode)" autocomplete="off"/>
     <button class="chat-btn" id="chat-send">Send</button>
+  </div>
+  <!-- Teacher Mode Bar -->
+  <div id="teacher-bar" style="display:none;margin:0 210px;padding:6px 12px;background:rgba(255,214,0,.08);border:1px solid var(--warning);border-top:none;border-radius:0 0 var(--radius) var(--radius);font-size:.78rem;align-items:center;color:var(--warning)">
+    <span style="font-weight:700">&#x1F4DA; Teacher Mode Active</span>
+    <span style="color:var(--text-dim);margin-left:8px">— your messages teach the brain. Type <code>/teach</code> again to exit.</span>
   </div>
 </div>
 
@@ -985,6 +1144,29 @@ button{font-family:var(--font)}
 </div><!-- /main -->
 </div><!-- /app -->
 
+<!-- == Emotion Panel (fixed, outside page flow) ======================== -->
+<div class="emotion-panel" id="emotion-tracker">
+  <div class="emo-face-wrap">
+    <canvas id="pixel-face" width="80" height="80"></canvas>
+    <div class="emo-face-label" id="emo-face-label">neutral</div>
+  </div>
+  <div class="emo-current">
+    <span class="emo-emoji" id="emo-emoji">&#x1F610;</span>
+    <span class="emo-name" id="emo-name">neutral</span>
+  </div>
+  <div style="margin-bottom:6px"><span class="emo-badge" id="emo-badge" style="background:var(--emo-neutral)">neutral</span></div>
+  <div class="emo-mixed-wrap" id="emo-mixed-wrap" style="display:none">
+    <div class="emo-mixed-label">Mixed Feelings</div>
+    <div class="emo-mixed-list" id="emo-mixed-list"></div>
+  </div>
+  <div class="emo-mood">
+    <div class="emo-mood-label">Overall Mood</div>
+    <div class="emo-mood-bar"><div class="emo-mood-bar-fill" id="mood-bar-fill" style="width:50%"></div></div>
+  </div>
+  <button class="emo-expand-btn" id="emo-expand-btn">&#x25BC; History</button>
+  <div class="emo-history" id="emo-history"></div>
+</div>
+
 <!-- == 3D Brain Thumbnail ============================================= -->
 <div class="brain-thumb" id="brain-thumb" title="Click to expand brain view">
   <canvas id="brain-canvas-sm"></canvas>
@@ -1019,10 +1201,47 @@ var $=function(s){return document.querySelector(s)};
 var $$=function(s){return document.querySelectorAll(s)};
 var esc=function(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML};
 
-/* -- Session ---------------------------------------------------------- */
+/* -- Device ID & Session Management ----------------------------------- */
+var DEVICE_ID=localStorage.getItem('skynet_device_id');
+if(!DEVICE_ID){DEVICE_ID=crypto.randomUUID();localStorage.setItem('skynet_device_id',DEVICE_ID)}
 var SESSION=localStorage.getItem('skynet_session');
 if(!SESSION){SESSION=crypto.randomUUID();localStorage.setItem('skynet_session',SESSION)}
+/* Track session list: [{id, created, label}] */
+var sessionList=JSON.parse(localStorage.getItem('skynet_sessions')||'[]');
+if(!sessionList.find(function(s){return s.id===SESSION})){
+  sessionList.unshift({id:SESSION,created:Date.now(),label:''});
+  localStorage.setItem('skynet_sessions',JSON.stringify(sessionList));
+}
 $('#session-display').textContent='session: '+SESSION.slice(0,8);
+
+function switchSession(sid){
+  SESSION=sid;localStorage.setItem('skynet_session',sid);
+  $('#session-display').textContent='session: '+sid.slice(0,8);
+  $('#chat-log').innerHTML='';
+  renderSessionList();
+}
+function newSession(){
+  var sid=crypto.randomUUID();
+  sessionList.unshift({id:sid,created:Date.now(),label:''});
+  localStorage.setItem('skynet_sessions',JSON.stringify(sessionList));
+  switchSession(sid);
+}
+function renderSessionList(){
+  var c=$('#session-list');if(!c)return;
+  c.innerHTML=sessionList.slice(0,20).map(function(s){
+    var d=new Date(s.created);
+    var ts=d.toLocaleDateString()+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    var cls=s.id===SESSION?'session-item active-session':'session-item';
+    return '<div class="'+cls+'" data-sid="'+s.id+'">'
+      +'<span class="si-id">'+s.id.slice(0,8)+'</span>'
+      +'<span class="si-ts">'+ts+'</span></div>';
+  }).join('');
+  c.querySelectorAll('.session-item').forEach(function(el){
+    el.addEventListener('click',function(){switchSession(el.dataset.sid)});
+  });
+}
+$('#new-session-btn').addEventListener('click',newSession);
+renderSessionList();
 
 /* -- Hamburger Menu --------------------------------------------------- */
 var slideOpen=false;
@@ -1040,6 +1259,10 @@ $$('.menu-item').forEach(function(b){b.addEventListener('click',function(){
   $$('.page').forEach(function(x){x.classList.remove('active')});
   b.classList.add('active');
   $('#'+b.dataset.page).classList.add('active');
+  /* Show brain/emotions only on terminal page */
+  var isTerminal=b.dataset.page==='page-terminal';
+  $('#emotion-tracker').classList.toggle('hidden-panel',!isTerminal);
+  $('#brain-thumb').classList.toggle('hidden-panel',!isTerminal);
   if(b.dataset.page==='page-monitoring') refreshMonitoring();
   if(b.dataset.page==='page-logging') refreshLogs();
   if(b.dataset.page==='page-controls') loadKnobs();
@@ -1207,6 +1430,17 @@ function initModalRenderer(){
 
 /* -- Brain open/close ------------------------------------------------- */
 $('#brain-thumb').addEventListener('click',function(){
+  var thumb=$('#brain-thumb');
+  if(thumb.classList.contains('expanded')){
+    thumb.classList.remove('expanded');
+    brainModalOpen=false;
+  }else{
+    thumb.classList.add('expanded');
+    brainModalOpen=true;
+  }
+});
+$('#brain-thumb').addEventListener('dblclick',function(){
+  /* Double-click opens the full modal for detailed inspection */
   brainModalOpen=true;
   $('#brain-modal-overlay').classList.add('open');
 });
@@ -1512,19 +1746,85 @@ $('#emo-expand-btn').addEventListener('click',function(){
 /* -- Chat / Terminal -------------------------------------------------- */
 var busy=false;
 var camStream=null,camEnabled=false,sttActive=false;
+var teacherMode=false;
 
 $('#chat-send').addEventListener('click',sendMessage);
 $('#chat-input').addEventListener('keydown',function(e){if(e.key==='Enter'&&!busy)sendMessage()});
+
+function toggleTeacherMode(){
+  teacherMode=!teacherMode;
+  var bar=$('#teacher-bar');
+  var btn=$('#chat-send');
+  var inp=$('#chat-input');
+  if(teacherMode){
+    bar.style.display='flex';
+    btn.textContent='\uD83D\uDCDA Teach';
+    btn.style.background='linear-gradient(135deg,var(--warning),#e6a800)';
+    inp.placeholder='Teach the brain... (e.g. "that was curiosity, not alarm")';
+    appendMsg('bot','<span style="color:var(--warning);font-weight:700">\uD83D\uDCDA Teacher Mode ON</span> — I\'m listening as your student. Tell me what I should feel, know, or correct. Type <code>/teach</code> to exit.');
+  }else{
+    bar.style.display='none';
+    btn.textContent='Send';
+    btn.style.background='';
+    inp.placeholder='Talk to the brain... (type /teach to enter teacher mode)';
+    appendMsg('bot','<span style="color:var(--text-dim)">\uD83D\uDCDA Teacher Mode OFF</span> — back to normal conversation.');
+  }
+}
 
 function sendMessage(){
   var inp=$('#chat-input');
   var text=inp.value.trim();
   if(!text||busy)return;
+
+  /* Slash commands */
+  if(text.toLowerCase()==='/teach'){
+    inp.value='';
+    toggleTeacherMode();
+    return;
+  }
+  if(text.toLowerCase()==='/learnings'||text.toLowerCase()==='/learned'){
+    inp.value='';
+    appendMsg('user',esc(text));
+    fetch('/api/recent-learnings?session_id='+encodeURIComponent(SESSION))
+      .then(function(r){return r.json()})
+      .then(function(d){
+        var html='<b>\uD83E\uDDE0 What I\'ve Learned</b><br>';
+        html+=esc(d.summary||'No learnings yet.')+'<br><br>';
+        if(d.emotions&&d.emotions.learned&&d.emotions.learned.length>0){
+          html+='<b>New emotions:</b> '+d.emotions.learned.map(esc).join(', ')+'<br>';
+        }
+        if(d.working_memory&&d.working_memory.corrections&&d.working_memory.corrections.length>0){
+          html+='<b>Emotion corrections:</b><br>';
+          d.working_memory.corrections.forEach(function(c){
+            html+='&bull; '+esc(c.detected_emotion||'')+' \u2192 '+esc(c.correct_emotion||'')+' for "'+esc((c.input||'').slice(0,40))+'"<br>';
+          });
+        }
+        html+='<br><span style="color:var(--text-dim)">Memories: '+
+          (d.hippocampus?d.hippocampus.total_episodes:0)+
+          ' | Buffer: '+(d.learner?d.learner.replay_buffer_size:0)+
+          ' | Training runs: '+(d.learner?d.learner.training_runs:0)+'</span>';
+        appendMsg('bot',html);
+      })
+      .catch(function(e){appendMsg('bot','<span class="error-box">Error: '+esc(e.message)+'</span>')});
+    return;
+  }
+  if(text.toLowerCase()==='/help'){
+    inp.value='';
+    appendMsg('bot',
+      '<b>Commands:</b><br>'+
+      '<code>/teach</code> — toggle teacher mode (correct emotions, teach knowledge)<br>'+
+      '<code>/learnings</code> — show what the brain has learned<br>'+
+      '<code>/help</code> — show this help'
+    );
+    return;
+  }
+
   busy=true;inp.value='';$('#chat-send').disabled=true;
-  appendMsg('user',esc(text));
+  var role=teacherMode?'user teacher':'user';
+  appendMsg(role,esc(text));
   animateBrainPipeline([]);
   var t0=performance.now();
-  var payload={input:text,session_id:SESSION};
+  var payload={user_input:text,session_id:SESSION,teacher_mode:teacherMode};
   if(camEnabled){var frame=captureFrame();if(frame)payload.image=frame}
   fetch('/api/process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
     .then(function(r){return r.json()})
@@ -1541,7 +1841,13 @@ function sendMessage(){
 function appendMsg(role,html){
   var log=$('#chat-log');
   var div=document.createElement('div');
-  div.className='msg '+role;div.innerHTML=html;
+  var cls=role.split(' ')[0];  /* 'user' or 'bot' */
+  div.className='msg '+cls;
+  if(role.indexOf('teacher')>=0){
+    div.style.borderLeft='3px solid var(--warning)';
+    html='<span style="font-size:.68rem;color:var(--warning);font-weight:700;letter-spacing:.5px">\uD83D\uDCDA TEACHER</span><br>'+html;
+  }
+  div.innerHTML=html;
   log.appendChild(div);log.scrollTop=log.scrollHeight;
 }
 
@@ -1562,13 +1868,89 @@ function appendBotMsg(d,latency){
   if(urgency!=='')meta+='<span class="badge-urgency" style="background:'+urgencyColor(urgency)+'">urgency '+urgency+'</span>';
   if(confidence!=='')meta+='<span class="badge-confidence">\u2691 '+Math.round(confidence*100)+'%</span>';
   meta+='<span class="badge-latency">\u23F1 '+latency+'s</span>';
+  if(d.execution_ms)meta+='<span class="badge-latency" style="color:var(--text-dim)">\u2699 '+Math.round(d.execution_ms)+'ms server</span>';
   if(path)meta+='<span class="badge-path">\u21A3 '+esc(Array.isArray(path)?path.join(' \u2192 '):path)+'</span>';
+  if(d.teacher_mode)meta+='<span style="padding:2px 8px;border-radius:12px;font-weight:600;background:rgba(255,214,0,.15);color:var(--warning);border:1px solid var(--warning)">\uD83D\uDCDA teacher</span>';
   meta+='</div>';
+
+  /* Trace with timing waterfall */
   var trace='';
   if(d.trace){
     trace='<span class="trace-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">';
     trace+='\u25B6 trace</span>';
-    trace+='<pre class="trace">'+esc(JSON.stringify(d.trace,null,2))+'</pre>';
+    /* Build timing waterfall if step_times_ms exists */
+    var traceContent='';
+    var st=d.trace.step_times_ms;
+    if(st){
+      var totalMs=d.execution_ms||0;
+      traceContent+='<div style="margin-bottom:8px;font-size:.72rem;font-family:var(--mono)">';
+      traceContent+='<div style="font-weight:700;margin-bottom:4px;color:var(--accent)">Step Timing (ms)</div>';
+      var steps=Object.keys(st);
+      for(var si=0;si<steps.length;si++){
+        var sn=steps[si],sv=st[sn];
+        if(sn==='parallel_batch_detail')continue; /* rendered inline below parallel_batch */
+        if(typeof sv!=='number')continue;
+        var pct=totalMs>0?Math.min(100,Math.round(sv/totalMs*100)):0;
+        var barColor=sv>5000?'var(--error)':sv>2000?'var(--warning)':'var(--accent)';
+        traceContent+='<div style="display:flex;align-items:center;gap:6px;margin:2px 0">';
+        traceContent+='<span style="width:140px;color:var(--text-dim);text-align:right;flex-shrink:0">'+esc(sn)+'</span>';
+        traceContent+='<div style="flex:1;height:10px;background:var(--border);border-radius:3px;overflow:hidden">';
+        traceContent+='<div style="width:'+pct+'%;height:100%;background:'+barColor+';border-radius:3px;transition:width .3s"></div></div>';
+        traceContent+='<span style="width:60px;text-align:right;color:'+(sv>5000?'var(--error)':'var(--text)')+'">'+Math.round(sv)+'</span>';
+        traceContent+='</div>';
+        /* Show parallel_batch sub-steps right after the batch row */
+        if(sn==='parallel_batch'&&st.parallel_batch_detail){
+          var pb=st.parallel_batch_detail;
+          var pbKeys=Object.keys(pb);
+          for(var pi=0;pi<pbKeys.length;pi++){
+            var pn=pbKeys[pi],pv=pb[pn];
+            var ppct=totalMs>0?Math.min(100,Math.round(pv/totalMs*100)):0;
+            var pbColor=pv>3000?'var(--error)':pv>1000?'var(--warning)':'rgba(0,212,255,.5)';
+            traceContent+='<div style="display:flex;align-items:center;gap:6px;margin:1px 0;padding-left:20px">';
+            traceContent+='<span style="width:120px;color:var(--text-dim);text-align:right;flex-shrink:0;font-size:.66rem;opacity:.8">\u2514 '+esc(pn)+'</span>';
+            traceContent+='<div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden">';
+            traceContent+='<div style="width:'+ppct+'%;height:100%;background:'+pbColor+';border-radius:3px"></div></div>';
+            traceContent+='<span style="width:60px;text-align:right;font-size:.66rem;color:'+(pv>3000?'var(--error)':'var(--text-dim)')+'">'+Math.round(pv)+'</span>';
+            traceContent+='</div>';
+          }
+        }
+      }
+      traceContent+='<div style="margin-top:4px;color:var(--text-dim)">Total: '+Math.round(totalMs)+'ms</div>';
+      traceContent+='</div>';
+    }
+    /* Show errors if any */
+    if(d.trace.errors&&d.trace.errors.length>0){
+      traceContent+='<div style="margin-bottom:8px;font-size:.72rem">';
+      traceContent+='<div style="font-weight:700;color:var(--error);margin-bottom:4px">\u26A0 Errors ('+d.trace.errors.length+')</div>';
+      for(var ei=0;ei<d.trace.errors.length;ei++){
+        var err=d.trace.errors[ei];
+        traceContent+='<div style="color:var(--error);padding:2px 0">'+esc(err.step)+': '+esc(String(err.error).slice(0,120))+'</div>';
+      }
+      traceContent+='</div>';
+    }
+    /* Show emotion teaching result */
+    if(d.trace.emotion_taught){
+      traceContent+='<div style="margin-bottom:8px;font-size:.72rem;color:var(--warning)">';
+      traceContent+='\uD83D\uDCDA Emotion corrected: '+esc(d.trace.emotion_taught.from)+' \u2192 '+esc(d.trace.emotion_taught.to);
+      traceContent+='</div>';
+    }
+    /* Show DB operations */
+    var dbOps=d.trace.db_operations;
+    if(dbOps&&dbOps.length>0){
+      traceContent+='<div style="margin-bottom:8px;font-size:.72rem">';
+      traceContent+='<div style="font-weight:700;color:var(--accent);margin-bottom:4px">\uD83D\uDCBE DB Operations</div>';
+      for(var di=0;di<dbOps.length;di++){
+        var op=dbOps[di];
+        var okColor=op.ok?'var(--success)':'var(--error)';
+        var okIcon=op.ok?'\u2713':'\u2717';
+        traceContent+='<div style="color:'+okColor+';padding:1px 0">'+okIcon+' '+esc(op.op);
+        if(op.error)traceContent+=' — <span style="color:var(--error)">'+esc(String(op.error).slice(0,80))+'</span>';
+        traceContent+='</div>';
+      }
+      traceContent+='</div>';
+    }
+    traceContent+='<pre style="margin:0;font-size:.68rem">'+esc(JSON.stringify(d.trace,null,2))+'</pre>';
+    trace+='<div class="trace" style="display:none">'+traceContent+'</div>';
   }
   appendMsg('bot',esc(text)+meta+trace);
   updateEmotionTracker(emotion,confidence||null,mixedEmotions);
@@ -1698,14 +2080,16 @@ $$('#time-range button').forEach(function(b){b.addEventListener('click',function
   b.classList.add('active');refreshMonitoring();
 })});
 
+var _healthCache={};
 function refreshMonitoring(){
-  Promise.all([fetch('/api/metrics/summary'),fetch('/api/metrics/overview')])
+  Promise.all([fetch('/api/metrics/summary'),fetch('/api/metrics/overview'),fetch('/api/services/health')])
     .then(function(rs){return Promise.all(rs.map(function(r){return r.json()}))})
     .then(function(arr){
-      var summary=arr[0],overview=arr[1];
+      var summary=arr[0],overview=arr[1],health=arr[2];
+      _healthCache=health.services||{};
       $('#ov-reqs').textContent=summary.total_requests.toLocaleString();
       $('#ov-latency').textContent=summary.avg_response_time_ms.toFixed(1)+'ms';
-      $('#ov-active').textContent=summary.active_services;
+      $('#ov-active').textContent=(health.alive||0)+'/'+ALL_SVC_LIST.length;
       $('#ov-uptime').textContent=summary.uptime_hours.toFixed(1)+'h';
       renderServiceMetrics(overview.services||{});
     })
@@ -1714,24 +2098,27 @@ function refreshMonitoring(){
 
 var ALL_SVC_LIST=["thalamus","amygdala","hippocampus","cerebellum","neocortex","working-memory",
   "perception","verification","cross-domain","compass","framework-router","self-update",
-  "causal-graph","simulator","metacognition","goals","learner","vision","knobs","autonomy","dashboard"];
+  "causal-graph","simulator","metacognition","goals","learner","vision","knobs","autonomy","dashboard",
+  "gateway","redis","elasticsearch","edgedb"];
 
 function renderServiceMetrics(services){
   var grid=$('#svc-metrics-grid');
   grid.innerHTML=ALL_SVC_LIST.map(function(name){
     var s=services[name]||{total_requests:0,avg_latency_ms:0,error_rate:0,p95_latency:0,last_24h_requests:[],uptime_pct:100};
-    var dotCls=s.total_requests>0?'dot-alive':'dot-unreachable';
+    var h=_healthCache[name];
+    var dotCls=(h&&h.status==='alive')?'dot-alive':'dot-unreachable';
+    var healthMs=(h&&h.ms)?h.ms.toFixed(0)+'ms':'—';
     var buckets=s.last_24h_requests||[];
     var maxReq=Math.max.apply(null,buckets.map(function(b){return b.requests||0}).concat([1]));
     var bars=buckets.map(function(b){
-      var h=Math.max(Math.round((b.requests||0)/maxReq*100),2);
-      return '<div class="bar" style="height:'+h+'%"></div>';
+      var ht=Math.max(Math.round((b.requests||0)/maxReq*100),2);
+      return '<div class="bar" style="height:'+ht+'%"></div>';
     }).join('');
     return '<div class="svc-metric-card"><div class="svc-m-name"><span class="dot-sm '+dotCls+'"></span>'+esc(name)+'</div>'+
-      '<div class="svc-stats"><span class="stat-label">Requests</span><span class="stat-val">'+s.total_requests+'</span>'+
+      '<div class="svc-stats"><span class="stat-label">Health</span><span class="stat-val">'+healthMs+'</span>'+
+      '<span class="stat-label">Requests</span><span class="stat-val">'+s.total_requests+'</span>'+
       '<span class="stat-label">Avg Latency</span><span class="stat-val">'+s.avg_latency_ms.toFixed(1)+'ms</span>'+
-      '<span class="stat-label">Error Rate</span><span class="stat-val">'+s.error_rate.toFixed(1)+'%</span>'+
-      '<span class="stat-label">P95 Latency</span><span class="stat-val">'+s.p95_latency.toFixed(1)+'ms</span></div>'+
+      '<span class="stat-label">Error Rate</span><span class="stat-val">'+s.error_rate.toFixed(1)+'%</span></div>'+
       '<div class="sparkline">'+bars+'</div></div>';
   }).join('');
 }
@@ -1804,15 +2191,13 @@ function addLiveEvent(m){
 
 /* -- Knob Controls ---------------------------------------------------- */
 var knobGroups={
-  Personality:['openness','conscientiousness','extraversion','agreeableness','neuroticism',
-    'assertiveness','empathy','optimism','adventurousness','humility'],
-  Cognition:['creativity','focus','verbosity','humor','formality','confidence_threshold',
-    'curiosity','skepticism','patience','adaptability'],
-  Framework:['analogical_weight','first_principles_weight','bayesian_weight',
-    'dialectical_weight','systems_weight'],
-  Ethics:['moral_weight','caution','transparency','autonomy_level','privacy_sensitivity',
-    'fairness_weight'],
-  'Higher Emotions':['gratitude','belonging','regret','alarm']
+  Personality:['humor','honesty','empathy','formality','verbosity',
+    'creativity','skepticism','assertiveness','curiosity','warmth'],
+  Cognition:['reasoning_depth','analogy_seeking','verification_threshold',
+    'memory_weight','novelty_sensitivity'],
+  Framework:['swarm_preference','framework_threshold'],
+  Ethics:['ethical_weight','care_explicitness'],
+  'Higher Emotions':['gratitude_sensitivity','belonging_weight']
 };
 
 function loadKnobs(){

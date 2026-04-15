@@ -51,7 +51,8 @@ _cache_ready: bool  = False
 @app.on_event("startup")
 async def startup():
     global db
-    db = edgedb.create_async_client(dsn=EDGEDB_DSN)
+    tls = os.getenv("EDGEDB_CLIENT_TLS_SECURITY", "insecure")
+    db = edgedb.create_async_client(dsn=EDGEDB_DSN, tls_security=tls)
     await load_skill_cache()
 
 
@@ -68,11 +69,16 @@ async def embed(text: str) -> list:
     try:
         resp = await http.post(
             f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]}
+            json={"model": EMBED_MODEL, "prompt": text[:2000]},
+            timeout=15.0
         )
         return resp.json()["embedding"]
-    except Exception:
-        return [0.0] * 768
+    except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+        print(f"[cerebellum] ERROR: Ollama unreachable at {OLLAMA_URL} ({type(e).__name__}) — skipping embed", flush=True)
+        return []
+    except Exception as e:
+        print(f"[cerebellum] embed failed ({type(e).__name__}): {e}", flush=True)
+        return []
 
 
 def cosine_similarity(a: list, b: list) -> float:
@@ -196,6 +202,12 @@ async def recognize_skill(req: BrainRequest):
         )
 
     query_embedding = await embed(req.user_input)
+    if not query_embedding:
+        return dict(
+            success    = True,
+            latency_ms = round((time.time() - start) * 1000, 2),
+            data       = {"skill_match": None, "cache_size": len(_skill_cache)}
+        )
     query_vec       = np.array(query_embedding, dtype=np.float32)
 
     best_match = None

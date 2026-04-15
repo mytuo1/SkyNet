@@ -202,7 +202,7 @@ HUMAN BRAIN REGION          CODE EQUIVALENT              PURPOSE
 Thalamus                  →  Router / Orchestrator      Decides which brain
                                                          region handles what
 
-Prefrontal Cortex         →  LLM (8 providers)          Reasoning, planning,
+Prefrontal Cortex         →  LLM (9 providers)          Reasoning, planning,
                                                          decision making
 
 Hippocampus               →  EdgeDB (EDB)               Episode formation,
@@ -292,7 +292,7 @@ brain/
 │   │                                     BrainResponse, KnobSet, ExperienceEvent
 │   ├── knobs.py                       ← KnobsClient (read-only, all services use)
 │   ├── events.py                      ← EventBus (Redis pub/sub)
-│   ├── llm_provider.py                ← Anthropic/OpenAI abstraction
+│   ├── llm_provider.py                ← Multi-provider LLM abstraction (9 providers)
 │   └── __init__.py
 ├── services/
 │   ├── thalamus/                      ← Orchestrator,           port 8000
@@ -313,7 +313,9 @@ brain/
 │   ├── metacognition/                 ← Uncertainty calibration,port 8014
 │   ├── goals/                         ← Long-horizon planning,  port 8015
 │   ├── learner/                       ← Continual local model,  port 8016
-│   └── vision/                        ← Camera + CLIP,          port 8017
+│   ├── vision/                        ← Camera + CLIP,          port 8017
+│   ├── autonomy/                      ← Self-directed thinking, port 8018
+│   └── dashboard/                     ← Web UI + monitoring,    port 8080
 │
 │   Each service contains:
 │       main.py          ← FastAPI application
@@ -485,13 +487,25 @@ RESPONSE RETURNED TO USER
          │
          ▼ (background — non-blocking)
 STEP 13  CAUSAL GRAPH extracts cause-effect pairs from response
-STEP 14  WORKING MEMORY updated with new thought
+STEP 14  WORKING MEMORY updated with new thought (full text, no truncation)
 STEP 15  HIPPOCAMPUS encodes new episode (async)
          LEARNER logs interaction for continual training (async)
          SELF-UPDATE triggered if significance > 0.70 (async)
          CONSOLIDATION triggered if memory pressure > 0.72 (async)
 </pre>
 ---------------------------------------------------------------------------------
+
+### Reliability: Error Handling and Graceful Degradation
+
+Every inter-service call in the pipeline runs with generous timeouts (60s for
+service calls, 30s for Ollama embedding calls) and **no aggressive retries**.
+Instead of retrying and doubling response times, each service gets one attempt
+with enough time to complete. If a service fails, the error is logged and
+surfaced in the response trace (visible in the dashboard under ▶ trace) — the
+brain continues to function with the remaining context. Embedding calls (Ollama)
+retry once on failure with a brief back-off, with graceful fallback to empty
+results. The brain continues to function even when individual services are
+degraded — the remaining context fills in the gaps.
 
 ---
 
@@ -1201,7 +1215,7 @@ k3s (self-host)  Any VPS              Any tier  Full Kubernetes on $10/mo VPS
 
 ### One command starts everything:
 <pre>
-docker compose up -d
+./skynet.sh start     # or: docker compose up -d
 </pre>
 
 ### Then:
@@ -1224,12 +1238,22 @@ POST /autonomy/think-once        → trigger one thinking cycle
 GET  /autonomy/thoughts          → see what the brain has thought on its own
 </pre>
 
+### Conversation Persistence:
+<pre>
+- Chat history survives page refresh (localStorage, trace data stripped for efficiency)
+- Full conversations stored in working memory (Redis, 7-day TTL, no truncation)
+- LLM receives entire session history as context (up to 200 turns)
+- Session switching restores full conversation thread
+- 200 turns kept per session in working memory
+</pre>
+
 ### Each service:
 <pre>
 - Independent Docker container
 - Its own FastAPI application
 - Reads knobs from Redis on every request
 - Publishes/subscribes to Redis event bus
+- Generous timeouts (60s service calls, 30s embed calls) — no aggressive retries
 - /health endpoint
 - /knobs endpoint (shows current parameters)
 - Restartable independently without affecting others

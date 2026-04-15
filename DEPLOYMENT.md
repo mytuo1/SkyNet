@@ -49,6 +49,21 @@ git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
 ./skynet.sh dashboard  # opens http://localhost:8080
 ```
 
+### Available commands
+
+| Command | Description |
+|---------|-------------|
+| `./skynet.sh start` | Full startup: build, init DBs, start all services |
+| `./skynet.sh stop` | Graceful shutdown |
+| `./skynet.sh restart` | Quick restart — preserves all data and conversations |
+| `./skynet.sh status` | Show all service health |
+| `./skynet.sh logs [svc]` | Tail logs (all or specific service) |
+| `./skynet.sh dashboard` | Open the web dashboard |
+| `./skynet.sh think` | Activate autonomous thinking |
+| `./skynet.sh update` | Git pull + rebuild changed services |
+| `./skynet.sh rebuild` | Wipe databases and rebuild fresh (confirms first) |
+| `./skynet.sh reset` | Factory reset (alias for rebuild) |
+
 ---
 
 ## Prerequisites
@@ -249,6 +264,12 @@ Time: ~2-5 tokens/second on CPU (fast enough for background tasks)
 docker compose logs -f learner
 # "Downloading from HuggingFace: microsoft/phi-4-mini-instruct"
 # This takes 10-30 minutes depending on connection
+```
+
+**Requirements:** The learner requires `transformers>=4.46.3` for Phi-4-mini-instruct
+support (SlidingWindowCache). If you see import errors, rebuild the learner:
+```bash
+docker compose build --no-cache learner
 ```
 
 **To use a smaller/faster model instead:**
@@ -552,9 +573,9 @@ ANTHROPIC_FAST_MODEL=claude-haiku-4-5-20251001
 # or XAI_MAIN_MODEL=grok-4-20 / XAI_FAST_MODEL=grok-3-mini-fast
 # etc.
 
-# 4. Optional: override token limits
-MAX_TOKENS_MAIN=8192
-MAX_TOKENS_FAST=4096
+# 4. Optional: override token limits (defaults: main=16384, fast=8192)
+MAX_TOKENS_MAIN=16384
+MAX_TOKENS_FAST=8192
 
 # 5. Restart services (no rebuild needed)
 docker compose restart thalamus compass verification cross-domain \
@@ -570,6 +591,8 @@ Access the web dashboard at **http://localhost:8080** after startup.
 
 Features:
 - **Terminal**: Chat with the brain, voice input (STT), webcam emotional analysis
+- **Chat History**: Conversations are persisted in browser localStorage and survive page refresh. Trace/debug data is stripped before saving to prevent localStorage overflow. Switch between sessions in the sidebar — each session's full history is restored.
+- **Session Recall**: The brain remembers the entire conversation within a session. Full messages are stored in Redis working memory (200 turns, 7-day TTL, no truncation) and fed to the LLM as context, so it can reference previous exchanges naturally.
 - **3D Brain**: Three.js rendered brain with 10 anatomical regions, auto-rotation, click-to-expand, drag to rotate, emissive glow on activation during cognitive processing
 - **Pixelated Face**: Pixel-art avatar (80x80) showing current emotion — 6 distinct expressions (neutral, joy, curiosity, alarm, regret, belonging)
 - **Emotion Tracker**: Glassmorphism panel (upper-left) with current feeling, overall mood bar, expandable history of last 20 interactions
