@@ -320,7 +320,14 @@ def _load_models_sync():
         if HF_TOKEN:
             tok_kwargs["token"] = HF_TOKEN
 
-        _tokenizer = AutoTokenizer.from_pretrained(model_source, **tok_kwargs)
+        try:
+            _tokenizer = AutoTokenizer.from_pretrained(model_source, **tok_kwargs)
+        except Exception:
+            # Fast tokenizer can fail on some models — fall back to slow tokenizer
+            print("  Fast tokenizer failed, retrying with use_fast=False...")
+            _tokenizer = AutoTokenizer.from_pretrained(
+                model_source, use_fast=False, **tok_kwargs
+            )
         if _tokenizer.pad_token is None:
             _tokenizer.pad_token = _tokenizer.eos_token
 

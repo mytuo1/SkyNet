@@ -89,12 +89,16 @@ async def handle_context(req: ContextRequest):
         context = {}
         for key in keys:
             short = key.replace(f"wm:{sid}:", "")
+            # Check key type — only GET string keys; lists/sets are handled below
+            key_type = r.type(key)
+            if key_type != "string":
+                continue
             val   = r.get(key)
             if val:
                 try:    context[short] = json.loads(val)
                 except (json.JSONDecodeError, TypeError, ValueError): context[short] = val
 
-        # Include thought stream
+        # Include thought stream (Redis list — not fetchable via GET)
         raw_thoughts = r.lrange(f"wm:{sid}:thought_stream", 0, -1)
         thoughts = []
         for t in raw_thoughts:
