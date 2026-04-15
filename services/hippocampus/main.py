@@ -81,6 +81,10 @@ async def embed(text: str) -> list:
             if elapsed > 3000:
                 print(f"[hippocampus] embed slow: {elapsed:.0f}ms", flush=True)
             return vec
+        except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[hippocampus] ERROR: Ollama unreachable at {OLLAMA_URL} after {elapsed:.0f}ms ({type(e).__name__}) — skipping embed (no retry)", flush=True)
+            return []
         except Exception as e:
             elapsed = (time.time() - t0) * 1000
             print(f"[hippocampus] embed attempt {attempt+1} failed after {elapsed:.0f}ms ({type(e).__name__}): {e}", flush=True)
@@ -115,6 +119,9 @@ async def quick_summarize(content: str) -> str:
                 timeout=30.0
             )
             return resp.json().get("response", content[:200]).strip()
+        except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+            print(f"[hippocampus] ERROR: Ollama unreachable at {OLLAMA_URL} ({type(e).__name__}) — skipping summarize", flush=True)
+            break
         except Exception:
             if attempt == 0:
                 await asyncio.sleep(0.5)

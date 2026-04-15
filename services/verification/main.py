@@ -123,6 +123,10 @@ async def embed(text: str) -> list:
             if elapsed > 3000:
                 print(f"[verification] embed slow: {elapsed:.0f}ms", flush=True)
             return vec
+        except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+            elapsed = (time.time() - t0) * 1000
+            print(f"[verification] ERROR: Ollama unreachable at {OLLAMA_URL} after {elapsed:.0f}ms ({type(e).__name__}) — skipping embed (no retry)", flush=True)
+            return []
         except Exception as e:
             elapsed = (time.time() - t0) * 1000
             print(f"[verification] embed attempt {attempt+1} failed after {elapsed:.0f}ms ({type(e).__name__}): {e}", flush=True)

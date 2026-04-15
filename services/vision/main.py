@@ -157,11 +157,16 @@ async def get_text_embedding(text: str) -> list:
     try:
         resp = await http.post(
             f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:500]}
+            json={"model": EMBED_MODEL, "prompt": text[:500]},
+            timeout=15.0
         )
         return resp.json()["embedding"]
-    except Exception:
-        return [0.0] * 768
+    except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+        print(f"[vision] ERROR: Ollama unreachable at {OLLAMA_URL} ({type(e).__name__}) — skipping embed", flush=True)
+        return []
+    except Exception as e:
+        print(f"[vision] embed failed ({type(e).__name__}): {e}", flush=True)
+        return []
 
 
 # ── Camera capture ────────────────────────────────────────────────────────────

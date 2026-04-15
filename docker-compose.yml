@@ -75,6 +75,11 @@ x-common-network: &common-network
 x-common-env: &common-env
   env_file: .env
 
+# Allow containers to reach Ollama on the host (needed for Linux native Docker)
+x-common-extra-hosts: &common-extra-hosts
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
 services:
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -219,7 +224,7 @@ services:
       context: .
       dockerfile: services/hippocampus/Dockerfile
     container_name: brain_hippocampus
-    <<: [*common-env, *common-network, *common-restart]
+    <<: [*common-env, *common-network, *common-restart, *common-extra-hosts]
     depends_on:
       redis:
         condition: service_healthy
@@ -238,7 +243,7 @@ services:
       context: .
       dockerfile: services/neocortex/Dockerfile
     container_name: brain_neocortex
-    <<: [*common-env, *common-network, *common-restart]
+    <<: [*common-env, *common-network, *common-restart, *common-extra-hosts]
     depends_on:
       elasticsearch:
         condition: service_healthy
@@ -255,7 +260,7 @@ services:
       context: .
       dockerfile: services/cerebellum/Dockerfile
     container_name: brain_cerebellum
-    <<: [*common-env, *common-network, *common-restart]
+    <<: [*common-env, *common-network, *common-restart, *common-extra-hosts]
     depends_on:
       edgedb:
         condition: service_healthy
@@ -300,7 +305,7 @@ services:
       context: .
       dockerfile: services/verification/Dockerfile
     container_name: brain_verification
-    <<: [*common-env, *common-network, *common-restart]
+    <<: [*common-env, *common-network, *common-restart, *common-extra-hosts]
     depends_on:
       redis:
         condition: service_healthy
@@ -315,7 +320,7 @@ services:
       context: .
       dockerfile: services/cross-domain/Dockerfile
     container_name: brain_cross_domain
-    <<: [*common-env, *common-network, *common-restart]
+    <<: [*common-env, *common-network, *common-restart, *common-extra-hosts]
     depends_on:
       redis:
         condition: service_healthy
@@ -427,7 +432,7 @@ services:
       context: .
       dockerfile: services/causal-graph/Dockerfile
     container_name: brain_causal_graph
-    <<: [*common-env, *common-network, *common-restart]
+    <<: [*common-env, *common-network, *common-restart, *common-extra-hosts]
     depends_on:
       redis:
         condition: service_healthy
@@ -551,7 +556,7 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
-    <<: [*common-network, *common-restart]
+    <<: [*common-network, *common-restart, *common-extra-hosts]
     deploy:
       resources:
         limits:
@@ -655,7 +660,7 @@ services:
       - LEARNER_URL=${LEARNER_URL}
       - VISION_URL=${VISION_URL}
       - OLLAMA_URL=${OLLAMA_URL}
-    <<: [*common-network, *common-restart]
+    <<: [*common-network, *common-restart, *common-extra-hosts]
     depends_on:
       amygdala:
         condition: service_healthy

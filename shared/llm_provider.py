@@ -371,6 +371,9 @@ async def _ollama_complete(prompt: str, system: str, model: str,
         if msg.get("content"):
             return msg["content"]
         return f"[Ollama error: {data.get('error', data)}]"
+    except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+        print(f"[llm_provider] ERROR: Ollama unreachable at {OLLAMA_URL} ({type(e).__name__})", flush=True)
+        return f"[Ollama unreachable at {OLLAMA_URL}: {type(e).__name__}]"
     except Exception as e:
         return f"[Ollama call failed: {str(e)[:80]}]"
 
