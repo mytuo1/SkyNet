@@ -35,6 +35,16 @@ async def _noop(val=None):
     return val if val is not None else {}
 
 
+async def _timed(label: str, coro, timings: dict):
+    """Wrap an awaitable to record its wall-clock time in *timings*."""
+    t0 = time.time()
+    try:
+        result = await coro
+    finally:
+        timings[label] = round((time.time() - t0) * 1000, 1)
+    return result
+
+
 app = FastAPI(title="Thalamus", version="2.0.0",
               description="Master cognitive orchestrator — routes all inputs through brain regions")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
@@ -632,30 +642,34 @@ async def process(req: ProcessRequest):
 
     # ── STEP 4: Parallel memory + reasoning preparation ───────────────────────
     t4 = time.time()
+    pb_times: dict[str, float] = {}   # per-service timings inside the batch
     parallel_batch = [
         # Hippocampus
-        call("hippocampus", "/recall", base_req, timeout=8.0)
-        if ar.get("needs_memory") else _noop({"data": {"episodes": []}}),
+        _timed("hippocampus", call("hippocampus", "/recall", base_req, timeout=3.0), pb_times)
+        if ar.get("needs_memory") else _timed("hippocampus", _noop({"data": {"episodes": []}}), pb_times),
         # Neocortex
-        call("neocortex", "/search", {
+        _timed("neocortex", call("neocortex", "/search", {
             **base_req,
             "domain": (ar.get("required_regions") or ["general"])[0]
-        }, timeout=8.0),
+        }, timeout=3.0), pb_times),
         # Cross-domain
-        call("cross_domain", "/find-analogies", {
+        _timed("cross_domain", call("cross_domain", "/find-analogies", {
             **base_req,
             "source_domain": (ar.get("required_regions") or ["general"])[0]
-        }, timeout=8.0) if k.analogy_seeking > 0.3 else _noop({"data": {"analogies": []}}),
+        }, timeout=3.0), pb_times) if k.analogy_seeking > 0.3
+        else _timed("cross_domain", _noop({"data": {"analogies": []}}), pb_times),
         # Compass
-        call("compass", "/read", {**base_req, "working_memory": wm}, timeout=8.0),
+        _timed("compass", call("compass", "/read", {**base_req, "working_memory": wm}, timeout=3.0), pb_times),
         # Goals agenda
-        call_get("goals", f"/agenda?session_id={req.session_id}"),
+        _timed("goals", call_get("goals", f"/agenda?session_id={req.session_id}", timeout=3.0), pb_times),
         # Vision context (if requested or VISION_ENABLED)
-        call_get("vision", "/current") if req.include_vision else _noop({}),
+        _timed("vision", call_get("vision", "/current", timeout=3.0), pb_times)
+        if req.include_vision else _timed("vision", _noop({}), pb_times),
     ]
 
     results = await asyncio.gather(*parallel_batch, return_exceptions=True)
     step_times["parallel_batch"] = round((time.time() - t4) * 1000, 1)
+    step_times["parallel_batch_detail"] = pb_times
 
     def safe(res, key=None, default=None):
         if isinstance(res, (Exception, BaseException)):
