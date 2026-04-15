@@ -676,16 +676,16 @@ async def process(req: ProcessRequest):
         # Hippocampus
         _timed("hippocampus", call("hippocampus", "/recall", base_req), pb_times)
         if ar.get("needs_memory") else _timed("hippocampus", _noop({"data": {"episodes": []}}), pb_times),
-        # Neocortex — generous timeout (embed + ES search can be slow on cold start)
+        # Neocortex — let it run to completion (embed + ES search can be slow on cold start)
         _timed("neocortex", call("neocortex", "/search", {
             **base_req,
             "domain": (ar.get("required_regions") or ["general"])[0]
-        }, timeout=60.0), pb_times),
-        # Cross-domain — generous timeout (LLM extract + embed + ES + store)
+        }), pb_times),
+        # Cross-domain — let it run to completion (LLM extract + embed + ES + store)
         _timed("cross_domain", call("cross_domain", "/find-analogies", {
             **base_req,
             "source_domain": (ar.get("required_regions") or ["general"])[0]
-        }, timeout=60.0), pb_times) if k.analogy_seeking > 0.3
+        }), pb_times) if k.analogy_seeking > 0.3
         else _timed("cross_domain", _noop({"data": {"analogies": []}}), pb_times),
         # Compass
         _timed("compass", call("compass", "/read", {**base_req, "working_memory": wm}), pb_times),
@@ -919,7 +919,7 @@ async def process(req: ProcessRequest):
             "claim":      raw_response[:2000],
             "context":    req.user_input[:1000],
             "domain":     (ar.get("required_regions") or ["general"])[0]
-        }, timeout=60.0)
+        })
         verification = ver_resp.get("data", {})
         trace["verification"] = {
             "status":     verification.get("status"),

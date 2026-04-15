@@ -628,7 +628,10 @@ function chatHistoryKey(sid){return 'skynet_chat_'+(sid||SESSION)}
 
 function saveChatMessage(role,html,botData){
   var key=chatHistoryKey();
-  var history=JSON.parse(localStorage.getItem(key)||'[]');
+  var history;
+  try{history=JSON.parse(localStorage.getItem(key)||'[]')}catch(e){
+    console.warn('Chat history corrupted, resetting:',e);history=[];
+  }
   /* Strip trace/pre blocks from HTML before persisting — they're huge and
      blow out localStorage. The trace is still visible in the live session. */
   var cleanHtml=html;
@@ -661,7 +664,10 @@ function saveChatMessage(role,html,botData){
 
 function loadChatHistory(){
   var key=chatHistoryKey();
-  var history=JSON.parse(localStorage.getItem(key)||'[]');
+  var history;
+  try{history=JSON.parse(localStorage.getItem(key)||'[]')}catch(e){
+    console.warn('Chat history corrupted, resetting:',e);history=[];
+  }
   if(!history.length)return;
   var log=$('#chat-log');
   for(var i=0;i<history.length;i++){
