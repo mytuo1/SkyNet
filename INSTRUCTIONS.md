@@ -86,7 +86,7 @@ brain/
 │   └── nginx.conf
 ├── shared/
 │   ├── __init__.py
-│   ├── models.py               ← 21 ExperienceTypes, BrainResponse, KnobSet
+│   ├── models.py               ← 23 ExperienceTypes, BrainResponse, KnobSet
 │   ├── knobs.py                ← 21 behavioral knobs including gratitude/belonging
 │   ├── events.py               ← Redis pub/sub event bus (sync + async)
 │   └── llm_provider.py         ← 8-provider LLM abstraction
@@ -111,7 +111,9 @@ brain/
 │   ├── learner/
 │   ├── vision/
 │   ├── dashboard/    main.py  Dockerfile  requirements.txt  ← web UI (port 8080)
-│   └── autonomy/     main.py  Dockerfile  requirements.txt  ← self-improvement (port 8018)
+│   ├── autonomy/     main.py  Dockerfile  requirements.txt  ← self-improvement (port 8018)
+│   ├── hypothalamus/ main.py  Dockerfile  requirements.txt  ← hormonal system (port 8019)
+│   └── insight-engine/ main.py Dockerfile requirements.txt  ← epiphany detection (port 8020)
 └── databases/
     ├── redis/        Dockerfile  redis.conf  init.py  init.sh  requirements.txt
     ├── elasticsearch/ Dockerfile  init.py  requirements.txt
@@ -410,6 +412,8 @@ LEARNER_URL=http://learner:8016
 VISION_URL=http://vision:8017
 THALAMUS_URL=http://thalamus:8000
 AUTONOMY_URL=http://autonomy:8018
+HYPOTHALAMUS_URL=http://hypothalamus:8019
+INSIGHT_ENGINE_URL=http://insight-engine:8020
 DASHBOARD_URL=http://dashboard:8080
 ```
 
@@ -968,7 +972,7 @@ docker compose up -d
 
 ### Changing shared/knobs.py (KnobsClient)
 
-All 21 services use this. Rebuild everything.
+All 23 services use this. Rebuild everything.
 
 ```bash
 docker compose build
