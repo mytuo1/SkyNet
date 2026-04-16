@@ -277,6 +277,15 @@ async def all_calibrations():
 # The accuracy of intuition improves over time as the system accumulates
 # more episodes and tracks whether past intuitions were correct.
 
+POSITIVE_EMOTIONS = frozenset({
+    "joy", "gratitude", "admiration", "relief",
+    "optimism", "pride", "approval", "curiosity"
+})
+NEGATIVE_EMOTIONS = frozenset({
+    "anger", "fear", "sadness", "grief",
+    "disappointment", "disgust", "remorse"
+})
+
 INTUITION_TRACK_KEY = "meta:intuition:{domain}"
 HIPPOCAMPUS_URL     = os.getenv("HIPPOCAMPUS_URL",  "http://hippocampus:8002")
 NEOCORTEX_URL       = os.getenv("NEOCORTEX_URL",    "http://neocortex:8004")
@@ -373,13 +382,11 @@ async def assess_intuition(req: IntuitionRequest):
     # Direction: based on whether past experiences in this domain were positive
     positive_episodes = sum(
         1 for ep in (episodes if episode_count > 0 else [])
-        if ep.get("emotion") in ("joy", "gratitude", "admiration", "relief",
-                                  "optimism", "pride", "approval", "curiosity")
+        if ep.get("emotion") in POSITIVE_EMOTIONS
     )
     negative_episodes = sum(
         1 for ep in (episodes if episode_count > 0 else [])
-        if ep.get("emotion") in ("anger", "fear", "sadness", "grief",
-                                  "disappointment", "disgust", "remorse")
+        if ep.get("emotion") in NEGATIVE_EMOTIONS
     )
 
     if positive_episodes > negative_episodes:

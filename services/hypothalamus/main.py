@@ -237,7 +237,7 @@ def _apply_triggers(state: dict, req: HormoneUpdateRequest) -> dict:
         state["serotonin"] = _clamp(state["serotonin"] + 0.02)
         state["oxytocin"]  = _clamp(state["oxytocin"] + 0.02)
 
-    if req.time_since_last > 0 and req.time_since_last < 2.0:
+    if 0 < req.time_since_last < 2.0:
         state["norepinephrine"] = _clamp(state["norepinephrine"] + 0.06)
 
     return state

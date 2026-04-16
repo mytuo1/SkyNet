@@ -750,7 +750,7 @@ async def process(req: ProcessRequest):
     t_hypo = time.time()
     # Compute turn count from working memory
     thoughts = wm.get("thought_stream", [])
-    turn_count = len([t for t in thoughts if isinstance(t, dict) and t.get("type") == "interaction"])
+    turn_count = sum(1 for t in thoughts if isinstance(t, dict) and t.get("type") == "interaction")
     # Time since last interaction
     last_interaction = max(
         (t.get("timestamp", 0) for t in thoughts
