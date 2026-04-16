@@ -319,14 +319,14 @@ async def check_crystallization(req: CheckRequest):
             r.sadd(KNOWN_CLIQUES, chash)
 
             # Log the epiphany
-            r.lpush(EPIPHANY_LOG, json.dumps(epiphany.dict()))
+            r.lpush(EPIPHANY_LOG, json.dumps(epiphany.model_dump()))
             r.ltrim(EPIPHANY_LOG, 0, 199)  # keep last 200
 
             # Queue notification for the session
             if req.session_id:
                 r.lpush(
                     PENDING_NOTIFY.format(session_id=req.session_id),
-                    json.dumps(epiphany.dict())
+                    json.dumps(epiphany.model_dump())
                 )
                 r.expire(
                     PENDING_NOTIFY.format(session_id=req.session_id),
@@ -385,7 +385,7 @@ async def check_crystallization(req: CheckRequest):
         data       = {
             "domains_checked":  len(domains),
             "epiphanies_found": len(epiphanies),
-            "epiphanies":       [ep.dict() for ep in epiphanies],
+            "epiphanies":       [ep.model_dump() for ep in epiphanies],
         }
     )
 

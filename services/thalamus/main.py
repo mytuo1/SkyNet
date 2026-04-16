@@ -547,7 +547,7 @@ async def health_detailed():
 
 @app.get("/knobs")
 async def get_knobs():
-    return knobs.get().dict()
+    return knobs.get().model_dump()
 
 
 class TeachEmotionRequest(BaseModel):
@@ -1190,8 +1190,13 @@ async def curiosity_dismiss(session_id: str, question_id: str):
     queue_key = CURIOSITY_QUEUE_KEY.format(sid=session_id)
     try:
         raw = await _redis.lrange(queue_key, 0, -1)
-        new_queue = [r for r in (raw or [])
-                     if json.loads(r).get("id") != question_id]
+        new_queue = []
+        for r in (raw or []):
+            try:
+                if json.loads(r).get("id") != question_id:
+                    new_queue.append(r)
+            except (json.JSONDecodeError, TypeError):
+                pass
         pipe = _redis.pipeline()
         pipe.delete(queue_key)
         if new_queue:
@@ -1337,7 +1342,7 @@ async def process(req: ProcessRequest):
     hormone_knob_mods = hormones.get("modified_knobs", {})
     if hormone_knob_mods:
         # Override specific knob values with hormone-adjusted versions
-        k_dict = k.dict()
+        k_dict = k.model_dump()
         k_dict.update(hormone_knob_mods)
         k = KnobSet(**k_dict)
 
