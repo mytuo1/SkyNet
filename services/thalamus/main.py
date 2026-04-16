@@ -670,29 +670,37 @@ async def recent_learnings(session_id: str = "", limit: int = 20):
 
 
 # ── Curiosity Engine ──────────────────────────────────────────────────────────
-# The bot can proactively ask questions based on its accumulated memories,
-# hormonal state (dopamine / curiosity), past conversations, knowledge gaps,
-# and pending epiphanies.  Triggered by the frontend after 60 s of inactivity.
+# The bot proactively asks questions based on accumulated memories, hormonal
+# state (dopamine / curiosity), past conversations, knowledge gaps, and pending
+# epiphanies.  Questions are queued per session; the user answers via teacher
+# mode.  Both questions and answers are persisted in working memory and
+# hippocampus so the bot remembers what it asked and what it learned.
 
-CURIOSITY_COOLDOWN = 120          # seconds between curiosity questions
-CURIOSITY_MIN_TURNS = 2           # need at least N turns of conversation first
-CURIOSITY_REDIS_KEY = "curiosity:last:{session_id}"
+CURIOSITY_COOLDOWN   = 120   # seconds between curiosity question generations
+CURIOSITY_MIN_TURNS  = 2     # need at least N turns of conversation first
+CURIOSITY_MAX_QUEUE  = 10    # max pending unanswered questions per session
+CURIOSITY_REDIS_KEY  = "curiosity:last:{sid}"
+CURIOSITY_QUEUE_KEY  = "curiosity:queue:{sid}"
+CURIOSITY_ANSWERED_KEY = "curiosity:answered:{sid}"
+CURIOSITY_TTL        = 604800  # 7 days
 
 
 @app.get("/curiosity")
 async def curiosity_check(session_id: str):
     """
-    Check whether the bot has a proactive question to ask.
-    Returns {"has_question": false} if nothing to say, or
-    {"has_question": true, "question": "...", ...} with a generated question.
+    Generate a proactive question if the bot has enough context and curiosity.
+    The question is pushed onto a per-session queue in Redis.
     """
     empty = {"has_question": False, "reason": ""}
 
     if not session_id:
         return empty | {"reason": "no_session"}
 
+    sid = session_id
+    cooldown_key = CURIOSITY_REDIS_KEY.format(sid=sid)
+    queue_key    = CURIOSITY_QUEUE_KEY.format(sid=sid)
+
     # ── Cooldown check ────────────────────────────────────────────────────
-    cooldown_key = CURIOSITY_REDIS_KEY.format(session_id=session_id)
     try:
         last_ts = await _redis.get(cooldown_key)
         if last_ts and (time.time() - float(last_ts)) < CURIOSITY_COOLDOWN:
@@ -700,23 +708,26 @@ async def curiosity_check(session_id: str):
     except Exception:
         pass
 
+    # ── Queue-full check ──────────────────────────────────────────────────
+    try:
+        qlen = await _redis.llen(queue_key)
+        if qlen >= CURIOSITY_MAX_QUEUE:
+            return empty | {"reason": "queue_full", "pending": qlen}
+    except Exception:
+        pass
+
     # ── Gather session context in parallel ────────────────────────────────
     k = knobs.get()
     results = await asyncio.gather(
-        # Conversation history
         call("working_memory", "/context", {
-            "session_id": session_id, "action": "get_thoughts"
+            "session_id": sid, "action": "get_thoughts"
         }),
-        # Hormonal state
-        call("hypothalamus", "/state", {"session_id": session_id}),
-        # Recent episodic memories
+        call("hypothalamus", "/state", {"session_id": sid}),
         call("hippocampus", "/recall", {
-            "session_id": session_id,
+            "session_id": sid,
             "user_input": "What have we been talking about?"
         }),
-        # Pending epiphanies
-        call_get("insight_engine", f"/pending/{session_id}"),
-        # Hippocampus stats (how much experience)
+        call_get("insight_engine", f"/pending/{sid}"),
         call_get("hippocampus", "/stats"),
         return_exceptions=True,
     )
@@ -732,13 +743,12 @@ async def curiosity_check(session_id: str):
     epiphany_resp = _safe(results[3])
     hippo_stats   = _safe(results[4])
 
-    thoughts = wm_resp.get("data", {}) if isinstance(wm_resp.get("data"), dict) else {}
-    thought_stream = thoughts.get("thought_stream", [])
-    if isinstance(thought_stream, list):
-        interactions = [t for t in thought_stream
-                        if isinstance(t, dict) and t.get("type") == "interaction"]
-    else:
-        interactions = []
+    thoughts_data = wm_resp.get("data", {})
+    if not isinstance(thoughts_data, dict):
+        thoughts_data = {}
+    thought_stream = thoughts_data.get("thought_stream", [])
+    interactions = [t for t in (thought_stream if isinstance(thought_stream, list) else [])
+                    if isinstance(t, dict) and t.get("type") == "interaction"]
 
     # ── Must have enough conversation history ─────────────────────────────
     if len(interactions) < CURIOSITY_MIN_TURNS:
@@ -746,28 +756,47 @@ async def curiosity_check(session_id: str):
                         "turns": len(interactions)}
 
     # ── Compute curiosity drive ───────────────────────────────────────────
-    hormones = hormone_resp.get("data", {}) if isinstance(hormone_resp.get("data"), dict) else hormone_resp
-    h_levels = hormones.get("hormones", {})
+    hormones_data = hormone_resp.get("data", {})
+    if not isinstance(hormones_data, dict):
+        hormones_data = hormone_resp if isinstance(hormone_resp, dict) else {}
+    h_levels = hormones_data.get("hormones", {})
     dopamine = h_levels.get("dopamine", 0.5)
     curiosity_knob = k.curiosity
 
-    # curiosity_drive: 0-1, combines the knob setting with dopamine level
     curiosity_drive = 0.4 * curiosity_knob + 0.4 * dopamine + 0.2 * 0.5
-    # Need at least 0.35 drive to ask a question
     if curiosity_drive < 0.35:
         return empty | {"reason": "low_curiosity",
                         "curiosity_drive": round(curiosity_drive, 3)}
 
+    # ── Gather previously asked + answered questions to avoid repeats ─────
+    prev_questions = []
+    try:
+        raw_q = await _redis.lrange(queue_key, 0, -1)
+        for rq in (raw_q or []):
+            try:
+                prev_questions.append(json.loads(rq).get("question", ""))
+            except Exception:
+                pass
+        raw_a = await _redis.lrange(CURIOSITY_ANSWERED_KEY.format(sid=sid), 0, 19)
+        for ra in (raw_a or []):
+            try:
+                prev_questions.append(json.loads(ra).get("question", ""))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # ── Build context for question generation ─────────────────────────────
     recent_topics = []
     for t in interactions[-8:]:
-        inp = t.get("input", "")[:120]
+        inp  = t.get("input", "")[:120]
         resp = t.get("response", "")[:120]
-        emo = t.get("emotion", "")
+        emo  = t.get("emotion", "")
         recent_topics.append(f"User: {inp}\nBot: {resp}" +
                              (f" [felt: {emo}]" if emo else ""))
 
-    episodes = recall_resp.get("data", {}).get("episodes", []) if isinstance(recall_resp.get("data"), dict) else recall_resp.get("episodes", [])
+    recall_data = recall_resp.get("data", {}) if isinstance(recall_resp.get("data"), dict) else recall_resp
+    episodes = recall_data.get("episodes", []) if isinstance(recall_data, dict) else []
     episode_summaries = [ep.get("summary", "")[:100] for ep in (episodes or [])[:5]]
 
     pending_epiphanies = []
@@ -775,35 +804,28 @@ async def curiosity_check(session_id: str):
         pending_epiphanies = epiphany_resp.get("epiphanies", [])
 
     total_episodes = hippo_stats.get("total_episodes", 0)
-    mood = hormones.get("mood_summary", "")
+    mood = hormones_data.get("mood_summary", "")
 
-    context_parts = []
+    ctx = []
     if recent_topics:
-        context_parts.append(
-            "## Recent Conversation\n" + "\n---\n".join(recent_topics[-5:])
-        )
+        ctx.append("## Recent Conversation\n" + "\n---\n".join(recent_topics[-5:]))
     if episode_summaries:
-        context_parts.append(
-            "## Relevant Past Memories\n" + "\n".join(
-                f"- {s}" for s in episode_summaries
-            )
-        )
+        ctx.append("## Relevant Past Memories\n" +
+                   "\n".join(f"- {s}" for s in episode_summaries))
     if pending_epiphanies:
         for ep in pending_epiphanies[:2]:
-            context_parts.append(
-                f"## Recent Epiphany\n"
-                f"Domain: {ep.get('domain', 'unknown')}\n"
-                f"Insight: {ep.get('novel_synthesis', '')}\n"
-                f"Concepts: {', '.join(ep.get('concepts', [])[:6])}"
-            )
+            ctx.append(
+                f"## Recent Epiphany\nDomain: {ep.get('domain','unknown')}\n"
+                f"Insight: {ep.get('novel_synthesis','')}\n"
+                f"Concepts: {', '.join(ep.get('concepts',[])[:6])}")
     if mood:
-        context_parts.append(f"## Your Current Mood\n{mood}")
+        ctx.append(f"## Your Current Mood\n{mood}")
+    ctx.append(f"## Your Experience\nYou have {total_episodes} total memories.")
+    if prev_questions:
+        ctx.append("## Questions You Already Asked (DO NOT REPEAT)\n" +
+                   "\n".join(f"- {q}" for q in prev_questions[-10:]))
 
-    context_parts.append(
-        f"## Your Experience\nYou have {total_episodes} total memories stored."
-    )
-
-    context = "\n\n".join(context_parts)
+    context = "\n\n".join(ctx)
 
     # ── Generate question via LLM ─────────────────────────────────────────
     system = (
@@ -826,16 +848,15 @@ async def curiosity_check(session_id: str):
         "- Don't start with 'I was thinking...' or 'I was wondering...'\n"
         "  every time — vary your openings\n"
         "- The question should show you've been THINKING about what was said\n"
-        "- It should feel like a friend bringing up something that's been "
-        "  on their mind\n"
+        "- It should feel like a friend bringing up something on their mind\n"
+        "- DO NOT repeat any question from the 'Questions You Already Asked' "
+        "section\n"
     )
 
     try:
         question_text = await complete(
-            prompt     = context,
-            system     = system,
-            model_tier = "main",
-            max_tokens = 256,
+            prompt=context, system=system,
+            model_tier="main", max_tokens=256,
         )
     except Exception as e:
         return empty | {"reason": f"llm_error: {str(e)[:80]}"}
@@ -844,45 +865,62 @@ async def curiosity_check(session_id: str):
         return empty | {"reason": "empty_response"}
 
     question_text = question_text.strip()
+    q_id = uuid.uuid4().hex[:12]
+    now  = time.time()
+
+    # ── Push onto the question queue ──────────────────────────────────────
+    q_entry = {
+        "id":        q_id,
+        "question":  question_text,
+        "drive":     round(curiosity_drive, 3),
+        "dopamine":  round(dopamine, 3),
+        "mood":      mood,
+        "timestamp": now,
+        "answered":  False,
+    }
+    try:
+        await _redis.rpush(queue_key, json.dumps(q_entry))
+        await _redis.expire(queue_key, CURIOSITY_TTL)
+    except Exception:
+        pass
 
     # ── Record cooldown ───────────────────────────────────────────────────
     try:
-        await _redis.set(cooldown_key, str(time.time()), ex=CURIOSITY_COOLDOWN)
+        await _redis.set(cooldown_key, str(now), ex=CURIOSITY_COOLDOWN)
     except Exception:
         pass
 
     # ── Publish event ─────────────────────────────────────────────────────
     try:
         await _redis.publish("curiosity.question", json.dumps({
-            "session_id": session_id,
+            "session_id": sid,
+            "id":         q_id,
             "question":   question_text[:300],
             "drive":      round(curiosity_drive, 3),
-            "dopamine":   round(dopamine, 3),
         }))
     except Exception:
         pass
 
-    # ── Store in working memory as a thought ──────────────────────────────
-    try:
-        asyncio.create_task(call("working_memory", "/context", {
-            "session_id": session_id,
-            "action":     "push_thought",
-            "data": {
-                "type":     "curiosity_question",
-                "question": question_text[:300],
-                "drive":    round(curiosity_drive, 3),
-                "timestamp": time.time(),
-            }
-        }))
-    except Exception:
-        pass
+    # ── Store in working memory ───────────────────────────────────────────
+    asyncio.create_task(call("working_memory", "/context", {
+        "session_id": sid,
+        "action":     "push_thought",
+        "data": {
+            "type":      "curiosity_question",
+            "id":        q_id,
+            "question":  question_text[:300],
+            "drive":     round(curiosity_drive, 3),
+            "timestamp": now,
+        }
+    }))
 
     return {
-        "has_question":   True,
-        "question":       question_text,
+        "has_question":    True,
+        "id":              q_id,
+        "question":        question_text,
         "curiosity_drive": round(curiosity_drive, 3),
-        "dopamine":       round(dopamine, 3),
-        "mood":           mood,
+        "dopamine":        round(dopamine, 3),
+        "mood":            mood,
         "based_on": {
             "conversation_turns": len(interactions),
             "total_memories":     total_episodes,
@@ -890,6 +928,298 @@ async def curiosity_check(session_id: str):
             "recent_episodes":    len(episode_summaries),
         },
     }
+
+
+@app.get("/curiosity/queue")
+async def curiosity_queue(session_id: str):
+    """Return all pending (unanswered) questions for a session."""
+    queue_key = CURIOSITY_QUEUE_KEY.format(sid=session_id)
+    try:
+        raw = await _redis.lrange(queue_key, 0, -1)
+        questions = []
+        for r in (raw or []):
+            try:
+                questions.append(json.loads(r))
+            except Exception:
+                pass
+        return {"questions": questions, "count": len(questions)}
+    except Exception as e:
+        return {"questions": [], "count": 0, "error": str(e)[:80]}
+
+
+@app.get("/curiosity/answered")
+async def curiosity_answered(session_id: str, limit: int = 20):
+    """Return previously answered curiosity Q&A pairs for a session."""
+    answered_key = CURIOSITY_ANSWERED_KEY.format(sid=session_id)
+    try:
+        raw = await _redis.lrange(answered_key, 0, limit - 1)
+        pairs = []
+        for r in (raw or []):
+            try:
+                pairs.append(json.loads(r))
+            except Exception:
+                pass
+        return {"answered": pairs, "count": len(pairs)}
+    except Exception as e:
+        return {"answered": [], "count": 0, "error": str(e)[:80]}
+
+
+class CuriosityAnswerRequest(BaseModel):
+    session_id: str
+    question_id: str
+    answer: str
+
+
+@app.post("/curiosity/answer")
+async def curiosity_answer(req: CuriosityAnswerRequest):
+    """
+    User answers a curiosity question.  The Q+A pair is:
+    1. Removed from the pending queue
+    2. Stored in the answered list (Redis)
+    3. Pushed to working memory as a curiosity_qa thought
+    4. Encoded into hippocampus as an episode (so the bot remembers)
+    5. Triggers hormonal reward (dopamine + serotonin boost)
+    6. Registers the topic as an interest and optionally creates a goal
+    """
+    sid = req.session_id
+    queue_key    = CURIOSITY_QUEUE_KEY.format(sid=sid)
+    answered_key = CURIOSITY_ANSWERED_KEY.format(sid=sid)
+    interest_key = f"curiosity:interests:{sid}"
+    now = time.time()
+
+    # ── Find and remove the question from the queue ───────────────────────
+    question_text = ""
+    question_entry = None
+    try:
+        raw = await _redis.lrange(queue_key, 0, -1)
+        new_queue = []
+        for r in (raw or []):
+            try:
+                entry = json.loads(r)
+            except Exception:
+                continue
+            if entry.get("id") == req.question_id:
+                question_entry = entry
+                question_text = entry.get("question", "")
+            else:
+                new_queue.append(r)
+        pipe = _redis.pipeline()
+        pipe.delete(queue_key)
+        if new_queue:
+            pipe.rpush(queue_key, *new_queue)
+            pipe.expire(queue_key, CURIOSITY_TTL)
+        await pipe.execute()
+    except Exception:
+        pass
+
+    if not question_text:
+        return {"ok": False, "error": "question_not_found"}
+
+    # ── Store the Q+A pair in the answered list ───────────────────────────
+    qa_pair = {
+        "id":            req.question_id,
+        "question":      question_text,
+        "answer":        req.answer,
+        "drive":         question_entry.get("drive", 0) if question_entry else 0,
+        "asked_at":      question_entry.get("timestamp", now) if question_entry else now,
+        "answered_at":   now,
+    }
+    try:
+        await _redis.lpush(answered_key, json.dumps(qa_pair))
+        await _redis.ltrim(answered_key, 0, 99)
+        await _redis.expire(answered_key, CURIOSITY_TTL)
+    except Exception:
+        pass
+
+    # ── Store in working memory as a thought ──────────────────────────────
+    asyncio.create_task(call("working_memory", "/context", {
+        "session_id": sid,
+        "action":     "push_thought",
+        "data": {
+            "type":      "curiosity_qa",
+            "id":        req.question_id,
+            "question":  question_text[:300],
+            "answer":    req.answer[:500],
+            "timestamp": now,
+        }
+    }))
+
+    # ── Encode into hippocampus as an episode (permanent memory) ──────────
+    episode_summary = f"I asked: \"{question_text}\" — They answered: \"{req.answer}\""
+    asyncio.create_task(call("hippocampus", "/encode", {
+        "session_id": sid,
+        "user_input": question_text,
+        "response":   req.answer,
+        "summary":    episode_summary[:300],
+        "emotion":    "curiosity",
+        "importance": 0.7,
+        "metadata": {
+            "type":        "curiosity_qa",
+            "question_id": req.question_id,
+        }
+    }))
+
+    # ── Hormonal reward: getting an answer feels good ─────────────────────
+    # Dopamine (reward for learning something new) + serotonin (satisfaction)
+    # + oxytocin (human engaged with us = bonding)
+    asyncio.create_task(call("hypothalamus", "/update", {
+        "session_id":        sid,
+        "amygdala_result":   {"emotion": "curiosity", "urgency": "low"},
+        "perception_events": [
+            {"type": "SEMANTIC_NOVELTY",   "intensity": 0.7},
+            {"type": "RESONANCE_EVENT",    "intensity": 0.5},
+        ],
+        "user_feedback":     "positive",
+    }))
+
+    # ── Track the topic as an interest ────────────────────────────────────
+    # Extract a short topic label from the question for interest tracking.
+    # Interests accumulate: each answered question on a topic increases its
+    # score.  High-score interests can become goals.
+    topic = _extract_topic(question_text, req.answer)
+    interest_score = 0.0
+    if topic:
+        try:
+            interest_score = await _redis.zincrby(interest_key, 1.0, topic)
+            await _redis.expire(interest_key, CURIOSITY_TTL)
+        except Exception:
+            pass
+
+    # ── Auto-create a goal for strong interests (score >= 3) ──────────────
+    goal_created = None
+    if topic and interest_score >= 3.0:
+        # Check we haven't already created a goal for this interest
+        goal_flag = f"curiosity:goal_created:{sid}:{topic}"
+        try:
+            already = await _redis.get(goal_flag)
+        except Exception:
+            already = None
+        if not already:
+            try:
+                goal_resp = await call("goals", "/goals", {
+                    "title":       f"Explore: {topic}",
+                    "description": (
+                        f"I've asked {int(interest_score)} questions about "
+                        f"'{topic}' and want to learn more. "
+                        f"Latest Q: \"{question_text[:100]}\" "
+                        f"Latest A: \"{req.answer[:100]}\""
+                    ),
+                    "priority":    min(0.9, 0.5 + interest_score * 0.05),
+                    "horizon":     "week",
+                    "domain":      "curiosity",
+                    "session_id":  sid,
+                    "tags":        ["curiosity", "interest", topic],
+                    "auto_plan":   True,
+                })
+                goal_created = goal_resp.get("data", {}).get("goal_id")
+                if goal_created:
+                    await _redis.set(goal_flag, goal_created,
+                                     ex=CURIOSITY_TTL)
+            except Exception:
+                pass
+
+    # ── Publish event ─────────────────────────────────────────────────────
+    try:
+        await _redis.publish("curiosity.answered", json.dumps({
+            "session_id": sid,
+            "id":         req.question_id,
+            "question":   question_text[:200],
+            "answer":     req.answer[:200],
+            "topic":      topic or "",
+            "interest_score": interest_score,
+        }))
+    except Exception:
+        pass
+
+    return {
+        "ok":             True,
+        "id":             req.question_id,
+        "question":       question_text,
+        "answer":         req.answer,
+        "stored":         True,
+        "topic":          topic,
+        "interest_score": interest_score,
+        "goal_created":   goal_created,
+    }
+
+
+def _extract_topic(question: str, answer: str) -> str:
+    """
+    Extract a short topic label from a Q+A pair.
+    Uses simple keyword extraction — no LLM call (this must be fast).
+    Returns a lowercase 1-3 word topic or empty string.
+    """
+    # Combine question + answer, strip punctuation, extract nouns/keywords
+    import re
+    text = f"{question} {answer}".lower()
+    # Remove common question words and stopwords
+    stopwords = {
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "shall", "can", "need", "dare", "ought",
+        "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
+        "as", "into", "through", "during", "before", "after", "above",
+        "below", "between", "out", "off", "over", "under", "again",
+        "further", "then", "once", "here", "there", "when", "where", "why",
+        "how", "all", "both", "each", "few", "more", "most", "other",
+        "some", "such", "no", "nor", "not", "only", "own", "same", "so",
+        "than", "too", "very", "just", "don", "now", "it", "its", "i",
+        "you", "your", "we", "they", "them", "their", "what", "which",
+        "who", "whom", "this", "that", "these", "those", "am", "about",
+        "up", "if", "or", "because", "but", "and", "also", "me", "my",
+        "think", "know", "like", "really", "thing", "things", "something",
+        "anything", "everything", "nothing", "much", "many", "well",
+        "still", "already", "ever", "never", "always", "sometimes",
+    }
+    words = re.findall(r"[a-z]{3,}", text)
+    keywords = [w for w in words if w not in stopwords]
+    if not keywords:
+        return ""
+    # Count frequency, pick top 2 most frequent meaningful words
+    freq = {}
+    for w in keywords:
+        freq[w] = freq.get(w, 0) + 1
+    ranked = sorted(freq.items(), key=lambda x: -x[1])
+    top = [w for w, _ in ranked[:2]]
+    return " ".join(top)
+
+
+@app.delete("/curiosity/dismiss")
+async def curiosity_dismiss(session_id: str, question_id: str):
+    """Dismiss a question without answering it."""
+    queue_key = CURIOSITY_QUEUE_KEY.format(sid=session_id)
+    try:
+        raw = await _redis.lrange(queue_key, 0, -1)
+        new_queue = [r for r in (raw or [])
+                     if json.loads(r).get("id") != question_id]
+        pipe = _redis.pipeline()
+        pipe.delete(queue_key)
+        if new_queue:
+            pipe.rpush(queue_key, *new_queue)
+            pipe.expire(queue_key, CURIOSITY_TTL)
+        await pipe.execute()
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:80]}
+    return {"ok": True, "dismissed": question_id}
+
+
+@app.get("/curiosity/interests")
+async def curiosity_interests(session_id: str, limit: int = 20):
+    """
+    Return the bot's accumulated interests for a session, ranked by strength.
+    Each interest has a score reflecting how many times the bot has engaged
+    with that topic through curiosity Q+A.
+    """
+    interest_key = f"curiosity:interests:{session_id}"
+    try:
+        raw = await _redis.zrevrangebyscore(
+            interest_key, "+inf", "-inf",
+            start=0, num=limit, withscores=True,
+        )
+        interests = [{"topic": t, "score": s} for t, s in (raw or [])]
+        return {"interests": interests, "count": len(interests)}
+    except Exception as e:
+        return {"interests": [], "count": 0, "error": str(e)[:80]}
 
 
 @app.post("/process")

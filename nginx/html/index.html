@@ -135,6 +135,28 @@ button{font-family:var(--font)}
   background:rgba(232,160,96,.15);color:#e8a060;border:1px solid rgba(232,160,96,.25);margin-left:4px}
 .badge-intuition{display:inline-block;padding:1px 7px;border-radius:10px;font-size:.68rem;font-weight:600;
   background:rgba(192,144,224,.15);color:#c090e0;border:1px solid rgba(192,144,224,.25);margin-left:4px}
+/* Curiosity question queue */
+.curiosity-queue{margin-top:6px;padding:0}
+.curiosity-item{padding:8px 10px;margin:4px 0;background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.12);
+  border-radius:var(--radius);font-size:.78rem;position:relative}
+.curiosity-item .cq-question{color:var(--text);margin-bottom:6px;line-height:1.4}
+.curiosity-item .cq-meta{font-size:.66rem;color:var(--text-dim);margin-bottom:6px}
+.curiosity-item .cq-answer-row{display:flex;gap:4px}
+.curiosity-item .cq-answer-input{flex:1;padding:4px 8px;border:1px solid var(--border);border-radius:4px;
+  background:var(--bg);color:var(--text);font-size:.75rem;font-family:var(--font)}
+.curiosity-item .cq-answer-input:focus{border-color:var(--accent);outline:none}
+.curiosity-item .cq-btn{padding:4px 10px;border:none;border-radius:4px;cursor:pointer;font-size:.7rem;font-weight:600}
+.cq-btn-answer{background:var(--accent);color:#000}
+.cq-btn-answer:hover{background:#33ddff}
+.cq-btn-dismiss{background:transparent;color:var(--text-dim);border:1px solid var(--border) !important}
+.cq-btn-dismiss:hover{color:var(--error);border-color:var(--error) !important}
+.curiosity-badge{position:fixed;bottom:76px;right:16px;background:var(--accent);color:#000;
+  font-weight:700;font-size:.72rem;padding:4px 12px;border-radius:16px;cursor:pointer;z-index:30;
+  box-shadow:0 2px 12px rgba(0,212,255,.3);transition:.2s;display:none}
+.curiosity-badge:hover{transform:scale(1.05);box-shadow:0 4px 20px rgba(0,212,255,.5)}
+.curiosity-badge .cq-count{background:#fff;color:var(--accent);border-radius:50%;
+  display:inline-block;width:18px;height:18px;text-align:center;line-height:18px;margin-left:6px;font-size:.66rem}
+.msg.bot.curiosity{border-left:3px solid var(--accent);background:rgba(0,212,255,.03)}
 
 /* == 3D Brain ========================================================= */
 .brain-thumb{position:fixed;top:54px;right:12px;width:160px;height:120px;z-index:10;
@@ -477,7 +499,17 @@ button{font-family:var(--font)}
     <span style="font-weight:700">&#x1F4DA; Teacher Mode Active</span>
     <span style="color:var(--text-dim);margin-left:8px">— your messages teach the brain. Type <code>/teach</code> again to exit.</span>
   </div>
+  <!-- Curiosity Question Queue (shown in teacher mode area) -->
+  <div id="curiosity-queue-panel" style="display:none;padding:8px 16px;background:rgba(0,212,255,.03);border-top:1px solid rgba(0,212,255,.12);max-height:280px;overflow-y:auto;flex-shrink:0">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <span style="font-size:.74rem;font-weight:700;color:var(--accent);letter-spacing:.5px">&#x1F914; Bot Questions</span>
+      <span style="font-size:.66rem;color:var(--text-dim)" id="cq-count-label">0 pending</span>
+    </div>
+    <div class="curiosity-queue" id="curiosity-queue"></div>
+  </div>
 </div>
+<!-- Floating curiosity badge -->
+<div class="curiosity-badge" id="curiosity-badge" title="The bot has questions for you">&#x1F914; Questions <span class="cq-count" id="cq-badge-count">0</span></div>
 
 <!-- PAGE: Monitoring -->
 <div class="page" id="page-monitoring">
@@ -1444,12 +1476,68 @@ function sendMessage(){
       '<b>Commands:</b><br>'+
       '<code>/teach</code> — toggle teacher mode (correct emotions, teach knowledge)<br>'+
       '<code>/learnings</code> — show what the brain has learned<br>'+
+      '<code>/questions</code> — show pending &amp; answered curiosity questions<br>'+
+      '<code>/interests</code> — show the bot\'s accumulated interests<br>'+
       '<code>/help</code> — show this help'
     );
     return;
   }
+  if(text.toLowerCase()==='/questions'){
+    inp.value='';
+    appendMsg('user',esc(text));
+    Promise.all([
+      fetch('/brain/curiosity/queue?session_id='+encodeURIComponent(SESSION)).then(function(r){return r.json()}),
+      fetch('/brain/curiosity/answered?session_id='+encodeURIComponent(SESSION)+'&limit=10').then(function(r){return r.json()})
+    ]).then(function(rs){
+      var pending=rs[0].questions||[];
+      var answered=rs[1].answered||[];
+      var html='<b>\uD83E\uDD14 Curiosity Questions</b><br>';
+      if(pending.length>0){
+        html+='<br><b>Pending ('+pending.length+'):</b><br>';
+        pending.forEach(function(q){
+          html+='\u2022 '+esc(q.question)+'<br>';
+        });
+      }else{
+        html+='<br>No pending questions.<br>';
+      }
+      if(answered.length>0){
+        html+='<br><b>Recently Answered ('+answered.length+'):</b><br>';
+        answered.forEach(function(qa){
+          html+='\u2022 <b>Q:</b> '+esc(qa.question)+'<br>';
+          html+='&nbsp;&nbsp;<b>A:</b> '+esc(qa.answer)+'<br>';
+        });
+      }
+      appendMsg('bot',html);
+    }).catch(function(e){appendMsg('bot','<span class="error-box">Error: '+esc(e.message)+'</span>')});
+    return;
+  }
+  if(text.toLowerCase()==='/interests'){
+    inp.value='';
+    appendMsg('user',esc(text));
+    fetch('/brain/curiosity/interests?session_id='+encodeURIComponent(SESSION))
+      .then(function(r){return r.json()})
+      .then(function(d){
+        var interests=d.interests||[];
+        var html='<b>\uD83C\uDFAF Bot Interests</b><br>';
+        if(interests.length>0){
+          html+='<br>';
+          interests.forEach(function(it,i){
+            var bar='\u2588'.repeat(Math.min(10,Math.round(it.score)));
+            var goal=it.score>=3?' \uD83C\uDFAF':'';
+            html+=(i+1)+'. <b>'+esc(it.topic)+'</b> — '+bar+' ('+it.score+')'+goal+'<br>';
+          });
+          html+='<br><span style="color:var(--text-dim)">\uD83C\uDFAF = auto-created exploration goal (score \u2265 3)</span>';
+        }else{
+          html+='<br>No interests yet. The bot will develop interests through curiosity questions.';
+        }
+        appendMsg('bot',html);
+      })
+      .catch(function(e){appendMsg('bot','<span class="error-box">Error: '+esc(e.message)+'</span>')});
+    return;
+  }
 
   busy=true;inp.value='';$('#chat-send').disabled=true;
+  resetCuriosityTimer();
   var role=teacherMode?'user teacher':'user';
   appendMsg(role,esc(text));
   saveChatMessage(role,esc(text));
@@ -1481,6 +1569,9 @@ function appendMsg(role,html){
   if(role.indexOf('teacher')>=0){
     div.style.borderLeft='3px solid var(--warning)';
     html='<span style="font-size:.68rem;color:var(--warning);font-weight:700;letter-spacing:.5px">\uD83D\uDCDA TEACHER</span><br>'+html;
+  }
+  if(role.indexOf('curiosity')>=0){
+    div.classList.add('curiosity');
   }
   div.innerHTML=html;
   log.appendChild(div);log.scrollTop=log.scrollHeight;
@@ -2079,11 +2170,171 @@ $('#autonomy-off').addEventListener('click',function(){$('#autonomy-status').tex
 $('#modal-close').addEventListener('click',function(){$('#modal-overlay').classList.remove('open')});
 $('#modal-overlay').addEventListener('click',function(e){if(e.target===e.currentTarget)e.currentTarget.classList.remove('open')});
 
+/* == Curiosity Engine ================================================= */
+var curiosityQueue=[];
+var curiosityTimer=null;
+var CURIOSITY_IDLE_MS=60000;  /* 60 seconds of inactivity */
+var lastActivityTs=Date.now();
+
+function resetCuriosityTimer(){
+  lastActivityTs=Date.now();
+  if(curiosityTimer)clearTimeout(curiosityTimer);
+  curiosityTimer=setTimeout(curiosityTick,CURIOSITY_IDLE_MS);
+}
+
+function curiosityTick(){
+  /* Only fire if the page is visible and we have a session */
+  if(document.hidden||!SESSION)return;
+  /* Only if enough idle time has passed */
+  if(Date.now()-lastActivityTs<CURIOSITY_IDLE_MS)return;
+  fetchCuriosityQuestion();
+}
+
+function fetchCuriosityQuestion(){
+  fetch('/brain/curiosity?session_id='+encodeURIComponent(SESSION))
+    .then(function(r){return r.json()})
+    .then(function(d){
+      if(d.has_question&&d.question){
+        /* Add to local queue if not already there */
+        if(!curiosityQueue.find(function(q){return q.id===d.id})){
+          curiosityQueue.push({
+            id:d.id,question:d.question,drive:d.curiosity_drive||0,
+            dopamine:d.dopamine||0,mood:d.mood||'',timestamp:Date.now()
+          });
+          renderCuriosityQueue();
+          /* Show as a chat message */
+          var html='<span style="font-size:.68rem;color:var(--accent);font-weight:700;letter-spacing:.5px">\uD83E\uDD14 CURIOSITY</span><br>'+esc(d.question);
+          html+='<div class="meta"><span class="badge-intuition" style="background:rgba(0,212,255,.12);color:var(--accent);border-color:rgba(0,212,255,.3)">drive: '+Math.round((d.curiosity_drive||0)*100)+'%</span>';
+          if(d.mood)html+='<span class="badge-mood">\uD83E\uDDE0 '+esc(d.mood)+'</span>';
+          html+='</div>';
+          appendMsg('bot curiosity',html);
+          saveChatMessage('bot curiosity',html);
+          /* Light up brain */
+          animateBrainPipeline(['hippocampus','neocortex','perception']);
+        }
+      }
+    })
+    .catch(function(){/* silent */})
+    .finally(function(){
+      /* Schedule next check */
+      curiosityTimer=setTimeout(curiosityTick,CURIOSITY_IDLE_MS);
+    });
+}
+
+function loadCuriosityQueue(){
+  fetch('/brain/curiosity/queue?session_id='+encodeURIComponent(SESSION))
+    .then(function(r){return r.json()})
+    .then(function(d){
+      curiosityQueue=(d.questions||[]).map(function(q){
+        return {id:q.id,question:q.question,drive:q.drive||0,
+          dopamine:q.dopamine||0,mood:q.mood||'',timestamp:q.timestamp*1000||Date.now()};
+      });
+      renderCuriosityQueue();
+    })
+    .catch(function(){});
+}
+
+function renderCuriosityQueue(){
+  var panel=$('#curiosity-queue-panel');
+  var container=$('#curiosity-queue');
+  var badge=$('#curiosity-badge');
+  var count=curiosityQueue.length;
+  $('#cq-count-label').textContent=count+' pending';
+  $('#cq-badge-count').textContent=count;
+  if(count>0){
+    badge.style.display='block';
+    panel.style.display='block';
+  }else{
+    badge.style.display='none';
+    panel.style.display='none';
+  }
+  container.innerHTML=curiosityQueue.map(function(q){
+    var t=new Date(q.timestamp).toLocaleTimeString();
+    return '<div class="curiosity-item" data-qid="'+esc(q.id)+'">'
+      +'<div class="cq-question">\uD83D\uDCA1 '+esc(q.question)+'</div>'
+      +'<div class="cq-meta">'+t+(q.drive?' \u00B7 drive: '+Math.round(q.drive*100)+'%':'')+'</div>'
+      +'<div class="cq-answer-row">'
+      +'<input class="cq-answer-input" placeholder="Your answer..." data-qid="'+esc(q.id)+'"/>'
+      +'<button class="cq-btn cq-btn-answer" onclick="answerCuriosityQuestion(\''+esc(q.id)+'\')">Answer</button>'
+      +'<button class="cq-btn cq-btn-dismiss" onclick="dismissCuriosityQuestion(\''+esc(q.id)+'\')">\u2715</button>'
+      +'</div></div>';
+  }).join('');
+}
+
+function answerCuriosityQuestion(qid){
+  var input=document.querySelector('.cq-answer-input[data-qid="'+qid+'"]');
+  if(!input)return;
+  var answer=input.value.trim();
+  if(!answer)return;
+  var q=curiosityQueue.find(function(x){return x.id===qid});
+  input.disabled=true;
+  fetch('/brain/curiosity/answer',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({session_id:SESSION,question_id:qid,answer:answer})
+  })
+    .then(function(r){return r.json()})
+    .then(function(d){
+      if(d.ok){
+        /* Show the Q+A in chat */
+        var html='<span style="font-size:.68rem;color:var(--success);font-weight:700;letter-spacing:.5px">\u2705 ANSWERED</span><br>'
+          +'<b>Q:</b> '+esc(q?q.question:d.question)+'<br>'
+          +'<b>A:</b> '+esc(answer);
+        if(d.topic)html+='<div class="meta"><span style="padding:2px 8px;border-radius:12px;font-size:.68rem;background:rgba(0,212,255,.1);color:var(--accent);border:1px solid rgba(0,212,255,.2)">topic: '+esc(d.topic)+'</span>';
+        if(d.interest_score>=3)html+='<span style="padding:2px 8px;border-radius:12px;font-size:.68rem;background:rgba(0,200,83,.1);color:var(--success);border:1px solid rgba(0,200,83,.2)">\uD83C\uDFAF interest \u2192 goal</span>';
+        if(d.topic||d.interest_score>=3)html+='</div>';
+        appendMsg('bot curiosity',html);
+        saveChatMessage('bot curiosity',html);
+        /* Remove from local queue */
+        curiosityQueue=curiosityQueue.filter(function(x){return x.id!==qid});
+        renderCuriosityQueue();
+        /* Light up brain — reward */
+        lightRegion('hypothalamus',1500);
+        setTimeout(function(){lightRegion('hippocampus',1200)},300);
+      }
+    })
+    .catch(function(e){input.disabled=false;alert('Error: '+e.message)});
+}
+
+function dismissCuriosityQuestion(qid){
+  fetch('/brain/curiosity/dismiss?session_id='+encodeURIComponent(SESSION)+'&question_id='+encodeURIComponent(qid),{method:'DELETE'})
+    .then(function(){
+      curiosityQueue=curiosityQueue.filter(function(x){return x.id!==qid});
+      renderCuriosityQueue();
+    })
+    .catch(function(){});
+}
+
+/* Badge click opens/scrolls to queue */
+$('#curiosity-badge').addEventListener('click',function(){
+  var panel=$('#curiosity-queue-panel');
+  panel.scrollIntoView({behavior:'smooth',block:'end'});
+});
+
+/* Reset timer on any user activity */
+document.addEventListener('keydown',resetCuriosityTimer);
+document.addEventListener('click',resetCuriosityTimer);
+
+/* Listen for curiosity events via WebSocket */
+var _origAddLiveEvent=addLiveEvent;
+addLiveEvent=function(m){
+  _origAddLiveEvent(m);
+  if(m.channel==='curiosity.question'&&m.data&&m.data.session_id===SESSION){
+    /* Reload queue to pick up the new question */
+    loadCuriosityQueue();
+  }
+};
+
+/* /questions slash command */
+/* (injected into sendMessage below) */
+
 /* -- Init ------------------------------------------------------------- */
 initBrainScene();
 initThumbRenderer();
 initModalRenderer();
 drawPixelFace('neutral');
+loadCuriosityQueue();
+resetCuriosityTimer();
 
 fetch('/health').then(function(r){
   if(!r.ok)throw new Error('offline');
