@@ -299,6 +299,9 @@ cmd_setup() {
     local gpu_name=""
     local gpu_vram=""
     local gpu_vendor=""   # "nvidia" | "amd" | "apple" | ""
+    local gpu_list=""     # newline-separated CSV: index,name,vram (for multi-GPU)
+    local gpu_count=0
+    local gpu_select="all"  # which GPUs to use: "all", "0", "1", "0,1", etc.
     local is_wsl=false
     local is_apple_silicon=false
 
@@ -355,18 +358,24 @@ cmd_setup() {
             nv_env="LD_LIBRARY_PATH=/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}"
         fi
 
-        # Try running nvidia-smi
+        # Try running nvidia-smi — enumerate ALL GPUs
         if [ -n "$nvidia_smi_cmd" ]; then
-            # Attempt 1: Run directly (works in most cases)
-            gpu_name=$(env $nv_env $nvidia_smi_cmd --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
-            gpu_vram=$(env $nv_env $nvidia_smi_cmd --query-gpu=memory.total --format=csv,noheader 2>/dev/null | head -1 || true)
+            # Attempt 1: Query structured CSV for all GPUs (index, name, VRAM)
+            gpu_list=$(env $nv_env $nvidia_smi_cmd --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null || true)
 
             # Attempt 2: On WSL2 under sudo, nvidia-smi may fail (WSL interop broken under root).
             #            Drop to the real user who invoked sudo.
-            if [ -z "$gpu_name" ] && [ -n "${SUDO_USER:-}" ] && $is_wsl; then
+            if [ -z "$gpu_list" ] && [ -n "${SUDO_USER:-}" ] && $is_wsl; then
                 info "nvidia-smi failed as root — trying as $SUDO_USER (WSL2 interop)..."
-                gpu_name=$(su - "$SUDO_USER" -c "env $nv_env $nvidia_smi_cmd --query-gpu=name --format=csv,noheader 2>/dev/null" 2>/dev/null | head -1 || true)
-                gpu_vram=$(su - "$SUDO_USER" -c "env $nv_env $nvidia_smi_cmd --query-gpu=memory.total --format=csv,noheader 2>/dev/null" 2>/dev/null | head -1 || true)
+                gpu_list=$(su - "$SUDO_USER" -c "env $nv_env $nvidia_smi_cmd --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null" 2>/dev/null || true)
+            fi
+
+            # Parse the GPU list
+            if [ -n "$gpu_list" ]; then
+                gpu_count=$(echo "$gpu_list" | wc -l | tr -d ' ')
+                # Use first GPU for display defaults
+                gpu_name=$(echo "$gpu_list" | head -1 | cut -d',' -f2 | sed 's/^ *//')
+                gpu_vram=$(echo "$gpu_list" | head -1 | cut -d',' -f3 | sed 's/^ *//')
             fi
 
             # Attempt 3: Parse human-readable nvidia-smi table output (older drivers)
@@ -379,6 +388,7 @@ cmd_setup() {
                 if [ -n "$smi_output" ]; then
                     gpu_name=$(echo "$smi_output" | grep -oE 'NVIDIA [A-Za-z0-9 ]+' | head -1 || true)
                     gpu_vram=$(echo "$smi_output" | grep -oE '[0-9]+MiB\s*/\s*[0-9]+MiB' | head -1 | sed 's|.*/ *||' || true)
+                    gpu_count=1
                 fi
             fi
         fi
@@ -418,10 +428,18 @@ cmd_setup() {
     # ── AMD ROCm GPU Detection ───────────────────────────────────────────────
     if [ -z "$gpu_vendor" ] && [ "$OS" != "macos" ]; then
         local amd_gpu_name=""
+        local amd_gpu_list=""
 
-        # Method 1: rocm-smi
+        # Method 1: rocm-smi — enumerate all AMD GPUs
         if command -v rocm-smi &>/dev/null; then
-            amd_gpu_name=$(rocm-smi --showproductname 2>/dev/null | grep -i 'card' | head -1 | sed 's/.*: *//' || true)
+            # Try CSV output for all GPUs
+            amd_gpu_list=$(rocm-smi --showproductname 2>/dev/null | grep -i 'card' | sed 's/.*: *//' || true)
+            if [ -n "$amd_gpu_list" ]; then
+                amd_gpu_name=$(echo "$amd_gpu_list" | head -1)
+                gpu_count=$(echo "$amd_gpu_list" | wc -l | tr -d ' ')
+            else
+                amd_gpu_name=$(rocm-smi --showproductname 2>/dev/null | grep -i 'card' | head -1 | sed 's/.*: *//' || true)
+            fi
         fi
 
         # Method 2: rocminfo
@@ -445,12 +463,17 @@ cmd_setup() {
             fi
         fi
 
-        # Method 4: lspci fallback for AMD discrete GPUs
+        # Method 4: lspci fallback for AMD discrete GPUs (multi-GPU aware)
         if [ -z "$amd_gpu_name" ] && ! $is_wsl && command -v lspci &>/dev/null; then
-            local lspci_amd
-            lspci_amd=$(lspci 2>/dev/null | grep -iE 'radeon|amd.*navi|amd.*vega|amd.*rx' | grep -iE 'vga|3d|display' | head -1 || true)
-            if [ -n "$lspci_amd" ]; then
-                amd_gpu_name=$(echo "$lspci_amd" | sed 's/.*: //')
+            local lspci_amd_all
+            lspci_amd_all=$(lspci 2>/dev/null | grep -iE 'radeon|amd.*navi|amd.*vega|amd.*rx' | grep -iE 'vga|3d|display' || true)
+            if [ -n "$lspci_amd_all" ]; then
+                amd_gpu_name=$(echo "$lspci_amd_all" | head -1 | sed 's/.*: //')
+                local _amd_count
+                _amd_count=$(echo "$lspci_amd_all" | wc -l | tr -d ' ')
+                if [ "$_amd_count" -gt "$gpu_count" ] 2>/dev/null; then
+                    gpu_count="$_amd_count"
+                fi
             fi
         fi
 
@@ -458,6 +481,32 @@ cmd_setup() {
             gpu_vendor="amd"
             gpu_name="$amd_gpu_name"
             gpu_vram="unknown (use rocm-smi for details)"
+            if [ "$gpu_count" -lt 1 ] 2>/dev/null; then gpu_count=1; fi
+        fi
+    fi
+
+    # ── Intel iGPU Detection (informational) ─────────────────────────────────
+    # Intel iGPUs are NOT supported by Ollama (no SYCL backend) or CUDA/ROCm.
+    # We detect them only to inform the user so they don't wonder why it's not used.
+    if [ "$OS" != "macos" ]; then
+        local intel_gpu_name=""
+        if ! $is_wsl && command -v lspci &>/dev/null; then
+            intel_gpu_name=$(lspci 2>/dev/null | grep -iE 'intel.*vga|intel.*display|intel.*graphics' | head -1 | sed 's/.*: //' || true)
+        fi
+        # WSL2: check /sys vendor files
+        if [ -z "$intel_gpu_name" ]; then
+            local drm_card
+            for drm_card in /sys/class/drm/card*/device/vendor; do
+                if [ -f "$drm_card" ] && grep -q '0x8086' "$drm_card" 2>/dev/null; then
+                    intel_gpu_name="Intel Integrated Graphics"
+                    break
+                fi
+            done
+        fi
+        if [ -n "$intel_gpu_name" ]; then
+            info "Intel GPU detected: $intel_gpu_name"
+            info "Note: Intel iGPUs are not supported by Ollama or CUDA/ROCm."
+            info "      Ollama will use your NVIDIA/AMD dGPU if available, otherwise CPU."
         fi
     fi
 
@@ -465,10 +514,23 @@ cmd_setup() {
     if [ "$gpu_vendor" = "nvidia" ]; then
         echo ""
         echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-        echo -e "${GREEN}║  NVIDIA dGPU DETECTED                               ║${NC}"
-        echo -e "${GREEN}║  ${gpu_name}${NC}"
-        if [ "$gpu_vram" != "unknown" ] && [ -n "$gpu_vram" ]; then
-            echo -e "${GREEN}║  VRAM: ${gpu_vram}${NC}"
+        if [ "$gpu_count" -gt 1 ] 2>/dev/null; then
+            echo -e "${GREEN}║  ${gpu_count} NVIDIA GPUs DETECTED                              ║${NC}"
+        else
+            echo -e "${GREEN}║  NVIDIA dGPU DETECTED                               ║${NC}"
+        fi
+        # List all GPUs if we have structured data
+        if [ -n "$gpu_list" ] && [ "$gpu_count" -gt 1 ] 2>/dev/null; then
+            echo "$gpu_list" | while IFS=',' read -r _idx _gname _gvram; do
+                _gname=$(echo "$_gname" | sed 's/^ *//')
+                _gvram=$(echo "$_gvram" | sed 's/^ *//')
+                echo -e "${GREEN}║  [${_idx}] ${_gname} — ${_gvram}${NC}"
+            done
+        else
+            echo -e "${GREEN}║  ${gpu_name}${NC}"
+            if [ "$gpu_vram" != "unknown" ] && [ -n "$gpu_vram" ]; then
+                echo -e "${GREEN}║  VRAM: ${gpu_vram}${NC}"
+            fi
         fi
         if $is_wsl; then
             echo -e "${GREEN}║  Runtime: WSL2 (GPU passthrough)                    ║${NC}"
@@ -490,6 +552,27 @@ cmd_setup() {
             *)
                 gpu_mode="gpu"
                 success "Selected: GPU mode ($gpu_name)"
+
+                # ── Multi-GPU selection (NVIDIA) ────────────────────────
+                if [ -n "$gpu_list" ] && [ "$gpu_count" -gt 1 ] 2>/dev/null; then
+                    echo ""
+                    info "Which GPU(s) should Ollama and the Learner use?"
+                    echo ""
+                    echo "$gpu_list" | while IFS=',' read -r _idx _gname _gvram; do
+                        _gname=$(echo "$_gname" | sed 's/^ *//')
+                        _gvram=$(echo "$_gvram" | sed 's/^ *//')
+                        echo "  [$(echo $_idx | tr -d ' ')] $_gname — $_gvram"
+                    done
+                    echo "  [all] Use all $gpu_count GPUs"
+                    echo ""
+                    read -rp "GPU selection (0, 1, 0,1, or all) [all]: " gpu_select
+                    gpu_select=$(echo "${gpu_select:-all}" | tr -d ' ')
+                    if [ "$gpu_select" = "all" ]; then
+                        success "Using all $gpu_count NVIDIA GPUs"
+                    else
+                        success "Using GPU(s): $gpu_select"
+                    fi
+                fi
 
                 # Check nvidia-container-toolkit / Docker GPU support
                 # Detects Docker install method (snap, systemd, Desktop, service)
@@ -544,7 +627,11 @@ cmd_setup() {
     elif [ "$gpu_vendor" = "amd" ]; then
         echo ""
         echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-        echo -e "${GREEN}║  AMD GPU DETECTED (ROCm)                            ║${NC}"
+        if [ "$gpu_count" -gt 1 ] 2>/dev/null; then
+            echo -e "${GREEN}║  ${gpu_count} AMD GPUs DETECTED (ROCm)                          ║${NC}"
+        else
+            echo -e "${GREEN}║  AMD GPU DETECTED (ROCm)                            ║${NC}"
+        fi
         echo -e "${GREEN}║  ${gpu_name}${NC}"
         echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
         echo ""
@@ -564,6 +651,27 @@ cmd_setup() {
                 gpu_mode="gpu"
                 success "Selected: GPU mode — AMD ROCm ($gpu_name)"
                 info "Note: Learner will be built with ROCm PyTorch (rocm6.0)"
+
+                # ── Multi-GPU selection (AMD) ────────────────────────────
+                if [ "$gpu_count" -gt 1 ] 2>/dev/null; then
+                    echo ""
+                    info "Which GPU(s) should Ollama and the Learner use?"
+                    echo ""
+                    local _amd_i=0
+                    echo "$amd_gpu_list" | while read -r _agname; do
+                        echo "  [$_amd_i] $_agname"
+                        _amd_i=$((_amd_i + 1))
+                    done
+                    echo "  [all] Use all $gpu_count GPUs"
+                    echo ""
+                    read -rp "GPU selection (0, 1, 0,1, or all) [all]: " gpu_select
+                    gpu_select=$(echo "${gpu_select:-all}" | tr -d ' ')
+                    if [ "$gpu_select" = "all" ]; then
+                        success "Using all $gpu_count AMD GPUs"
+                    else
+                        success "Using GPU(s): $gpu_select"
+                    fi
+                fi
                 ;;
         esac
     elif $is_apple_silicon; then
@@ -592,7 +700,7 @@ cmd_setup() {
     # ── Ollama configuration ─────────────────────────────────────────────────
     # Goal: OLLAMA_HOST=0.0.0.0 (Docker access), KEEP_ALIVE=-1 (never unload),
     #        NUM_PARALLEL=4, and optionally NUM_GPU=0 for CPU mode.
-    _configure_ollama "$gpu_mode"
+    _configure_ollama "$gpu_mode" "$gpu_vendor" "$gpu_select"
 
     # ── Write GPU/CPU choice to .env ─────────────────────────────────────────
     local torch_url
@@ -666,6 +774,30 @@ ENVEOF
     fi
     success "Learner PyTorch: $gpu_mode ($torch_url)"
 
+    # Write GPU selection to .env for Docker (NVIDIA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES)
+    if [ "$gpu_mode" = "gpu" ] && [ "$gpu_select" != "all" ] && [ -n "$gpu_select" ]; then
+        if [ "$gpu_vendor" = "amd" ]; then
+            if grep -q '^HIP_VISIBLE_DEVICES=' .env 2>/dev/null; then
+                sed_inplace "s|^HIP_VISIBLE_DEVICES=.*|HIP_VISIBLE_DEVICES=$gpu_select|" .env
+            else
+                echo "HIP_VISIBLE_DEVICES=$gpu_select" >> .env
+            fi
+            info "AMD GPU selection: HIP_VISIBLE_DEVICES=$gpu_select"
+        else
+            if grep -q '^NVIDIA_VISIBLE_DEVICES=' .env 2>/dev/null; then
+                sed_inplace "s|^NVIDIA_VISIBLE_DEVICES=.*|NVIDIA_VISIBLE_DEVICES=$gpu_select|" .env
+            else
+                echo "NVIDIA_VISIBLE_DEVICES=$gpu_select" >> .env
+            fi
+            if grep -q '^CUDA_VISIBLE_DEVICES=' .env 2>/dev/null; then
+                sed_inplace "s|^CUDA_VISIBLE_DEVICES=.*|CUDA_VISIBLE_DEVICES=$gpu_select|" .env
+            else
+                echo "CUDA_VISIBLE_DEVICES=$gpu_select" >> .env
+            fi
+            info "NVIDIA GPU selection: CUDA_VISIBLE_DEVICES=$gpu_select"
+        fi
+    fi
+
     # Pull Ollama models — wait for Ollama to be ready first
     # (systemd restart above may take a moment)
     info "Waiting for Ollama to be ready..."
@@ -728,9 +860,19 @@ ENVEOF
 # ── Ollama Configuration (per-platform) ──────────────────────────────────────
 _configure_ollama() {
     local gpu_mode="$1"
+    local gpu_vendor="${2:-}"
+    local gpu_select="${3:-all}"
     local ollama_gpu_env=""
+    local ollama_visible_env=""
     if [ "$gpu_mode" = "cpu" ]; then
         ollama_gpu_env='OLLAMA_NUM_GPU=0'
+    elif [ "$gpu_select" != "all" ] && [ -n "$gpu_select" ]; then
+        # User selected specific GPU(s) — set CUDA_VISIBLE_DEVICES or HIP_VISIBLE_DEVICES
+        if [ "$gpu_vendor" = "amd" ]; then
+            ollama_visible_env="HIP_VISIBLE_DEVICES=$gpu_select"
+        else
+            ollama_visible_env="CUDA_VISIBLE_DEVICES=$gpu_select"
+        fi
     fi
 
     case "$OS" in
@@ -748,7 +890,7 @@ _configure_ollama() {
                     needs_update=true
                 fi
 
-                if $needs_update || [ -n "$ollama_gpu_env" ]; then
+                if $needs_update || [ -n "$ollama_gpu_env" ] || [ -n "$ollama_visible_env" ]; then
                     info "Configuring Ollama via systemd (0.0.0.0, keep_alive=-1, num_parallel=4, mode=$gpu_mode)..."
                     sudo mkdir -p "$override_dir"
                     {
@@ -758,6 +900,9 @@ _configure_ollama() {
                         echo 'Environment="OLLAMA_NUM_PARALLEL=4"'
                         if [ -n "$ollama_gpu_env" ]; then
                             echo "Environment=\"$ollama_gpu_env\""
+                        fi
+                        if [ -n "$ollama_visible_env" ]; then
+                            echo "Environment=\"$ollama_visible_env\""
                         fi
                     } | sudo tee "$override_file" > /dev/null
                     sudo systemctl daemon-reload
@@ -773,6 +918,9 @@ _configure_ollama() {
                 info "  export OLLAMA_NUM_PARALLEL=4"
                 if [ -n "$ollama_gpu_env" ]; then
                     info "  export $ollama_gpu_env"
+                fi
+                if [ -n "$ollama_visible_env" ]; then
+                    info "  export $ollama_visible_env"
                 fi
                 info "  Then restart: ollama serve"
             fi

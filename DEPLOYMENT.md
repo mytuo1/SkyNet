@@ -179,18 +179,47 @@ ollama pull phi4                # 9GB — local inference (optional)
 
 ## GPU / CPU Configuration
 
-`./skynet.sh setup` auto-detects your GPU and asks interactively:
+`./skynet.sh setup` auto-detects your GPU(s) and asks interactively:
 
 ```
 ╔══════════════════════════════════════════════════════╗
-║  dGPU DETECTED                                      ║
-║  NVIDIA GeForce RTX 3080 Ti Laptop GPU              ║
-║  VRAM: 16384 MiB                                    ║
+║  2 NVIDIA GPUs DETECTED                              ║
+║  [0] NVIDIA GeForce RTX 3080 Ti — 16384 MiB         ║
+║  [1] NVIDIA GeForce RTX 3060 — 12288 MiB            ║
 ║  Runtime: WSL2 (GPU passthrough)                    ║
 ╚══════════════════════════════════════════════════════╝
 
-Use GPU acceleration? [Y/n]:
+Use GPU acceleration? [Y/n]: y
+
+Which GPU(s) should Ollama and the Learner use?
+
+  [0] NVIDIA GeForce RTX 3080 Ti — 16384 MiB
+  [1] NVIDIA GeForce RTX 3060 — 12288 MiB
+  [all] Use all 2 GPUs
+
+GPU selection (0, 1, 0,1, or all) [all]:
 ```
+
+### Multi-GPU Selection
+
+When multiple GPUs are detected, you can choose which ones to use:
+- **`all`** (default): Use all detected GPUs
+- **`0`**: Use only GPU 0
+- **`1`**: Use only GPU 1
+- **`0,1`**: Use GPUs 0 and 1 (but not others)
+
+This sets the following environment variables:
+
+| Variable | NVIDIA | AMD | Where |
+|----------|--------|-----|-------|
+| **Ollama** | `CUDA_VISIBLE_DEVICES` | `HIP_VISIBLE_DEVICES` | systemd override |
+| **Docker/Learner** | `NVIDIA_VISIBLE_DEVICES` | `HIP_VISIBLE_DEVICES` | `.env` |
+
+### Intel GPU Note
+
+Intel integrated GPUs (iGPUs) are detected and reported but **not supported** by
+Ollama (no SYCL/oneAPI backend) or CUDA/ROCm. If you have both an Intel iGPU and
+an NVIDIA/AMD dGPU, Ollama will automatically use the discrete GPU.
 
 ### What GPU mode changes
 
@@ -271,6 +300,65 @@ Same as WSL2 step 3 above. The `./skynet.sh setup` wizard will guide you.
 ```bash
 ./skynet.sh setup    # re-run — select different mode
 ./skynet.sh rebuild  # rebuild containers with new PyTorch (CUDA vs CPU)
+```
+
+---
+
+## Web Search Integration
+
+SkyNet's reasoning engine can search the web when it needs current information,
+evidence for claims, or to verify uncertain facts. The model decides autonomously
+when to search — it uses its memory first and only searches when needed.
+
+### Supported Providers
+
+| Provider | API | Search Tool | Notes |
+|----------|-----|-------------|-------|
+| **OpenAI** | Responses API (`/v1/responses`) | `web_search` | GPT-5.4, GPT-5.4-mini, GPT-5.4-nano |
+| **Anthropic** | Messages API | `web_search_20250305` | Claude Sonnet 4, Claude Opus |
+| **xAI** | Responses API (`/v1/responses`) | `web_search` | Grok-4, Grok-4-20 |
+| **Gemini** | Generative AI API | `google_search` grounding | Gemini 2.5 Pro, Gemini 2.0 Flash |
+| **Ollama** | — | Not supported | Falls back to normal completion |
+| **DeepSeek/Groq/OpenRouter** | — | Not supported | Falls back to normal completion |
+
+### Configuration
+
+```bash
+# .env — enabled by default
+WEB_SEARCH_ENABLED=true
+```
+
+### Behavior
+
+- **Memory first**: The model checks hippocampus (episodic) and neocortex (semantic)
+  memories before deciding whether to search
+- **Smart triggers**: Searches when the user asks to look something up, when it needs
+  current info, or when it needs evidence to support/refute a claim
+- **Teacher-mode trust gating**: In normal mode, web search results are stored as
+  "unverified" (confidence 0.5). Only in **teacher mode** are findings stored as
+  verified knowledge (confidence 0.85). This prevents random users from changing
+  the bot's beliefs.
+- **Trace visibility**: Every search appears in the pipeline trace with:
+  - `queries`: What search queries the model used
+  - `sources`: Pages consulted
+  - `citations`: URLs cited in the response
+
+### Example Trace Output
+
+```json
+{
+  "web_search": {
+    "searched": true,
+    "queries": ["latest quantum computing breakthroughs 2026"],
+    "sources": [
+      {"url": "https://...", "title": "Quantum Computing Advances..."},
+      {"url": "https://...", "title": "IBM 1000-Qubit Processor..."}
+    ],
+    "citations": [
+      {"url": "https://...", "title": "Nature: Quantum Error Correction"}
+    ]
+  }
+}
 ```
 
 ---
