@@ -679,6 +679,29 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8020/health')"]
       <<: *common-healthcheck
 
+  # ── Embed Queue (centralized embedding — Redis Streams MQ + cache) ─────
+  # All embedding calls go through this service instead of hitting Ollama directly.
+  # Provides: Redis cache (6h TTL), in-flight dedup, async queue via Redis Streams.
+  # Docker logs show every Ollama call with timing, source service, and cache status.
+  embed-queue:
+    build:
+      context: .
+      dockerfile: services/embed-queue/Dockerfile
+    container_name: brain_embed_queue
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - OLLAMA_URL=${OLLAMA_URL}
+      - OLLAMA_EMBED_MODEL=${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      - EMBED_CACHE_TTL=${EMBED_CACHE_TTL:-21600}
+      - EMBED_QUEUE_WORKERS=${EMBED_QUEUE_WORKERS:-2}
+    <<: [*common-network, *common-restart, *common-extra-hosts]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8021/health')"]
+      <<: *common-healthcheck
+
   # ═══════════════════════════════════════════════════════════════════════════
   # THALAMUS — Master Orchestrator (starts last, depends on everything)
   # ═══════════════════════════════════════════════════════════════════════════
@@ -717,6 +740,7 @@ services:
       - OLLAMA_URL=${OLLAMA_URL}
       - HYPOTHALAMUS_URL=${HYPOTHALAMUS_URL}
       - INSIGHT_ENGINE_URL=${INSIGHT_ENGINE_URL}
+      - EMBED_QUEUE_URL=${EMBED_QUEUE_URL}
     <<: [*common-network, *common-restart, *common-extra-hosts]
     depends_on:
       amygdala:
@@ -756,6 +780,8 @@ services:
       hypothalamus:
         condition: service_healthy
       insight-engine:
+        condition: service_healthy
+      embed-queue:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

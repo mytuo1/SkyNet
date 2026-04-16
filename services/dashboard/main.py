@@ -44,6 +44,7 @@ ALL_SERVICES = {
     "causal-graph": 8012, "simulator": 8013, "metacognition": 8014,
     "goals": 8015, "learner": 8016, "vision": 8017, "knobs": 8090,
     "autonomy": 8018, "hypothalamus": 8019, "insight-engine": 8020,
+    "embed-queue": 8021,
     "dashboard": 8080,
     # Infrastructure
     "gateway": 80, "redis": 6379, "elasticsearch": 9200, "edgedb": 5656,

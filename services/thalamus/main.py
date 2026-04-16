@@ -94,6 +94,8 @@ SERVICES = {
     # Hormonal / Insight services
     "hypothalamus":    os.getenv("HYPOTHALAMUS_URL",      "http://hypothalamus:8019"),
     "insight_engine":  os.getenv("INSIGHT_ENGINE_URL",    "http://insight-engine:8020"),
+    # Embed queue (centralized embedding service)
+    "embed_queue":     os.getenv("EMBED_QUEUE_URL",      "http://embed-queue:8021"),
     # Auxiliary services (not called during processing but health-checked)
     "dashboard":       os.getenv("DASHBOARD_URL",         "http://dashboard:8080"),
     "autonomy":        os.getenv("AUTONOMY_URL",          "http://autonomy:8018"),

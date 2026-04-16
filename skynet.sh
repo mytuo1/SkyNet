@@ -159,6 +159,90 @@ cmd_setup() {
         success "Ollama already installed"
     fi
 
+    # ── GPU / CPU detection and interactive prompt ───────────────────────────
+    local gpu_mode="cpu"
+    local gpu_name=""
+    local gpu_vram=""
+    local is_wsl=false
+
+    # Detect WSL
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        is_wsl=true
+        info "Detected: Windows Subsystem for Linux (WSL2)"
+    fi
+
+    # Detect NVIDIA GPU
+    if command -v nvidia-smi &>/dev/null; then
+        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
+        gpu_vram=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null | head -1 || true)
+    fi
+
+    if [ -n "$gpu_name" ]; then
+        echo ""
+        echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║  dGPU DETECTED                                      ║${NC}"
+        echo -e "${GREEN}║  ${gpu_name}${NC}"
+        echo -e "${GREEN}║  VRAM: ${gpu_vram}${NC}"
+        if $is_wsl; then
+            echo -e "${GREEN}║  Runtime: WSL2 (GPU passthrough)                    ║${NC}"
+        fi
+        echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo "  GPU mode:  Ollama uses your GPU for embeddings (fast)"
+        echo "             Learner uses CUDA for local model inference"
+        echo "             Requires: nvidia-container-toolkit (for Docker GPU)"
+        echo ""
+        echo "  CPU mode:  Everything runs on CPU (slower but no GPU drivers needed)"
+        echo ""
+        read -rp "Use GPU acceleration? [Y/n]: " gpu_choice
+        case "${gpu_choice,,}" in
+            n|no)
+                gpu_mode="cpu"
+                info "Selected: CPU mode"
+                ;;
+            *)
+                gpu_mode="gpu"
+                success "Selected: GPU mode ($gpu_name)"
+
+                # Check nvidia-container-toolkit
+                if ! docker info 2>/dev/null | grep -qi nvidia; then
+                    warn "nvidia-container-toolkit not detected in Docker"
+                    if $is_wsl; then
+                        echo ""
+                        info "To enable GPU in Docker on WSL2:"
+                        info "  1. Install NVIDIA drivers on Windows (not inside WSL)"
+                        info "  2. Inside WSL, run:"
+                        info "     curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+                        info "     curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
+                        info "     sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
+                        info "     sudo nvidia-ctk runtime configure --runtime=docker"
+                        info "     sudo systemctl restart docker"
+                    else
+                        echo ""
+                        info "Install nvidia-container-toolkit:"
+                        info "  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+                        info "  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
+                        info "  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
+                        info "  sudo nvidia-ctk runtime configure --runtime=docker"
+                        info "  sudo systemctl restart docker"
+                    fi
+                    echo ""
+                    read -rp "Continue with GPU mode anyway? [Y/n]: " cont
+                    case "${cont,,}" in
+                        n|no) gpu_mode="cpu"; warn "Falling back to CPU mode" ;;
+                    esac
+                fi
+                ;;
+        esac
+    else
+        info "No NVIDIA GPU detected — using CPU mode"
+        if $is_wsl; then
+            info "If you have an NVIDIA GPU, install drivers on Windows first"
+            info "Then 'nvidia-smi' should work inside WSL2"
+        fi
+        gpu_mode="cpu"
+    fi
+
     # ── Ollama binding: ensure it listens on 0.0.0.0 for Docker access ──────
     # By default Ollama binds to 127.0.0.1, which is unreachable from Docker
     # containers. On Linux with systemd we create a drop-in override.
@@ -174,21 +258,39 @@ cmd_setup() {
         elif ! grep -q 'OLLAMA_KEEP_ALIVE' "$override_file" 2>/dev/null; then
             needs_update=true
         fi
-        if $needs_update; then
-            info "Configuring Ollama (0.0.0.0, keep_alive=-1, num_parallel=4)..."
+
+        # Build the override content based on GPU/CPU choice
+        local ollama_gpu_env=""
+        if [ "$gpu_mode" = "cpu" ]; then
+            ollama_gpu_env='Environment="OLLAMA_NUM_GPU=0"'
+        fi
+
+        if $needs_update || [ -n "$ollama_gpu_env" ]; then
+            info "Configuring Ollama (0.0.0.0, keep_alive=-1, num_parallel=4, mode=$gpu_mode)..."
             sudo mkdir -p "$override_dir"
-            cat <<'EOF' | sudo tee "$override_file" > /dev/null
-[Service]
-Environment="OLLAMA_HOST=0.0.0.0"
-Environment="OLLAMA_KEEP_ALIVE=-1"
-Environment="OLLAMA_NUM_PARALLEL=4"
-EOF
+            {
+                echo "[Service]"
+                echo 'Environment="OLLAMA_HOST=0.0.0.0"'
+                echo 'Environment="OLLAMA_KEEP_ALIVE=-1"'
+                echo 'Environment="OLLAMA_NUM_PARALLEL=4"'
+                if [ -n "$ollama_gpu_env" ]; then
+                    echo "$ollama_gpu_env"
+                fi
+            } | sudo tee "$override_file" > /dev/null
             sudo systemctl daemon-reload
             sudo systemctl restart ollama 2>/dev/null || true
-            success "Ollama configured (0.0.0.0 + keep_alive=-1 + num_parallel=4)"
+            success "Ollama configured (0.0.0.0 + keep_alive=-1 + num_parallel=4 + $gpu_mode)"
         else
             success "Ollama already configured for Docker access"
         fi
+    fi
+
+    # ── Write GPU/CPU choice to .env ─────────────────────────────────────────
+    local torch_url
+    if [ "$gpu_mode" = "gpu" ]; then
+        torch_url="https://download.pytorch.org/whl/cu121"
+    else
+        torch_url="https://download.pytorch.org/whl/cpu"
     fi
 
     # Create .env from template
@@ -241,6 +343,16 @@ ENVEOF
         success ".env already exists"
     fi
 
+    # Inject TORCH_INDEX_URL into .env
+    if grep -q '^TORCH_INDEX_URL=' .env 2>/dev/null; then
+        sed -i "s|^TORCH_INDEX_URL=.*|TORCH_INDEX_URL=${torch_url}|" .env
+    else
+        echo "" >> .env
+        echo "# GPU/CPU — set by ./skynet.sh setup (gpu_mode=$gpu_mode)" >> .env
+        echo "TORCH_INDEX_URL=${torch_url}" >> .env
+    fi
+    success "Learner PyTorch: $gpu_mode ($torch_url)"
+
     # Pull Ollama models
     info "Pulling Ollama embedding model..."
     ollama pull nomic-embed-text 2>/dev/null && success "nomic-embed-text ready" || warn "Could not pull nomic-embed-text"
@@ -250,6 +362,14 @@ ENVEOF
 
     echo ""
     success "Setup complete! Edit .env with your API keys, then run: ./skynet.sh start"
+    echo ""
+    info "  GPU mode: $gpu_mode"
+    if [ -n "$gpu_name" ]; then
+        info "  GPU:      $gpu_name ($gpu_vram)"
+    fi
+    if $is_wsl; then
+        info "  WSL2:     yes (GPU passthrough$([ "$gpu_mode" = "gpu" ] && echo " enabled" || echo " disabled"))"
+    fi
 }
 
 cmd_start() {
@@ -259,7 +379,8 @@ cmd_start() {
     info "Building containers..."
     compose_build
 
-    info "Starting databases..."
+    # ── Phase 1: Infrastructure first (always hot, zero cold starts) ─────────
+    info "Starting infrastructure (Redis, Elasticsearch, EdgeDB)..."
     $COMPOSE up -d redis elasticsearch edgedb
 
     info "Waiting for databases to be healthy..."
@@ -277,6 +398,32 @@ cmd_start() {
     info "Initializing databases..."
     $COMPOSE up db-init 2>/dev/null || warn "db-init may have already run"
 
+    # ── Phase 2: Warm up Ollama (never cold, never unloading) ────────────────
+    info "Warming up Ollama (pre-loading embed model)..."
+    local ollama_url
+    ollama_url=$(grep '^OLLAMA_URL=' .env 2>/dev/null | cut -d= -f2- || echo "http://localhost:11434")
+    ollama_url="${ollama_url:-http://localhost:11434}"
+    # Convert Docker internal URL to localhost for host-side curl
+    ollama_url=$(echo "$ollama_url" | sed 's|host.docker.internal|localhost|')
+    local embed_model
+    embed_model=$(grep '^OLLAMA_EMBED_MODEL=' .env 2>/dev/null | cut -d= -f2- || echo "nomic-embed-text")
+    embed_model="${embed_model:-nomic-embed-text}"
+    if curl -sf "${ollama_url}/api/embeddings" -d "{\"model\":\"${embed_model}\",\"prompt\":\"warmup\",\"keep_alive\":-1}" &>/dev/null; then
+        success "Ollama embed model loaded (${embed_model}, keep_alive=-1)"
+    else
+        warn "Could not warm up Ollama — embeddings may be slow on first call"
+    fi
+    # Also warm up the local inference model
+    local local_model
+    local_model=$(grep '^OLLAMA_LOCAL_MODEL=' .env 2>/dev/null | cut -d= -f2- || echo "phi4")
+    local_model="${local_model:-phi4}"
+    if curl -sf "${ollama_url}/api/generate" -d "{\"model\":\"${local_model}\",\"prompt\":\"hi\",\"keep_alive\":-1}" &>/dev/null; then
+        success "Ollama local model loaded (${local_model}, keep_alive=-1)"
+    else
+        info "Ollama local model warmup skipped (${local_model} — may not be pulled)"
+    fi
+
+    # ── Phase 3: Start all services ──────────────────────────────────────────
     info "Starting all services..."
     $COMPOSE up -d
 
@@ -297,17 +444,18 @@ cmd_start() {
     fi
 
     echo ""
-    success "SkyNet is online"
+    success "SkyNet is online — running red-hot"
     echo ""
     info "  Dashboard:  $GATEWAY_URL              (main UI)"
     info "  Health:     $GATEWAY_URL/health        (system health)"
-    info "  Knobs API:  $GATEWAY_URL/knobs/current (behavioral parameters)"
+    info "  Embed Stats:$GATEWAY_URL/brain/embed-queue/stats"
     info ""
     info "Management:"
     info "  ./skynet.sh stop      Graceful shutdown"
-    info "  ./skynet.sh restart   Stop + start"
+    info "  ./skynet.sh restart   Quick restart (no rebuild, keeps data)"
+    info "  ./skynet.sh update    Git pull + rebuild + restart"
     info "  ./skynet.sh status    Service health overview"
-    info "  ./skynet.sh logs      Tail all logs"
+    info "  ./skynet.sh logs      Tail all logs (or ./skynet.sh logs embed-queue)"
     info ""
     info "Try: curl -X POST $GATEWAY_URL/brain/process -H 'Content-Type: application/json' -d '{\"session_id\":\"s1\",\"user_input\":\"Hello\"}'"
 }
@@ -462,28 +610,31 @@ cmd_help() {
 Usage: ./skynet.sh <command> [options]
 
 Commands:
-  start       Full startup: check deps, build, init DBs, start all services
-  stop        Graceful shutdown of all services
-  restart     Quick restart (preserves all data and conversations)
-  status      Show all service health
-  logs [svc]  Tail logs for a service (or all)
+  setup       First-time setup wizard (installs Docker, Ollama, GPU/CPU config, .env)
+  start       Full startup: build, init DBs, warm Ollama, start all 24 services
+  stop        Graceful shutdown of all services (data preserved)
+  restart     Quick restart — no rebuild, keeps all data and conversations
+  update      Git pull + rebuild changed services + restart (use after code changes)
+  status      Show all service health and brain diagnostics
+  logs [svc]  Tail logs for a service (or all). Try: ./skynet.sh logs embed-queue
   dashboard   Open the dashboard in your browser
-  think       Activate autonomy mode
-  setup       First-time setup wizard (installs Docker, Ollama, creates .env)
-  update      Git pull + rebuild changed services
-  rebuild     Wipe databases and rebuild fresh (new environment)
+  think       Activate autonomy mode (self-reflective thinking)
+  rebuild     Full wipe: destroy databases + rebuild all containers from scratch
   reset       Factory reset (alias for rebuild)
   help        Show this help message
 
-Examples:
-  ./skynet.sh setup          # First time? Start here
-  ./skynet.sh start          # Launch everything
-  ./skynet.sh restart        # Quick restart, keeps conversations
-  ./skynet.sh status         # Check system health
-  ./skynet.sh logs thalamus  # Watch the orchestrator
-  ./skynet.sh think          # Enable autonomous thinking
-  ./skynet.sh dashboard      # Open the web dashboard
-  ./skynet.sh rebuild        # Fresh environment, wipes all data
+Scenarios:
+  First install:          ./skynet.sh setup && ./skynet.sh start
+  After code changes:     ./skynet.sh update
+  Quick restart (no build): ./skynet.sh restart
+  Config change (.env):   ./skynet.sh restart
+  Wipe and reinstall:     ./skynet.sh rebuild
+  After system reboot:    ./skynet.sh start (Ollama auto-starts via systemd)
+
+Infrastructure:
+  Ollama runs on the HOST (not in Docker) with keep_alive=-1 (never unloads models).
+  Redis, Elasticsearch, EdgeDB run in Docker with restart: unless-stopped.
+  All infrastructure is pre-heated on start — zero cold starts.
 EOF
 }
 
