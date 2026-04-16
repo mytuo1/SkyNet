@@ -43,10 +43,24 @@ ALL_SERVICES = {
     "compass": 8009, "framework-router": 8010, "self-update": 8011,
     "causal-graph": 8012, "simulator": 8013, "metacognition": 8014,
     "goals": 8015, "learner": 8016, "vision": 8017, "knobs": 8090,
-    "autonomy": 8018, "dashboard": 8080,
+    "autonomy": 8018, "hypothalamus": 8019, "insight-engine": 8020,
+    "dashboard": 8080,
     # Infrastructure
     "gateway": 80, "redis": 6379, "elasticsearch": 9200, "edgedb": 5656,
 }
+
+# Map service names to Docker container names
+# Convention: brain_{service_name} with hyphens → underscores
+SERVICE_TO_CONTAINER = {
+    svc: f"brain_{svc.replace('-', '_')}" for svc in ALL_SERVICES
+}
+# Infrastructure containers use brain_ prefix too
+SERVICE_TO_CONTAINER.update({
+    "gateway": "brain_gateway",
+    "redis": "brain_redis",
+    "elasticsearch": "brain_elasticsearch",
+    "edgedb": "brain_edgedb",
+})
 
 PUBSUB_CHANNELS = [
     "experience.new",
@@ -628,6 +642,11 @@ _CHANNEL_SERVICE_MAP = {
     "session.ended": "thalamus",
     "analogical.insight": "cross-domain",
     "pattern.registered": "learner",
+    "hormone.shift": "hypothalamus",
+    "intuition.fired": "metacognition",
+    "epiphany.crystallized": "insight-engine",
+    "curiosity.question": "thalamus",
+    "curiosity.answered": "thalamus",
 }
 
 

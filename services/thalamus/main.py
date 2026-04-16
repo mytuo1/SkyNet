@@ -1272,12 +1272,24 @@ async def process(req: ProcessRequest):
     step_times["working_memory"] = round((t_early_done - t_early) * 1000, 1)
     if wm_resp.get("error"):
         errors.append({"step": "working_memory", "error": wm_resp["error"]})
+    trace["working_memory"] = {
+        "thoughts": len(wm.get("thought_stream", [])),
+        "pressure": wm.get("pressure", 0),
+        "ms": step_times["working_memory"]
+    }
 
     # ── STEP 3: Cerebellum result (ran in parallel above) ─────────────────────
     skill_match = cb_resp.get("data", {}).get("skill_match")
     step_times["cerebellum"] = round((t_early_done - t_early) * 1000, 1)
     if cb_resp.get("error"):
         errors.append({"step": "cerebellum", "error": cb_resp["error"]})
+    trace["cerebellum"] = {
+        "skill_match": skill_match.get("name") if skill_match else None,
+        "similarity": skill_match.get("similarity", 0) if skill_match else 0,
+        "fast_path": bool(skill_match and skill_match.get("similarity", 0) > 0.88
+                         and skill_match.get("exec_success", False)),
+        "ms": step_times["cerebellum"]
+    })
 
     if skill_match and skill_match.get("similarity", 0) > 0.88 \
             and skill_match.get("exec_success", False):
@@ -1330,12 +1342,42 @@ async def process(req: ProcessRequest):
     step_times["hypothalamus"] = round((time.time() - t_hypo) * 1000, 1)
     if hypo_resp.get("error"):
         errors.append({"step": "hypothalamus", "error": hypo_resp["error"]})
+
+    # Compute hormone deltas from baseline for the trace
+    h_levels = hormones.get("hormones", {})
+    h_baselines = hormones.get("baselines", {})
+    h_deltas = {}
+    h_active = []   # hormones that shifted significantly
+    for h_name, h_val in h_levels.items():
+        bl = h_baselines.get(h_name, 0.5)
+        delta = round(h_val - bl, 4)
+        h_deltas[h_name] = delta
+        if abs(delta) > 0.05:
+            direction = "↑" if delta > 0 else "↓"
+            h_active.append(f"{h_name}{direction}{abs(delta):.2f}")
+
+    # Gland energy summary
+    gland_energy = {}
+    for gn, gi in (hormones.get("glands") or {}).items():
+        gland_energy[gn] = {
+            "energy": gi.get("energy", 0),
+            "capacity": gi.get("capacity", 1),
+            "pct": gi.get("pct", 100),
+        }
+
     trace["hypothalamus"] = {
-        "dominant":       hormones.get("dominant_hormone", ""),
-        "mood":           hormones.get("mood_summary", ""),
-        "overstimulated": hormones.get("overstimulated", []),
-        "depleted":       hormones.get("depleted", []),
-        "ms":             step_times["hypothalamus"]
+        "dominant":         hormones.get("dominant_hormone", ""),
+        "mood":             hormones.get("mood_summary", ""),
+        "overstimulated":   hormones.get("overstimulated", []),
+        "depleted":         hormones.get("depleted", []),
+        "hormones":         h_levels,
+        "baselines":        h_baselines,
+        "deltas":           h_deltas,
+        "active_shifts":    h_active,
+        "glands":           gland_energy,
+        "modified_knobs":   hormones.get("modified_knobs", {}),
+        "internal_timings": hormones.get("timings", {}),
+        "ms":               step_times["hypothalamus"]
     }
 
     # Apply hormone-modified knobs (overlay on base knobs)
@@ -1347,6 +1389,7 @@ async def process(req: ProcessRequest):
         k = KnobSet(**k_dict)
 
     # ── STEP 1.6: Check for pending epiphanies from insight engine ────────
+    t_epi = time.time()
     pending_epiphanies = []
     try:
         ep_resp = await call_get("insight_engine",
@@ -1355,6 +1398,11 @@ async def process(req: ProcessRequest):
             pending_epiphanies = ep_resp.get("epiphanies", [])
     except Exception:
         pass
+    step_times["epiphanies_check"] = round((time.time() - t_epi) * 1000, 1)
+    trace["epiphanies"] = {
+        "pending": len(pending_epiphanies),
+        "ms": step_times["epiphanies_check"]
+    }
 
     # ── STEP 4: Parallel memory + reasoning preparation ───────────────────────
     t4 = time.time()
@@ -1423,13 +1471,23 @@ async def process(req: ProcessRequest):
         intuition = {}
 
     trace.update({
-        "hippocampus":  {"episodes": len(episodic)},
-        "neocortex":    {"items": len(semantic)},
-        "cross_domain": {"analogies": len(analogies)},
+        "hippocampus":  {"episodes": len(episodic),
+                         "ms": pb_times.get("hippocampus", 0)},
+        "neocortex":    {"items": len(semantic),
+                         "ms": pb_times.get("neocortex", 0)},
+        "cross_domain": {"analogies": len(analogies),
+                         "ms": pb_times.get("cross_domain", 0)},
+        "compass":      {"direction": compass.get("integrated_direction", ""),
+                         "enrichments": len(compass.get("enrichments", [])),
+                         "ms": pb_times.get("compass", 0)},
+        "goals":        {"agenda_items": len(agenda),
+                         "ms": pb_times.get("goals", 0)},
         "intuition":    {"has_intuition": intuition.get("has_intuition", False),
                          "direction":     intuition.get("intuition_direction", ""),
-                         "confidence":    intuition.get("intuition_confidence", 0)},
-        "vision":       {"has_context": bool(visual.get("caption"))}
+                         "confidence":    intuition.get("intuition_confidence", 0),
+                         "ms": pb_times.get("intuition", 0)},
+        "vision":       {"has_context": bool(visual.get("caption")),
+                         "ms": pb_times.get("vision", 0)},
     })
 
     # ── STEP 5: Causal graph query ────────────────────────────────────────────
@@ -1447,7 +1505,8 @@ async def process(req: ProcessRequest):
                 "direction": "both"
             })
             causal = causal_resp.get("data", {})
-            trace["causal_graph"] = {"edges": len(causal.get("edges", []))}
+            trace["causal_graph"] = {"edges": len(causal.get("edges", [])),
+                                       "ms": step_times.get("causal_graph", 0)}
             if causal_resp.get("error"):
                 errors.append({"step": "causal_graph", "error": causal_resp["error"]})
     step_times["causal_graph"] = round((time.time() - t5) * 1000, 1)
@@ -1552,6 +1611,12 @@ async def process(req: ProcessRequest):
                                        teacher_mode=req.teacher_mode)
     step_times["reasoning"] = round((time.time() - t9) * 1000, 1)
     reasoning_ms = step_times["reasoning"]
+    trace["reasoning"] = {
+        "path": trace.get("reasoning_path", "unknown"),
+        "framework": trace.get("framework"),
+        "response_len": len(raw_response) if raw_response else 0,
+        "ms": reasoning_ms
+    }
     if reasoning_ms > 10000:
         print(f"[thalamus] reasoning ({trace.get('reasoning_path','?')}) took {reasoning_ms:.0f}ms", flush=True)
 
@@ -1624,6 +1689,10 @@ async def process(req: ProcessRequest):
                 raw_response += f"\n\n*(Computed result: {actual})*"
                 trace["simulator_used"] = True
     step_times["simulator"] = round((time.time() - t10) * 1000, 1)
+    trace["simulator"] = {
+        "used": trace.get("simulator_used", False),
+        "ms": step_times["simulator"]
+    }
 
     # ── STEP 11: Verification ─────────────────────────────────────────────────
     t11 = time.time()
@@ -1639,7 +1708,8 @@ async def process(req: ProcessRequest):
         verification = ver_resp.get("data", {})
         trace["verification"] = {
             "status":     verification.get("status"),
-            "confidence": verification.get("confidence")
+            "confidence": verification.get("confidence"),
+            "ms": step_times.get("verification", 0)
         }
         if ver_resp.get("error"):
             errors.append({"step": "verification", "error": ver_resp["error"]})
@@ -1661,6 +1731,11 @@ async def process(req: ProcessRequest):
             }))
     step_times["verification"] = round((time.time() - t11) * 1000, 1)
     ver_ms = step_times["verification"]
+    # Update verification trace with final timing
+    if "verification" not in trace:
+        trace["verification"] = {"status": "not_run", "confidence": 1.0, "ms": ver_ms}
+    else:
+        trace["verification"]["ms"] = ver_ms
     if ver_ms > 5000:
         print(f"[thalamus] verification took {ver_ms:.0f}ms", flush=True)
 
@@ -1682,6 +1757,10 @@ async def process(req: ProcessRequest):
         if enrich_resp.get("error"):
             errors.append({"step": "compass_enrich", "error": enrich_resp["error"]})
     step_times["compass_enrich"] = round((time.time() - t12) * 1000, 1)
+    trace["compass_enrich"] = {
+        "enriched": trace.get("compass_enriched", False),
+        "ms": step_times["compass_enrich"]
+    }
 
     # ── STEP 13: Update Working Memory ────────────────────────────────────────
     # Store the full interaction so the bot can recall the conversation.
@@ -1730,6 +1809,9 @@ async def process(req: ProcessRequest):
         }),
     )
     step_times["working_memory_update"] = round((time.time() - t14) * 1000, 1)
+    trace["working_memory_update"] = {
+        "ms": step_times["working_memory_update"]
+    }
 
     # ── STEP 15: DB writes — fire-and-forget (don't block response) ──────────
     t15 = time.time()
@@ -1869,6 +1951,38 @@ async def process(req: ProcessRequest):
 
     step_times["db_writes"] = round((time.time() - t15) * 1000, 1)
     execution_ms = round((time.time() - start) * 1000, 2)
+
+    # Ordered pipeline summary — every step with its wall-clock time
+    trace["pipeline_order"] = [
+        {"step": "amygdala+wm+cerebellum", "ms": step_times.get("amygdala", 0),
+         "note": "parallel: amygdala evaluate + working memory load + cerebellum recognize"},
+        {"step": "hypothalamus", "ms": step_times.get("hypothalamus", 0),
+         "note": "gland-based hormone update from amygdala signals"},
+        {"step": "epiphanies_check", "ms": step_times.get("epiphanies_check", 0),
+         "note": "check insight-engine for pending epiphanies"},
+        {"step": "parallel_batch", "ms": step_times.get("parallel_batch", 0),
+         "note": "hippocampus+neocortex+cross-domain+compass+goals+vision+intuition",
+         "detail": step_times.get("parallel_batch_detail", {})},
+        {"step": "causal_graph", "ms": step_times.get("causal_graph", 0),
+         "note": "causal relationship query"},
+        {"step": "metacognition", "ms": step_times.get("metacognition", 0),
+         "note": "uncertainty/confidence assessment"},
+        {"step": "perception", "ms": step_times.get("perception", 0),
+         "note": "experience detection, novelty scoring"},
+        {"step": "reasoning", "ms": step_times.get("reasoning", 0),
+         "note": f"LLM response generation ({trace.get('reasoning_path', '?')})"},
+        {"step": "simulator", "ms": step_times.get("simulator", 0),
+         "note": "code execution grounding (if applicable)"},
+        {"step": "verification", "ms": step_times.get("verification", 0),
+         "note": "claim verification against knowledge base"},
+        {"step": "compass_enrich", "ms": step_times.get("compass_enrich", 0),
+         "note": "ethical/value enrichment of response"},
+        {"step": "working_memory_update", "ms": step_times.get("working_memory_update", 0),
+         "note": "persist interaction + emotion + hormones to WM"},
+        {"step": "db_writes", "ms": step_times.get("db_writes", 0),
+         "note": "fire-and-forget: hippocampus encode, learner, causal, insight-engine, hypothalamus post-update"},
+    ]
+    trace["execution_ms"] = execution_ms
     trace["step_times_ms"] = step_times
     trace["db_operations"] = db_ops
     if errors:

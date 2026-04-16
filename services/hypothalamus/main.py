@@ -698,25 +698,36 @@ async def update_hormones(req: HormoneUpdateRequest):
     Glands release hormones based on triggers; returns hormone-modified knobs.
     """
     start = time.time()
+    timings = {}
 
+    t0 = time.time()
     state = _load_state(req.session_id)
+    timings["load_state"] = round((time.time() - t0) * 1000, 1)
 
     # Ensure gland states exist (migration from v1)
     if "glands" not in state:
         state["glands"] = _default_gland_states()
 
     # Recharge glands based on time elapsed
+    t0 = time.time()
     time_since = req.time_since_last or (time.time() - state.get("last_updated", time.time()))
     state["glands"] = _recharge_glands(state.get("glands", _default_gland_states()), time_since)
+    timings["recharge_glands"] = round((time.time() - t0) * 1000, 1)
 
     # Apply natural decay toward baseline
+    t0 = time.time()
     state = _apply_decay(state, time_since)
+    timings["decay"] = round((time.time() - t0) * 1000, 1)
 
     # Apply event-driven hormone changes (via gland releases)
+    t0 = time.time()
     state = _apply_triggers(state, req)
+    timings["triggers"] = round((time.time() - t0) * 1000, 1)
 
     # Detect overstimulation / depletion
+    t0 = time.time()
     overstim, depleted_list = _detect_overstimulation_depletion(state)
+    timings["detect_extremes"] = round((time.time() - t0) * 1000, 1)
 
     # Snapshot to history
     snapshot = {h: state.get(h, BASELINES[h]) for h in BASELINES}
@@ -728,17 +739,34 @@ async def update_hormones(req: HormoneUpdateRequest):
     state["history"] = history
     state["last_updated"] = time.time()
 
+    t0 = time.time()
     _save_state(req.session_id, state)
+    timings["save_state"] = round((time.time() - t0) * 1000, 1)
 
     # Compute hormone-modified knobs
+    t0 = time.time()
     base_k = knobs.get()
     modified = _compute_modified_knobs(state, base_k, overstim, depleted_list)
+    timings["compute_knobs"] = round((time.time() - t0) * 1000, 1)
 
     # Find dominant hormone
     deltas = {h: round(state.get(h, BASELINES[h]) - BASELINES[h], 4) for h in BASELINES}
     dominant = max(deltas, key=lambda h: abs(deltas[h]))
 
     mood = _mood_summary(state, overstim, depleted_list)
+
+    total_ms = round((time.time() - start) * 1000, 2)
+    timings["total"] = total_ms
+
+    # Log the update operation with full timing breakdown
+    _log_operation("update", total_ms, {
+        "session_id": req.session_id,
+        "dominant": dominant,
+        "mood": mood[:80],
+        "overstim": overstim,
+        "depleted": depleted_list,
+        "timings": timings,
+    })
 
     # Publish events for significant shifts
     for h in BASELINES:
@@ -790,7 +818,7 @@ async def update_hormones(req: HormoneUpdateRequest):
     return BrainResponse(
         request_id = req.amygdala_result.get("request_id", "hypo"),
         service    = "hypothalamus",
-        latency_ms = round((time.time() - start) * 1000, 2),
+        latency_ms = total_ms,
         data       = {
             "hormones":         {h: round(state.get(h, BASELINES[h]), 4) for h in BASELINES},
             "glands":           gland_summary,
@@ -800,6 +828,7 @@ async def update_hormones(req: HormoneUpdateRequest):
             "dominant_hormone": dominant,
             "mood_summary":     mood,
             "baselines":        BASELINES,
+            "timings":          timings,
         }
     )
 
@@ -847,3 +876,104 @@ async def reset_state(session_id: str):
 async def list_glands():
     """Return the anatomical gland definitions and their hormone mappings."""
     return {"glands": GLANDS, "hormone_to_gland": HORMONE_TO_GLAND}
+
+
+class InjectRequest(BaseModel):
+    session_id: str
+    hormone: str
+    amount: float           # positive = raise, negative = lower from current
+    bypass_gland: bool = False   # if True, inject directly without gland constraint
+
+
+@app.post("/inject")
+async def inject_hormone(req: InjectRequest):
+    """
+    Manually inject (or suppress) a hormone for debugging / experimentation.
+    By default, the injection goes through the gland (limited by capacity).
+    Set bypass_gland=True to force the exact amount.
+    """
+    if req.hormone not in BASELINES:
+        return {"error": f"Unknown hormone: {req.hormone}",
+                "available": list(BASELINES.keys())}
+
+    start = time.time()
+    state = _load_state(req.session_id)
+
+    if "glands" not in state:
+        state["glands"] = _default_gland_states()
+
+    old_level = state.get(req.hormone, BASELINES[req.hormone])
+
+    if req.bypass_gland:
+        actual = req.amount
+    else:
+        actual = _gland_release(state["glands"], req.hormone, req.amount)
+
+    state[req.hormone] = _clamp(old_level + actual)
+    new_level = state[req.hormone]
+    state["last_updated"] = time.time()
+    _save_state(req.session_id, state)
+
+    gname = HORMONE_TO_GLAND.get(req.hormone, "unknown")
+    latency_ms = round((time.time() - start) * 1000, 2)
+
+    # Publish the injection event
+    events.publish("hormone.shift", {
+        "hormone":    req.hormone,
+        "level":      new_level,
+        "baseline":   BASELINES[req.hormone],
+        "delta":      round(new_level - old_level, 4),
+        "gland":      gname,
+        "source":     "manual_inject",
+        "session_id": req.session_id,
+        "timestamp":  time.time()
+    })
+
+    # Log the operation
+    _log_operation("inject", latency_ms, {
+        "hormone": req.hormone, "requested": req.amount,
+        "actual": round(actual, 4), "old": round(old_level, 4),
+        "new": round(new_level, 4), "gland": gname,
+        "bypass": req.bypass_gland, "session_id": req.session_id,
+    })
+
+    return {
+        "hormone":    req.hormone,
+        "old_level":  round(old_level, 4),
+        "new_level":  round(new_level, 4),
+        "delta":      round(new_level - old_level, 4),
+        "requested":  req.amount,
+        "actual":     round(actual, 4),
+        "gland":      gname,
+        "bypass":     req.bypass_gland,
+        "latency_ms": latency_ms,
+    }
+
+
+# ── Internal Logging ──────────────────────────────────────────────────────────
+# Push structured logs to Redis so the dashboard Logging page shows them
+
+DASHBOARD_LOG_KEY = "logs:hypothalamus"
+DASHBOARD_LOG_ALL = "logs:_all"
+DASHBOARD_LOG_MAX = 1000
+
+
+def _log_operation(op: str, latency_ms: float, details: dict = None):
+    """Record a structured log entry to Redis for the dashboard."""
+    entry = json.dumps({
+        "service":   "hypothalamus",
+        "level":     "info",
+        "message":   f"[{op}] {latency_ms:.1f}ms" + (
+            f" — {json.dumps(details)[:300]}" if details else ""
+        ),
+        "timestamp": time.time(),
+    })
+    try:
+        pipe = r.pipeline()
+        pipe.lpush(DASHBOARD_LOG_KEY, entry)
+        pipe.ltrim(DASHBOARD_LOG_KEY, 0, DASHBOARD_LOG_MAX - 1)
+        pipe.lpush(DASHBOARD_LOG_ALL, entry)
+        pipe.ltrim(DASHBOARD_LOG_ALL, 0, DASHBOARD_LOG_MAX - 1)
+        pipe.execute()
+    except Exception:
+        pass

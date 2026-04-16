@@ -588,6 +588,8 @@ services:
       - THALAMUS_URL=http://thalamus:8000
       - KNOBS_URL=http://knobs:8090
       - REDIS_URL=${REDIS_URL}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     <<: [*common-network, *common-restart]
     depends_on:
       redis:
