@@ -43,8 +43,9 @@ TOTAL (full system):        ~16GB RAM
 
 ---
 
-## Quick Start with skynet.sh
+## Quick Start
 
+### Linux / WSL
 ```bash
 git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
 ./skynet.sh setup    # installs deps, detects GPU, creates .env, pulls models
@@ -52,38 +53,94 @@ git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
 ./skynet.sh dashboard  # opens http://localhost:8080
 ```
 
+### macOS
+```bash
+git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
+./skynet.sh setup    # installs via Homebrew, detects Apple Silicon, creates .env
+./skynet.sh start    # builds, init DBs, warms Ollama, starts all 24 services
+./skynet.sh dashboard  # opens http://localhost:8080
+```
+
+### Windows (PowerShell)
+```powershell
+git clone https://github.com/mytuo1/SkyNet.git; cd SkyNet
+.\skynet.ps1 setup    # checks Docker Desktop, Ollama, detects GPU, creates .env
+.\skynet.ps1 start    # builds, init DBs, warms Ollama, starts all 24 services
+.\skynet.ps1 dashboard # opens http://localhost:8080
+```
+
+Or use the batch launcher: `skynet.bat start`
+
 ### Available commands
+
+All commands work identically across platforms (`./skynet.sh` on Linux/macOS/WSL, `.\skynet.ps1` on Windows):
 
 | Command | Description |
 |---------|-------------|
-| `./skynet.sh setup` | First-time wizard: Docker, Ollama, **GPU/CPU selection**, .env, model pull |
-| `./skynet.sh start` | Full startup: build, init DBs, warm Ollama, start all 24 services |
-| `./skynet.sh stop` | Graceful shutdown (data preserved) |
-| `./skynet.sh restart` | Quick restart — no rebuild, keeps all data and conversations |
-| `./skynet.sh update` | Git pull + rebuild changed services + restart |
-| `./skynet.sh status` | Show all service health and brain diagnostics |
-| `./skynet.sh logs [svc]` | Tail logs (all or specific). Try: `./skynet.sh logs embed-queue` |
-| `./skynet.sh dashboard` | Open the web dashboard |
-| `./skynet.sh think` | Activate autonomous thinking |
-| `./skynet.sh rebuild` | **DESTRUCTIVE** — wipe databases, rebuild all containers fresh |
-| `./skynet.sh reset` | Factory reset (alias for rebuild) |
+| `setup` | First-time wizard: Docker, Ollama, **GPU/CPU selection**, .env, model pull |
+| `start` | Full startup: build, init DBs, warm Ollama, start all 24 services |
+| `stop` | Graceful shutdown (data preserved) |
+| `restart` | Quick restart — no rebuild, keeps all data and conversations |
+| `update` | Git pull + rebuild changed services + restart |
+| `status` | Show all service health and brain diagnostics |
+| `logs [svc]` | Tail logs (all or specific). Try: `logs embed-queue` |
+| `dashboard` | Open the web dashboard |
+| `think` | Activate autonomous thinking |
+| `rebuild` | **DESTRUCTIVE** — wipe databases, rebuild all containers fresh |
+| `reset` | Factory reset (alias for rebuild) |
 
 ### Common scenarios
 
-| Scenario | Command |
-|----------|---------|
-| **First install** | `./skynet.sh setup` then `./skynet.sh start` |
-| **After code changes** (git pull) | `./skynet.sh update` |
-| **Quick restart** (no rebuild) | `./skynet.sh restart` |
-| **Config change** (edited .env) | `./skynet.sh restart` |
-| **After system reboot** | `./skynet.sh start` (Ollama auto-starts via systemd) |
-| **Wipe and reinstall** | `./skynet.sh rebuild` (confirms first, destroys all data) |
-| **Switch GPU ↔ CPU** | `./skynet.sh setup` (re-run, picks new mode) then `./skynet.sh rebuild` |
-| **Check embed queue** | `./skynet.sh logs embed-queue` or `curl localhost:8000/brain/embed-queue/stats` |
+| Scenario | Linux/macOS/WSL | Windows |
+|----------|----------------|---------|
+| **First install** | `./skynet.sh setup && ./skynet.sh start` | `.\skynet.ps1 setup; .\skynet.ps1 start` |
+| **After code changes** | `./skynet.sh update` | `.\skynet.ps1 update` |
+| **Quick restart** (no rebuild) | `./skynet.sh restart` | `.\skynet.ps1 restart` |
+| **Config change** (.env edit) | `./skynet.sh restart` | `.\skynet.ps1 restart` |
+| **After system reboot** | `./skynet.sh start` | `.\skynet.ps1 start` |
+| **Wipe and reinstall** | `./skynet.sh rebuild` | `.\skynet.ps1 rebuild` |
+| **Switch GPU ↔ CPU** | `./skynet.sh setup` then `rebuild` | `.\skynet.ps1 setup` then `rebuild` |
+| **Check embed queue** | `./skynet.sh logs embed-queue` | `.\skynet.ps1 logs embed-queue` |
+
+---
+
+## Platform Notes
+
+### Linux (native)
+- `./skynet.sh setup` auto-installs Docker and Ollama via system package managers
+- Ollama configured via systemd drop-in override (automatic)
+- GPU: `nvidia-smi` detection + nvidia-container-toolkit for Docker GPU
+
+### macOS
+- Requires **Docker Desktop** (not native Docker) — install via `brew install --cask docker`
+- Ollama: `brew install ollama` or download from ollama.com
+- Apple Silicon: Metal GPU acceleration is **automatic** (Ollama uses it without configuration)
+- Intel Macs: CPU-only for Ollama (no CUDA)
+- `host.docker.internal` works out of the box via Docker Desktop VM
+- Ollama configured via `launchctl setenv` + shell profile
+
+### Windows (native PowerShell)
+- Requires **Docker Desktop for Windows** — download from docker.com
+- Ollama: download from ollama.com (runs in system tray)
+- GPU: NVIDIA GPU auto-detected via `nvidia-smi`; Ollama uses it automatically
+- Ollama configured via Windows environment variables (`[Environment]::SetEnvironmentVariable`)
+- Use `skynet.bat` for cmd.exe or `.\skynet.ps1` for PowerShell
+
+### WSL2 (Windows Subsystem for Linux)
+- Same as Linux — use `./skynet.sh`
+- GPU passthrough: install NVIDIA drivers on **Windows** (not inside WSL)
+- `nvidia-smi` should work inside WSL2 if Windows drivers are installed
+- Docker: use Docker Desktop with WSL2 backend, or install Docker inside WSL2
 
 ---
 
 ## Prerequisites
+
+### Supported platforms:
+- **Linux** (Ubuntu 22.04+, Debian, Fedora — tested)
+- **macOS** (Intel or Apple Silicon — requires Docker Desktop)
+- **Windows** (10/11 — requires Docker Desktop)
+- **WSL2** (recommended for Windows users who prefer bash)
 
 ### Required on every deployment target:
 - Docker 24+ and Docker Compose 2.20+

@@ -1398,14 +1398,16 @@ Goals persist in Redis            Goals must survive service restarts. Redis
 # Clone and enter
 git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
 
-# First-time setup (installs deps, creates .env, pulls models)
-./skynet.sh setup
+# First-time setup (installs deps, detects GPU, creates .env, pulls models)
+./skynet.sh setup          # Linux / macOS / WSL
+.\skynet.ps1 setup         # Windows (PowerShell)
 
 # Start everything
-./skynet.sh start
+./skynet.sh start          # Linux / macOS / WSL
+.\skynet.ps1 start         # Windows (PowerShell)
 
 # Open the dashboard
-./skynet.sh dashboard   # opens http://localhost:8080
+./skynet.sh dashboard      # opens http://localhost:8080
 
 # Activate autonomous thinking
 ./skynet.sh think
