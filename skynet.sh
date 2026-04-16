@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# SkyNet — Cross-Platform Startup Script (Ubuntu)
+# SkyNet — Cross-Platform Startup Script (Linux / macOS / WSL)
+# For Windows (native), use skynet.ps1 or skynet.bat
 # ═══════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -18,8 +19,35 @@ warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*"; }
 die()     { error "$*"; exit 1; }
 
+# Portable lowercase (bash 3.2 compat — macOS ships bash 3.2)
+to_lower() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# Portable sed -i (macOS requires '' argument)
+sed_inplace() {
+    if [ "$OS" = "macos" ]; then
+        sed -i '' "$@"
+    else
+        sed -i "$@"
+    fi
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# ── OS Detection ─────────────────────────────────────────────────────────────
+OS="unknown"
+case "$(uname -s)" in
+    Linux*)
+        if grep -qi microsoft /proc/version 2>/dev/null; then
+            OS="wsl"
+        else
+            OS="linux"
+        fi
+        ;;
+    Darwin*)  OS="macos" ;;
+    MINGW*|MSYS*|CYGWIN*) OS="windows-bash" ;;  # Git Bash on Windows
+    *)        OS="unknown" ;;
+esac
 
 COMPOSE="docker compose"
 BUILD_MAX_RETRIES=3
@@ -62,14 +90,20 @@ check_command() {
     command -v "$1" &>/dev/null || { error "$1 is not installed"; return 1; }
 }
 
+# ── Version Comparison (portable — works with macOS sort) ─────────────────────
+# Returns 0 if $1 >= $2 (version strings like "24.0", "2.20")
+version_ge() {
+    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n | head -n1)" = "$2" ]
+}
+
 check_version() {
     local cmd="$1" min="$2" actual
-    actual=$($cmd 2>&1 | grep -oP '\d+\.\d+' | head -1) || true
+    actual=$($cmd 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1) || true
     if [ -z "$actual" ]; then
         warn "Could not determine $cmd version"
         return 0
     fi
-    if printf '%s\n%s\n' "$min" "$actual" | sort -V -C; then
+    if version_ge "$actual" "$min"; then
         success "$cmd version $actual (>= $min)"
     else
         error "$cmd version $actual is below minimum $min"
@@ -79,6 +113,7 @@ check_version() {
 
 check_deps() {
     info "Checking dependencies..."
+    info "  Platform: $OS"
     local fail=0
 
     check_command docker   || fail=1
@@ -89,9 +124,9 @@ check_deps() {
         check_version "docker --version" "24.0" || fail=1
         # Docker Compose version
         local compose_ver
-        compose_ver=$(docker compose version 2>&1 | grep -oP '\d+\.\d+' | head -1) || true
+        compose_ver=$(docker compose version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1) || true
         if [ -n "$compose_ver" ]; then
-            if printf '%s\n%s\n' "2.20" "$compose_ver" | sort -V -C; then
+            if version_ge "$compose_ver" "2.20"; then
                 success "Docker Compose version $compose_ver (>= 2.20)"
             else
                 error "Docker Compose version $compose_ver is below minimum 2.20"
@@ -106,14 +141,25 @@ check_deps() {
     if check_command ollama; then
         if curl -sf http://localhost:11434/api/tags &>/dev/null; then
             success "Ollama is running"
-            # Warn if Ollama is bound to 127.0.0.1 only (unreachable from Docker)
-            if command -v ss &>/dev/null; then
-                local ss_out
-                ss_out=$(ss -tlnp 2>/dev/null | grep ':11434' || true)
-                if echo "$ss_out" | grep -q '127.0.0.1' && \
-                   ! echo "$ss_out" | grep -qE '0\.0\.0\.0|\*|\[::\]'; then
-                    warn "Ollama is bound to 127.0.0.1 — Docker containers cannot reach it"
-                    warn "Fix: run './skynet.sh setup' or set OLLAMA_HOST=0.0.0.0 and restart Ollama"
+            # On Linux/WSL, warn if Ollama is bound to 127.0.0.1 only
+            # On macOS, host.docker.internal works via Docker Desktop VM — no issue
+            if [ "$OS" = "linux" ] || [ "$OS" = "wsl" ]; then
+                if command -v ss &>/dev/null; then
+                    local ss_out
+                    ss_out=$(ss -tlnp 2>/dev/null | grep ':11434' || true)
+                    if echo "$ss_out" | grep -q '127.0.0.1' && \
+                       ! echo "$ss_out" | grep -qE '0\.0\.0\.0|\*|\[::\]'; then
+                        warn "Ollama is bound to 127.0.0.1 — Docker containers cannot reach it"
+                        warn "Fix: run './skynet.sh setup' or set OLLAMA_HOST=0.0.0.0 and restart Ollama"
+                    fi
+                elif command -v lsof &>/dev/null; then
+                    local lsof_out
+                    lsof_out=$(lsof -iTCP:11434 -sTCP:LISTEN -P -n 2>/dev/null || true)
+                    if echo "$lsof_out" | grep -q '127.0.0.1' && \
+                       ! echo "$lsof_out" | grep -qE '\*:11434|0\.0\.0\.0'; then
+                        warn "Ollama is bound to 127.0.0.1 — Docker containers cannot reach it"
+                        warn "Fix: run './skynet.sh setup' or set OLLAMA_HOST=0.0.0.0 and restart Ollama"
+                    fi
                 fi
             fi
         else
@@ -137,24 +183,61 @@ check_deps() {
 
 cmd_setup() {
     banner
-    info "First-time setup wizard"
+    info "First-time setup wizard (platform: $OS)"
     echo ""
 
-    # Install Docker if missing
+    # ── Install Docker ───────────────────────────────────────────────────────
     if ! check_command docker 2>/dev/null; then
-        info "Installing Docker..."
-        curl -fsSL https://get.docker.com | sh
-        sudo usermod -aG docker "$USER" 2>/dev/null || true
-        success "Docker installed"
+        case "$OS" in
+            linux|wsl)
+                info "Installing Docker..."
+                curl -fsSL https://get.docker.com | sh
+                sudo usermod -aG docker "$USER" 2>/dev/null || true
+                success "Docker installed"
+                ;;
+            macos)
+                echo ""
+                error "Docker is not installed."
+                info "Install Docker Desktop for Mac:"
+                info "  brew install --cask docker"
+                info "  OR download from: https://www.docker.com/products/docker-desktop"
+                info ""
+                info "After installing, launch Docker Desktop and wait for it to start."
+                read -rp "Press Enter once Docker is installed and running... "
+                check_command docker 2>/dev/null || die "Docker still not found"
+                success "Docker detected"
+                ;;
+            *)
+                die "Cannot auto-install Docker on this platform. Install Docker manually."
+                ;;
+        esac
     else
         success "Docker already installed"
     fi
 
-    # Install Ollama if missing
+    # ── Install Ollama ───────────────────────────────────────────────────────
     if ! check_command ollama 2>/dev/null; then
-        info "Installing Ollama..."
-        curl -fsSL https://ollama.com/install.sh | sh
-        success "Ollama installed"
+        case "$OS" in
+            linux|wsl)
+                info "Installing Ollama..."
+                curl -fsSL https://ollama.com/install.sh | sh
+                success "Ollama installed"
+                ;;
+            macos)
+                if command -v brew &>/dev/null; then
+                    info "Installing Ollama via Homebrew..."
+                    brew install ollama
+                    success "Ollama installed"
+                else
+                    info "Installing Ollama..."
+                    curl -fsSL https://ollama.com/install.sh | sh
+                    success "Ollama installed"
+                fi
+                ;;
+            *)
+                warn "Install Ollama manually from: https://ollama.com/download"
+                ;;
+        esac
     else
         success "Ollama already installed"
     fi
@@ -164,14 +247,26 @@ cmd_setup() {
     local gpu_name=""
     local gpu_vram=""
     local is_wsl=false
+    local is_apple_silicon=false
 
     # Detect WSL
-    if grep -qi microsoft /proc/version 2>/dev/null; then
+    if [ "$OS" = "wsl" ]; then
         is_wsl=true
         info "Detected: Windows Subsystem for Linux (WSL2)"
     fi
 
-    # Detect NVIDIA GPU
+    # Detect Apple Silicon (Metal — auto-accelerated by Ollama)
+    if [ "$OS" = "macos" ]; then
+        local cpu_brand
+        cpu_brand=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)
+        if echo "$cpu_brand" | grep -qi "apple"; then
+            is_apple_silicon=true
+            info "Detected: Apple Silicon ($cpu_brand)"
+            info "Ollama uses Metal acceleration automatically — no configuration needed"
+        fi
+    fi
+
+    # Detect NVIDIA GPU (Linux, WSL, or Git Bash on Windows)
     if command -v nvidia-smi &>/dev/null; then
         gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
         gpu_vram=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null | head -1 || true)
@@ -195,7 +290,7 @@ cmd_setup() {
         echo "  CPU mode:  Everything runs on CPU (slower but no GPU drivers needed)"
         echo ""
         read -rp "Use GPU acceleration? [Y/n]: " gpu_choice
-        case "${gpu_choice,,}" in
+        case "$(to_lower "${gpu_choice:-y}")" in
             n|no)
                 gpu_mode="cpu"
                 info "Selected: CPU mode"
@@ -222,12 +317,18 @@ cmd_setup() {
                     info "  sudo systemctl restart docker"
                     echo ""
                     read -rp "Continue with GPU mode anyway? [Y/n]: " cont
-                    case "${cont,,}" in
+                    case "$(to_lower "${cont:-y}")" in
                         n|no) gpu_mode="cpu"; warn "Falling back to CPU mode" ;;
                     esac
                 fi
                 ;;
         esac
+    elif $is_apple_silicon; then
+        # Apple Silicon: Metal is automatic, no GPU/CPU choice needed for Ollama
+        # Learner still uses CPU (no CUDA on Mac)
+        gpu_mode="cpu"
+        info "Apple Silicon: Ollama uses Metal GPU automatically"
+        info "Learner (Phi-4-mini) will use CPU (CUDA not available on macOS)"
     else
         info "No NVIDIA GPU detected — using CPU mode"
         if $is_wsl; then
@@ -237,47 +338,10 @@ cmd_setup() {
         gpu_mode="cpu"
     fi
 
-    # ── Ollama binding: ensure it listens on 0.0.0.0 for Docker access ──────
-    # By default Ollama binds to 127.0.0.1, which is unreachable from Docker
-    # containers. On Linux with systemd we create a drop-in override.
-    # Also set KEEP_ALIVE=-1 so models never unload (huge latency win).
-    if [ "$(uname)" = "Linux" ] && command -v systemctl &>/dev/null; then
-        local override_dir="/etc/systemd/system/ollama.service.d"
-        local override_file="$override_dir/override.conf"
-        local needs_update=false
-        if [ ! -f "$override_file" ]; then
-            needs_update=true
-        elif ! grep -q 'OLLAMA_HOST=0.0.0.0' "$override_file" 2>/dev/null; then
-            needs_update=true
-        elif ! grep -q 'OLLAMA_KEEP_ALIVE' "$override_file" 2>/dev/null; then
-            needs_update=true
-        fi
-
-        # Build the override content based on GPU/CPU choice
-        local ollama_gpu_env=""
-        if [ "$gpu_mode" = "cpu" ]; then
-            ollama_gpu_env='Environment="OLLAMA_NUM_GPU=0"'
-        fi
-
-        if $needs_update || [ -n "$ollama_gpu_env" ]; then
-            info "Configuring Ollama (0.0.0.0, keep_alive=-1, num_parallel=4, mode=$gpu_mode)..."
-            sudo mkdir -p "$override_dir"
-            {
-                echo "[Service]"
-                echo 'Environment="OLLAMA_HOST=0.0.0.0"'
-                echo 'Environment="OLLAMA_KEEP_ALIVE=-1"'
-                echo 'Environment="OLLAMA_NUM_PARALLEL=4"'
-                if [ -n "$ollama_gpu_env" ]; then
-                    echo "$ollama_gpu_env"
-                fi
-            } | sudo tee "$override_file" > /dev/null
-            sudo systemctl daemon-reload
-            sudo systemctl restart ollama 2>/dev/null || true
-            success "Ollama configured (0.0.0.0 + keep_alive=-1 + num_parallel=4 + $gpu_mode)"
-        else
-            success "Ollama already configured for Docker access"
-        fi
-    fi
+    # ── Ollama configuration ─────────────────────────────────────────────────
+    # Goal: OLLAMA_HOST=0.0.0.0 (Docker access), KEEP_ALIVE=-1 (never unload),
+    #        NUM_PARALLEL=4, and optionally NUM_GPU=0 for CPU mode.
+    _configure_ollama "$gpu_mode"
 
     # ── Write GPU/CPU choice to .env ─────────────────────────────────────────
     local torch_url
@@ -339,7 +403,7 @@ ENVEOF
 
     # Inject TORCH_INDEX_URL into .env
     if grep -q '^TORCH_INDEX_URL=' .env 2>/dev/null; then
-        sed -i "s|^TORCH_INDEX_URL=.*|TORCH_INDEX_URL=${torch_url}|" .env
+        sed_inplace "s|^TORCH_INDEX_URL=.*|TORCH_INDEX_URL=${torch_url}|" .env
     else
         echo "" >> .env
         echo "# GPU/CPU — set by ./skynet.sh setup (gpu_mode=$gpu_mode)" >> .env
@@ -357,13 +421,127 @@ ENVEOF
     echo ""
     success "Setup complete! Edit .env with your API keys, then run: ./skynet.sh start"
     echo ""
+    info "  Platform: $OS"
     info "  GPU mode: $gpu_mode"
     if [ -n "$gpu_name" ]; then
         info "  GPU:      $gpu_name ($gpu_vram)"
     fi
-    if $is_wsl; then
-        info "  WSL2:     yes (GPU passthrough$([ "$gpu_mode" = "gpu" ] && echo " enabled" || echo " disabled"))"
+    if $is_apple_silicon; then
+        info "  Apple Silicon: Metal (auto-accelerated)"
     fi
+    if $is_wsl; then
+        if [ "$gpu_mode" = "gpu" ]; then
+            info "  WSL2: GPU passthrough enabled"
+        else
+            info "  WSL2: CPU mode"
+        fi
+    fi
+}
+
+# ── Ollama Configuration (per-platform) ──────────────────────────────────────
+_configure_ollama() {
+    local gpu_mode="$1"
+    local ollama_gpu_env=""
+    if [ "$gpu_mode" = "cpu" ]; then
+        ollama_gpu_env='OLLAMA_NUM_GPU=0'
+    fi
+
+    case "$OS" in
+        linux|wsl)
+            # Linux/WSL: systemd drop-in override
+            if command -v systemctl &>/dev/null; then
+                local override_dir="/etc/systemd/system/ollama.service.d"
+                local override_file="$override_dir/override.conf"
+                local needs_update=false
+                if [ ! -f "$override_file" ]; then
+                    needs_update=true
+                elif ! grep -q 'OLLAMA_HOST=0.0.0.0' "$override_file" 2>/dev/null; then
+                    needs_update=true
+                elif ! grep -q 'OLLAMA_KEEP_ALIVE' "$override_file" 2>/dev/null; then
+                    needs_update=true
+                fi
+
+                if $needs_update || [ -n "$ollama_gpu_env" ]; then
+                    info "Configuring Ollama via systemd (0.0.0.0, keep_alive=-1, num_parallel=4, mode=$gpu_mode)..."
+                    sudo mkdir -p "$override_dir"
+                    {
+                        echo "[Service]"
+                        echo 'Environment="OLLAMA_HOST=0.0.0.0"'
+                        echo 'Environment="OLLAMA_KEEP_ALIVE=-1"'
+                        echo 'Environment="OLLAMA_NUM_PARALLEL=4"'
+                        if [ -n "$ollama_gpu_env" ]; then
+                            echo "Environment=\"$ollama_gpu_env\""
+                        fi
+                    } | sudo tee "$override_file" > /dev/null
+                    sudo systemctl daemon-reload
+                    sudo systemctl restart ollama 2>/dev/null || true
+                    success "Ollama configured via systemd ($gpu_mode)"
+                else
+                    success "Ollama already configured for Docker access"
+                fi
+            else
+                warn "systemd not found — configure Ollama manually:"
+                info "  export OLLAMA_HOST=0.0.0.0"
+                info "  export OLLAMA_KEEP_ALIVE=-1"
+                info "  export OLLAMA_NUM_PARALLEL=4"
+                if [ -n "$ollama_gpu_env" ]; then
+                    info "  export $ollama_gpu_env"
+                fi
+                info "  Then restart: ollama serve"
+            fi
+            ;;
+
+        macos)
+            # macOS: launchctl setenv for the GUI app + shell profile
+            info "Configuring Ollama for Docker access (macOS)..."
+
+            # On macOS with Docker Desktop, host.docker.internal routes through
+            # the VM, so Ollama on 127.0.0.1 IS reachable. But setting 0.0.0.0
+            # is still good practice for network access.
+            launchctl setenv OLLAMA_HOST "0.0.0.0" 2>/dev/null || true
+            launchctl setenv OLLAMA_KEEP_ALIVE "-1" 2>/dev/null || true
+            launchctl setenv OLLAMA_NUM_PARALLEL "4" 2>/dev/null || true
+
+            # Also set for current shell session
+            export OLLAMA_HOST="0.0.0.0"
+            export OLLAMA_KEEP_ALIVE="-1"
+            export OLLAMA_NUM_PARALLEL="4"
+
+            # Write to shell profile for persistence
+            local shell_profile=""
+            if [ -f "$HOME/.zshrc" ]; then
+                shell_profile="$HOME/.zshrc"
+            elif [ -f "$HOME/.bash_profile" ]; then
+                shell_profile="$HOME/.bash_profile"
+            elif [ -f "$HOME/.bashrc" ]; then
+                shell_profile="$HOME/.bashrc"
+            fi
+
+            if [ -n "$shell_profile" ]; then
+                if ! grep -q 'OLLAMA_HOST' "$shell_profile" 2>/dev/null; then
+                    {
+                        echo ""
+                        echo "# SkyNet: Ollama configuration"
+                        echo 'export OLLAMA_HOST="0.0.0.0"'
+                        echo 'export OLLAMA_KEEP_ALIVE="-1"'
+                        echo 'export OLLAMA_NUM_PARALLEL="4"'
+                    } >> "$shell_profile"
+                    success "Ollama env vars added to $shell_profile"
+                fi
+            fi
+
+            # Try to restart Ollama
+            if command -v brew &>/dev/null && brew services list 2>/dev/null | grep -q ollama; then
+                brew services restart ollama 2>/dev/null && success "Ollama restarted via brew" || true
+            else
+                warn "Restart Ollama manually (quit and reopen the app) for changes to take effect"
+            fi
+            ;;
+
+        *)
+            warn "Unknown platform — configure Ollama manually (OLLAMA_HOST=0.0.0.0)"
+            ;;
+    esac
 }
 
 cmd_start() {
@@ -603,10 +781,13 @@ cmd_help() {
     cat <<EOF
 Usage: ./skynet.sh <command> [options]
 
+Platform: $OS  (Linux, macOS, WSL supported)
+Windows:  Use skynet.bat or skynet.ps1 instead
+
 Commands:
-  setup       First-time setup wizard (installs Docker, Ollama, GPU/CPU config, .env)
+  setup       First-time wizard: Docker, Ollama, GPU/CPU config, .env, model pull
   start       Full startup: build, init DBs, warm Ollama, start all 24 services
-  stop        Graceful shutdown of all services (data preserved)
+  stop        Graceful shutdown (data preserved)
   restart     Quick restart — no rebuild, keeps all data and conversations
   update      Git pull + rebuild changed services + restart (use after code changes)
   status      Show all service health and brain diagnostics
@@ -618,12 +799,12 @@ Commands:
   help        Show this help message
 
 Scenarios:
-  First install:          ./skynet.sh setup && ./skynet.sh start
-  After code changes:     ./skynet.sh update
+  First install:            ./skynet.sh setup && ./skynet.sh start
+  After code changes:       ./skynet.sh update
   Quick restart (no build): ./skynet.sh restart
-  Config change (.env):   ./skynet.sh restart
-  Wipe and reinstall:     ./skynet.sh rebuild
-  After system reboot:    ./skynet.sh start (Ollama auto-starts via systemd)
+  Config change (.env):     ./skynet.sh restart
+  Wipe and reinstall:       ./skynet.sh rebuild
+  After system reboot:      ./skynet.sh start
 
 Infrastructure:
   Ollama runs on the HOST (not in Docker) with keep_alive=-1 (never unloads models).
