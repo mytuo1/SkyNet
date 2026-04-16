@@ -54,6 +54,22 @@ BUILD_MAX_RETRIES=3
 GATEWAY_URL="http://localhost:8000"
 AUTONOMY_URL="http://localhost:8018"
 
+# ── GPU override ──────────────────────────────────────────────────────────────
+# When GPU_MODE=gpu is set in .env (written by setup), compose includes the
+# docker-compose.gpu.yml override which adds NVIDIA device reservations.
+# This avoids "nvidia-container-cli: initialization error" on machines where
+# the NVIDIA container runtime is not available (WSL2 snap Docker, CPU-only).
+_compose_files() {
+    if [ -f .env ] && grep -q '^GPU_MODE=gpu' .env 2>/dev/null; then
+        if [ -f docker-compose.gpu.yml ]; then
+            echo "docker compose -f docker-compose.yml -f docker-compose.gpu.yml"
+            return
+        fi
+    fi
+    echo "docker compose"
+}
+COMPOSE="$(_compose_files)"
+
 # ── Build with Retry ──────────────────────────────────────────────────────────
 # Docker image pulls can fail with transient network errors (EOF, timeout).
 # This wrapper retries the build up to BUILD_MAX_RETRIES times.
@@ -582,6 +598,24 @@ cmd_setup() {
                 local _dmethod
                 _dmethod="$(_docker_method)"
 
+                # ── WSL2 library path fix ─────────────────────────────────
+                # On WSL2, NVIDIA libraries live at /usr/lib/wsl/lib/ but
+                # nvidia-container-cli won't find them unless ldconfig knows.
+                # Error: "libnvidia-ml.so.1: cannot open shared object file"
+                if $is_wsl && [ -f /usr/lib/wsl/lib/libnvidia-ml.so.1 ]; then
+                    if ! ldconfig -p 2>/dev/null | grep -q libnvidia-ml; then
+                        info "Registering WSL2 NVIDIA libraries with ldconfig..."
+                        echo "/usr/lib/wsl/lib" | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf >/dev/null 2>&1
+                        sudo ldconfig 2>/dev/null
+                        if ldconfig -p 2>/dev/null | grep -q libnvidia-ml; then
+                            success "WSL2 NVIDIA libraries registered"
+                        else
+                            warn "Could not register WSL2 NVIDIA libs — GPU containers may fail"
+                            info "  Manual fix: echo '/usr/lib/wsl/lib' | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf && sudo ldconfig"
+                        fi
+                    fi
+                fi
+
                 if ! docker info 2>/dev/null | grep -qi nvidia; then
                     if [ "$_dmethod" = "desktop" ]; then
                         # Docker Desktop detected — it has built-in GPU support
@@ -617,6 +651,11 @@ cmd_setup() {
                         info "  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
                         _nvidia_ctk_hint
                         _docker_restart_hint
+                        if $is_wsl; then
+                            echo ""
+                            info "If you get 'libnvidia-ml.so.1: cannot open shared object file':"
+                            info "  echo '/usr/lib/wsl/lib' | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf && sudo ldconfig"
+                        fi
                     fi
                     echo ""
                     read -rp "Continue with GPU mode anyway? [Y/n]: " cont
@@ -738,9 +777,18 @@ OPENROUTER_API_KEY=
 GENERIC_API_KEY=
 GENERIC_BASE_URL=
 
+# Model selection (defaults are fine — override only if needed)
+OPENROUTER_MAIN_MODEL=
+OPENROUTER_FAST_MODEL=
+GENERIC_MAIN_MODEL=
+GENERIC_FAST_MODEL=
+
 # Token limits
 MAX_TOKENS_MAIN=4096
 MAX_TOKENS_FAST=1024
+
+# Web search — model decides when to search (memory first, then web)
+WEB_SEARCH_ENABLED=true
 
 # Autonomy
 AUTONOMY_MAX_RISK=0.7
@@ -773,6 +821,13 @@ ENVEOF
         echo "" >> .env
         echo "# GPU/CPU — set by ./skynet.sh setup (gpu_mode=$gpu_mode)" >> .env
         echo "TORCH_INDEX_URL=${torch_url}" >> .env
+    fi
+
+    # Persist GPU_MODE so subsequent start/restart/rebuild pick up the override
+    if grep -q '^GPU_MODE=' .env 2>/dev/null; then
+        sed_inplace "s|^GPU_MODE=.*|GPU_MODE=${gpu_mode}|" .env
+    else
+        echo "GPU_MODE=${gpu_mode}" >> .env
     fi
     success "Learner PyTorch: $gpu_mode ($torch_url)"
 

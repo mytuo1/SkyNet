@@ -517,16 +517,14 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    # GPU reservation lives in docker-compose.gpu.yml (loaded by skynet.sh in GPU mode).
+    # Without it the learner auto-detects CUDA at runtime and falls back to CPU.
     deploy:
       resources:
         limits:
           memory: ${LEARNER_MAX_MEMORY:-8g}
         reservations:
           memory: 2g
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8016/health')"]
       interval: 30s

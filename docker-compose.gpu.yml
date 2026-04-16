@@ -1,0 +1,19 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# GPU OVERRIDE — loaded automatically by skynet.sh when GPU mode is selected.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# This file adds NVIDIA GPU reservations to services that benefit from GPU
+# acceleration. Without this override, all services run on CPU — the learner
+# code auto-detects CUDA availability at runtime and falls back gracefully.
+# ═══════════════════════════════════════════════════════════════════════════════
+services:
+  learner:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
