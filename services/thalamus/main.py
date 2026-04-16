@@ -24,7 +24,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from models import BrainResponse
+from models import BrainResponse, KnobSet
 from knobs import KnobsClient
 from events import EventBus
 from llm_provider import complete, provider_info, get_model
@@ -786,7 +786,6 @@ async def process(req: ProcessRequest):
         # Override specific knob values with hormone-adjusted versions
         k_dict = k.dict()
         k_dict.update(hormone_knob_mods)
-        from models import KnobSet
         k = KnobSet(**k_dict)
 
     # ── STEP 1.6: Check for pending epiphanies from insight engine ────────

@@ -1344,6 +1344,7 @@ $('#emo-expand-btn').addEventListener('click',function(){
 });
 
 /* -- Hormonal State Panel --------------------------------------------- */
+var HORMONE_OVERSTIM=0.85, HORMONE_DEPLETION=0.15; /* must match backend thresholds */
 function updateHormonePanel(hormones,mood){
   var container=$('#hormone-bars');
   var moodEl=$('#hormone-mood-text');
@@ -1360,12 +1361,12 @@ function updateHormonePanel(hormones,mood){
     var v=hormones[k];if(typeof v!=='number')return;
     var pct=Math.round(v*100);
     var col=hColors[k]||'var(--accent)';
-    var warn=v>0.85?' \u26A0':'';
-    var low=v<0.15?' \u2B07':'';
+    var warn=v>HORMONE_OVERSTIM?' \u26A0':'';
+    var low=v<HORMONE_DEPLETION?' \u2B07':'';
     html+='<div class="hormone-row">';
     html+='<span class="hormone-label">'+(hLabels[k]||k)+'</span>';
     html+='<div class="hormone-bar"><div class="hormone-bar-fill" style="width:'+pct+'%;background:'+col+'"></div></div>';
-    html+='<span class="hormone-val" style="color:'+(v>0.85?'var(--warning)':v<0.15?'var(--error)':'var(--text-dim)')+'">'+v.toFixed(2)+warn+low+'</span>';
+    html+='<span class="hormone-val" style="color:'+(v>HORMONE_OVERSTIM?'var(--warning)':v<HORMONE_DEPLETION?'var(--error)':'var(--text-dim)')+'">'+v.toFixed(2)+warn+low+'</span>';
     html+='</div>';
   });
   container.innerHTML=html;
