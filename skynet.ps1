@@ -81,7 +81,7 @@ function Get-ComposeCommand {
         if ($gpuLine -and (Test-Path "docker-compose.gpu.yml")) {
             # Verify NVIDIA runtime is available before using GPU compose
             $dockerInfo = docker info 2>&1 | Out-String
-            if ($dockerInfo -match "nvidia|cuda" ) {
+            if ($dockerInfo -match "nvidia|cuda") {
                 return "docker compose -f docker-compose.yml -f docker-compose.gpu.yml"
             } else {
                 Write-Warn "GPU_MODE=gpu but NVIDIA runtime not found — falling back to CPU"
