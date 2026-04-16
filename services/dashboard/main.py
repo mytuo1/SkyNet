@@ -61,6 +61,9 @@ PUBSUB_CHANNELS = [
     "session.ended",
     "analogical.insight",
     "pattern.registered",
+    "hormone.shift",
+    "intuition.fired",
+    "epiphany.crystallized",
 ]
 
 logger = logging.getLogger("dashboard")
