@@ -295,6 +295,27 @@ async def _load_models_async():
     await loop.run_in_executor(None, _load_models_sync)
 
 
+def _clear_stale_hf_cache():
+    """Clear cached model code that may be incompatible with current transformers version.
+
+    HuggingFace encodes hyphens as '_hyphen_' in cache directory names.
+    Stale cached modules cause ImportError at model load time.
+    """
+    import shutil
+    cache_base = Path("/models/hf_cache/modules/transformers_modules")
+    if not cache_base.exists():
+        return False
+    # Match both the literal and HF-encoded directory names
+    cleared = False
+    for pattern in ["microsoft/phi-4-mini-instruct", "microsoft/phi_hyphen_4_hyphen_mini_hyphen_instruct"]:
+        d = cache_base / pattern
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+            print(f"  Cleared stale cache: {d}")
+            cleared = True
+    return cleared
+
+
 def _load_models_sync():
     """Synchronous model loading — runs in thread pool."""
     global _model, _tokenizer, _emotion_pipe, _ewc, _model_loaded, _load_error
@@ -328,12 +349,7 @@ def _load_models_sync():
         ]:
             try:
                 if attempt_label == "slow tokenizer (fresh cache)":
-                    # Clear corrupted HF cache for this model
-                    import shutil
-                    cache_dir = Path("/models/hf_cache/modules/transformers_modules/microsoft/phi-4-mini-instruct")
-                    if cache_dir.exists():
-                        shutil.rmtree(cache_dir, ignore_errors=True)
-                        print("  Cleared corrupted model cache, retrying...")
+                    _clear_stale_hf_cache()
                 merged = {**tok_kwargs, **attempt_kwargs}
                 _tokenizer = AutoTokenizer.from_pretrained(model_source, **merged)
                 print(f"  Tokenizer loaded ({attempt_label})")
@@ -351,7 +367,7 @@ def _load_models_sync():
         # Load model — CPU only, 4-bit quantization if bitsandbytes available
         model_kwargs = {
             "trust_remote_code": True,
-            "torch_dtype": torch.float32,   # CPU: float32
+            "dtype": torch.float32,         # CPU: float32 (torch_dtype is deprecated)
             "low_cpu_mem_usage": True
         }
         if HF_TOKEN:
@@ -368,7 +384,16 @@ def _load_models_sync():
         except ImportError:
             print("  bitsandbytes not available — loading in float32")
 
-        _model = AutoModelForCausalLM.from_pretrained(model_source, **model_kwargs)
+        # Try loading model; if stale cache causes ImportError, clear and retry
+        try:
+            _model = AutoModelForCausalLM.from_pretrained(model_source, **model_kwargs)
+        except (ImportError, ModuleNotFoundError) as e:
+            print(f"  Model load failed (likely stale cache): {e}")
+            if _clear_stale_hf_cache():
+                print("  Retrying model load with fresh cache...")
+                _model = AutoModelForCausalLM.from_pretrained(model_source, **model_kwargs)
+            else:
+                raise
 
         # Load LoRA adapter if it exists
         adapter_dir = Path(ADAPTER_PATH)

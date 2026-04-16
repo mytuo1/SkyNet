@@ -619,7 +619,7 @@ services:
         condition: service_healthy
       knobs:
         condition: service_healthy
-    <<: [*common-network, *common-restart]
+    <<: [*common-network, *common-restart, *common-extra-hosts]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8018/health')"]
       <<: *common-healthcheck

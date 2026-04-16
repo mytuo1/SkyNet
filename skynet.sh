@@ -106,6 +106,14 @@ check_deps() {
     if check_command ollama; then
         if curl -sf http://localhost:11434/api/tags &>/dev/null; then
             success "Ollama is running"
+            # Warn if Ollama is bound to 127.0.0.1 only (unreachable from Docker)
+            if command -v ss &>/dev/null; then
+                if ss -tlnp 2>/dev/null | grep ':11434' | grep -q '127.0.0.1' && \
+                   ! ss -tlnp 2>/dev/null | grep ':11434' | grep -qE '0\.0\.0\.0|\*|\[::\]'; then
+                    warn "Ollama is bound to 127.0.0.1 — Docker containers cannot reach it"
+                    warn "Fix: run './skynet.sh setup' or set OLLAMA_HOST=0.0.0.0 and restart Ollama"
+                fi
+            fi
         else
             warn "Ollama is installed but not running — start with: ollama serve"
         fi
@@ -149,6 +157,24 @@ cmd_setup() {
         success "Ollama already installed"
     fi
 
+    # ── Ollama binding: ensure it listens on 0.0.0.0 for Docker access ──────
+    # By default Ollama binds to 127.0.0.1, which is unreachable from Docker
+    # containers. On Linux with systemd we create a drop-in override.
+    if [ "$(uname)" = "Linux" ] && command -v systemctl &>/dev/null; then
+        local override_dir="/etc/systemd/system/ollama.service.d"
+        local override_file="$override_dir/override.conf"
+        if [ ! -f "$override_file" ] || ! grep -q 'OLLAMA_HOST=0.0.0.0' "$override_file" 2>/dev/null; then
+            info "Configuring Ollama to listen on 0.0.0.0 (required for Docker)..."
+            sudo mkdir -p "$override_dir"
+            printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\n' | sudo tee "$override_file" > /dev/null
+            sudo systemctl daemon-reload
+            sudo systemctl restart ollama 2>/dev/null || true
+            success "Ollama configured to listen on 0.0.0.0"
+        else
+            success "Ollama already configured for Docker access"
+        fi
+    fi
+
     # Create .env from template
     if [ ! -f .env ]; then
         if [ -f .env.example ]; then
@@ -181,7 +207,7 @@ AUTONOMY_MAX_RISK=0.7
 # Security
 SUPERGROKIE_WEBHOOK_SECRET=change-this-to-a-random-secret-min-32-chars
 
-# Ollama
+# Ollama — must listen on 0.0.0.0 for Docker access (see ./skynet.sh setup)
 OLLAMA_URL=http://host.docker.internal:11434
 OLLAMA_EMBED_MODEL=nomic-embed-text
 
