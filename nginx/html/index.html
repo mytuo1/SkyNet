@@ -1385,21 +1385,51 @@ function updateHormonePanel(hormones,mood){
     moodEl.textContent='\u2014';
     return;
   }
-  var hColors={dopamine:'#4fc3f7',serotonin:'#81c784',cortisol:'#ef5350',oxytocin:'#f48fb1',norepinephrine:'#ffb74d',endorphins:'#ce93d8'};
-  var hLabels={dopamine:'DOPA',serotonin:'SERO',cortisol:'CORT',oxytocin:'OXYT',norepinephrine:'NORE',endorphins:'ENDO'};
+  var hColors={
+    /* Adrenal */  adrenaline:'#ff5252',cortisol:'#ef5350',norepinephrine:'#ffb74d',
+    /* Pituitary */oxytocin:'#f48fb1',vasopressin:'#e1bee7',endorphins:'#ce93d8',
+    /* Pineal */   melatonin:'#5c6bc0',serotonin:'#81c784',
+    /* Hypothal */ GABA:'#26a69a',glutamate:'#ffa726',
+    /* VTA */      dopamine:'#4fc3f7',anandamide:'#7e57c2',PEA:'#ec407a',
+    /* Basal */    acetylcholine:'#66bb6a',
+    /* Gonads */   testosterone:'#8d6e63',estrogen:'#ab47bc'
+  };
+  var hLabels={
+    adrenaline:'ADRE',cortisol:'CORT',norepinephrine:'NORE',
+    oxytocin:'OXYT',vasopressin:'VASO',endorphins:'ENDO',
+    melatonin:'MELA',serotonin:'SERO',
+    GABA:'GABA',glutamate:'GLUT',
+    dopamine:'DOPA',anandamide:'ANAN',PEA:'PEA',
+    acetylcholine:'ACh',
+    testosterone:'TEST',estrogen:'ESTR'
+  };
+  /* Group by gland for organized display */
+  var glandGroups=[
+    {name:'Adrenal',hormones:['adrenaline','cortisol','norepinephrine']},
+    {name:'VTA',hormones:['dopamine','anandamide','PEA']},
+    {name:'Pituitary',hormones:['oxytocin','vasopressin','endorphins']},
+    {name:'Pineal',hormones:['serotonin','melatonin']},
+    {name:'Nuclei',hormones:['GABA','glutamate']},
+    {name:'Basal',hormones:['acetylcholine']},
+    {name:'Gonads',hormones:['testosterone','estrogen']}
+  ];
   var html='';
-  var keys=['dopamine','serotonin','cortisol','oxytocin','norepinephrine','endorphins'];
-  keys.forEach(function(k){
-    var v=hormones[k];if(typeof v!=='number')return;
-    var pct=Math.round(v*100);
-    var col=hColors[k]||'var(--accent)';
-    var warn=v>HORMONE_OVERSTIM?' \u26A0':'';
-    var low=v<HORMONE_DEPLETION?' \u2B07':'';
-    html+='<div class="hormone-row">';
-    html+='<span class="hormone-label">'+(hLabels[k]||k)+'</span>';
-    html+='<div class="hormone-bar"><div class="hormone-bar-fill" style="width:'+pct+'%;background:'+col+'"></div></div>';
-    html+='<span class="hormone-val" style="color:'+(v>HORMONE_OVERSTIM?'var(--warning)':v<HORMONE_DEPLETION?'var(--error)':'var(--text-dim)')+'">'+v.toFixed(2)+warn+low+'</span>';
-    html+='</div>';
+  glandGroups.forEach(function(g){
+    var hasAny=g.hormones.some(function(k){return typeof hormones[k]==='number';});
+    if(!hasAny)return;
+    html+='<div style="font-size:.58rem;color:var(--text-dim);margin:4px 0 1px;opacity:.7;letter-spacing:.4px">'+g.name+'</div>';
+    g.hormones.forEach(function(k){
+      var v=hormones[k];if(typeof v!=='number')return;
+      var pct=Math.round(v*100);
+      var col=hColors[k]||'var(--accent)';
+      var warn=v>HORMONE_OVERSTIM?' \u26A0':'';
+      var low=v<HORMONE_DEPLETION?' \u2B07':'';
+      html+='<div class="hormone-row">';
+      html+='<span class="hormone-label">'+(hLabels[k]||k)+'</span>';
+      html+='<div class="hormone-bar"><div class="hormone-bar-fill" style="width:'+pct+'%;background:'+col+'"></div></div>';
+      html+='<span class="hormone-val" style="color:'+(v>HORMONE_OVERSTIM?'var(--warning)':v<HORMONE_DEPLETION?'var(--error)':'var(--text-dim)')+'">'+v.toFixed(2)+warn+low+'</span>';
+      html+='</div>';
+    });
   });
   container.innerHTML=html;
   moodEl.textContent=mood||'\u2014';
@@ -1661,9 +1691,17 @@ function buildBotMsgHtml(d,latency){
       if(hy.depleted&&hy.depleted.length>0)traceContent+='<div style="color:var(--error)">\u2B07 Depleted: '+hy.depleted.map(esc).join(', ')+'</div>';
       traceContent+='</div>';
     }
-    /* Show hormone levels as mini-bars in trace */
+    /* Show hormone levels as mini-bars in trace (grouped by gland) */
     if(d.hormones&&Object.keys(d.hormones).length>0){
-      var hColors={dopamine:'#4fc3f7',serotonin:'#81c784',cortisol:'#ef5350',oxytocin:'#f48fb1',norepinephrine:'#ffb74d',endorphins:'#ce93d8'};
+      var hColors={
+        adrenaline:'#ff5252',cortisol:'#ef5350',norepinephrine:'#ffb74d',
+        oxytocin:'#f48fb1',vasopressin:'#e1bee7',endorphins:'#ce93d8',
+        melatonin:'#5c6bc0',serotonin:'#81c784',
+        GABA:'#26a69a',glutamate:'#ffa726',
+        dopamine:'#4fc3f7',anandamide:'#7e57c2',PEA:'#ec407a',
+        acetylcholine:'#66bb6a',
+        testosterone:'#8d6e63',estrogen:'#ab47bc'
+      };
       traceContent+='<div style="margin-bottom:8px;font-size:.72rem">';
       traceContent+='<div style="font-weight:700;color:#e8a060;margin-bottom:4px">\uD83E\uDDEA Hormone Levels</div>';
       Object.keys(d.hormones).forEach(function(hk){
