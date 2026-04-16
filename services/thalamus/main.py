@@ -19,6 +19,7 @@ from typing import Optional
 
 sys.path.insert(0, "/shared")
 
+import re
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -943,8 +944,8 @@ async def curiosity_queue(session_id: str):
             except Exception:
                 pass
         return {"questions": questions, "count": len(questions)}
-    except Exception as e:
-        return {"questions": [], "count": 0, "error": str(e)[:80]}
+    except Exception:
+        return {"questions": [], "count": 0, "error": "redis_error"}
 
 
 @app.get("/curiosity/answered")
@@ -960,8 +961,8 @@ async def curiosity_answered(session_id: str, limit: int = 20):
             except Exception:
                 pass
         return {"answered": pairs, "count": len(pairs)}
-    except Exception as e:
-        return {"answered": [], "count": 0, "error": str(e)[:80]}
+    except Exception:
+        return {"answered": [], "count": 0, "error": "redis_error"}
 
 
 class CuriosityAnswerRequest(BaseModel):
@@ -1150,7 +1151,6 @@ def _extract_topic(question: str, answer: str) -> str:
     Returns a lowercase 1-3 word topic or empty string.
     """
     # Combine question + answer, strip punctuation, extract nouns/keywords
-    import re
     text = f"{question} {answer}".lower()
     # Remove common question words and stopwords
     stopwords = {
@@ -1198,8 +1198,8 @@ async def curiosity_dismiss(session_id: str, question_id: str):
             pipe.rpush(queue_key, *new_queue)
             pipe.expire(queue_key, CURIOSITY_TTL)
         await pipe.execute()
-    except Exception as e:
-        return {"ok": False, "error": str(e)[:80]}
+    except Exception:
+        return {"ok": False, "error": "redis_error"}
     return {"ok": True, "dismissed": question_id}
 
 
@@ -1218,8 +1218,8 @@ async def curiosity_interests(session_id: str, limit: int = 20):
         )
         interests = [{"topic": t, "score": s} for t, s in (raw or [])]
         return {"interests": interests, "count": len(interests)}
-    except Exception as e:
-        return {"interests": [], "count": 0, "error": str(e)[:80]}
+    except Exception:
+        return {"interests": [], "count": 0, "error": "redis_error"}
 
 
 @app.post("/process")
