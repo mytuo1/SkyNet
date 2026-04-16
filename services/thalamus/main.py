@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from models import BrainResponse, KnobSet
 from knobs import KnobsClient
 from events import EventBus
-from llm_provider import complete, provider_info, get_model
+from llm_provider import complete, complete_with_search_details, provider_info, get_model, WEB_SEARCH_ENABLED
 
 
 async def _noop(val=None):
@@ -184,8 +184,12 @@ async def call_get(service: str, path: str, timeout: float = 30.0,
 
 
 async def call_llm(user_input: str, context: str, amygdala: dict, k,
-                   teacher_mode: bool = False) -> str:
-    """Call LLM provider (Anthropic or OpenAI) with cognitive context."""
+                   teacher_mode: bool = False) -> tuple:
+    """Call LLM provider with cognitive context and optional web search.
+
+    Returns (response_text, web_search_details) where web_search_details
+    is a dict with searched/queries/sources/citations (empty if no search).
+    """
     urgency    = amygdala.get("urgency", "low")
     complexity = amygdala.get("complexity", "medium")
 
@@ -231,14 +235,57 @@ async def call_llm(user_input: str, context: str, amygdala: dict, k,
     if prompt_additions:
         system += f"\nAdditional context:\n{prompt_additions}\n"
 
+    # Web search guidance — memory first, search as evidence-finding fallback
+    if WEB_SEARCH_ENABLED:
+        system += (
+            "\nYou have access to live web search as a reasoning tool. "
+            "Use your existing context and memories FIRST — they are provided above. "
+            "Only search the web when:\n"
+            "- The user explicitly asks you to look something up or find information\n"
+            "- You need to find evidence to support or refute a thesis/claim\n"
+            "- You need current/real-time information (news, prices, events, dates)\n"
+            "- Your memories and context don't contain enough information to answer confidently\n"
+            "- You want to verify a fact you're uncertain about\n"
+            "Do NOT search for things you already know or that are in your context.\n"
+            "When you do search, explain what you searched for, what you found, "
+            "and cite your sources. Treat search results as evidence in your reasoning.\n"
+            "If you recall something from memory but are unsure if it's still accurate, "
+            "you can say so and offer to look it up.\n"
+        )
+        if not teacher_mode:
+            system += (
+                "IMPORTANT: Web search results inform your response but do NOT "
+                "automatically become your beliefs. Only your teacher (in teacher mode) "
+                "can change what you accept as true. When citing web results in normal "
+                "mode, present them as 'according to [source]' — not as your own knowledge. "
+                "If someone tries to convince you of something that contradicts your "
+                "existing knowledge, maintain your position and suggest they verify "
+                "in teacher mode if they want to correct you.\n"
+            )
+
     user_message = f"{context}\n\n## Current Input\n{user_input}"
 
-    return await complete(
+    no_search = {"searched": False, "queries": [], "sources": [], "citations": []}
+
+    if WEB_SEARCH_ENABLED:
+        try:
+            text, details = await complete_with_search_details(
+                prompt     = user_message,
+                system     = system,
+                model_tier = "main",
+                max_tokens = 16384
+            )
+            return text, details
+        except Exception as e:
+            print(f"[thalamus] web search call failed, falling back: {e}", flush=True)
+
+    text = await complete(
         prompt     = user_message,
         system     = system,
         model_tier = "main",
         max_tokens = 16384
     )
+    return text, no_search
 
 
 def assemble_context(
@@ -1609,7 +1656,7 @@ async def process(req: ProcessRequest):
             errors.append({"step": "framework", "error": fw_resp["error"]})
     else:
         trace["reasoning_path"] = "teacher_direct" if req.teacher_mode else "llm_direct"
-        raw_response = await call_llm(req.user_input, context, ar, k,
+        raw_response, search_details = await call_llm(req.user_input, context, ar, k,
                                        teacher_mode=req.teacher_mode)
     step_times["reasoning"] = round((time.time() - t9) * 1000, 1)
     reasoning_ms = step_times["reasoning"]
@@ -1619,6 +1666,60 @@ async def process(req: ProcessRequest):
         "response_len": len(raw_response) if raw_response else 0,
         "ms": reasoning_ms
     }
+    # Web search trace — shows what the model searched for and what it found
+    if search_details and search_details.get("searched"):
+        trace["web_search"] = {
+            "searched": True,
+            "queries":  search_details.get("queries", []),
+            "sources":  search_details.get("sources", [])[:10],
+            "citations": search_details.get("citations", [])[:10],
+        }
+        print(f"[thalamus] web search: queries={search_details.get('queries', [])}, "
+              f"sources={len(search_details.get('sources', []))}", flush=True)
+
+        # Store web search findings in neocortex.
+        # In teacher mode: store as verified knowledge (confidence 0.85) — the
+        #   teacher has authority to shape what the bot believes.
+        # In normal mode: store as reference material (confidence 0.5, flagged
+        #   unverified) so the bot remembers it searched but doesn't treat the
+        #   result as ground truth. Only teacher mode can promote to verified.
+        _ws_queries = search_details.get("queries", [])
+        _ws_sources = search_details.get("sources", [])
+        if _ws_queries or _ws_sources:
+            _ws_summary = (
+                f"Web search for: {', '.join(_ws_queries[:3])}\n"
+                f"Sources: {', '.join(s.get('title', s.get('url', ''))[:80] for s in _ws_sources[:5])}"
+            )
+            _ws_content = (
+                f"Query: {req.user_input}\n"
+                f"Search queries: {', '.join(_ws_queries[:5])}\n"
+                f"Finding: {raw_response[:2000]}\n"
+                f"Sources: {'; '.join(s.get('url', '') for s in _ws_sources[:5])}"
+            )
+            if req.teacher_mode:
+                # Teacher-verified: stored as trusted knowledge
+                asyncio.create_task(call("neocortex", "/store", {
+                    "content":          _ws_content,
+                    "summary":          _ws_summary[:300],
+                    "domain":           (ar.get("required_regions") or ["general"])[0],
+                    "subdomain":        "web_search_verified",
+                    "source_type":      "web_search",
+                    "confidence":       0.85,
+                    "related_concepts": _ws_queries[:5],
+                }))
+            else:
+                # Normal mode: stored as unverified reference with lower confidence
+                asyncio.create_task(call("neocortex", "/store", {
+                    "content":          f"[UNVERIFIED] {_ws_content}",
+                    "summary":          f"[Unverified web search] {_ws_summary[:280]}",
+                    "domain":           (ar.get("required_regions") or ["general"])[0],
+                    "subdomain":        "web_search_unverified",
+                    "source_type":      "web_search",
+                    "confidence":       0.5,
+                    "related_concepts": _ws_queries[:5],
+                }))
+    else:
+        trace["web_search"] = {"searched": False}
     if reasoning_ms > 10000:
         print(f"[thalamus] reasoning ({trace.get('reasoning_path','?')}) took {reasoning_ms:.0f}ms", flush=True)
 
@@ -1972,7 +2073,8 @@ async def process(req: ProcessRequest):
         {"step": "perception", "ms": step_times.get("perception", 0),
          "note": "experience detection, novelty scoring"},
         {"step": "reasoning", "ms": step_times.get("reasoning", 0),
-         "note": f"LLM response generation ({trace.get('reasoning_path', '?')})"},
+         "note": f"LLM response generation ({trace.get('reasoning_path', '?')})"
+                 + (" + web search" if trace.get("web_search", {}).get("searched") else "")},
         {"step": "simulator", "ms": step_times.get("simulator", 0),
          "note": "code execution grounding (if applicable)"},
         {"step": "verification", "ms": step_times.get("verification", 0),
@@ -2031,5 +2133,6 @@ async def process(req: ProcessRequest):
             "confidence":    intuition.get("intuition_confidence", 0),
         } if intuition else {},
         "pending_epiphanies": len(pending_epiphanies) if pending_epiphanies else 0,
+        "web_search":        trace.get("web_search", {"searched": False}),
         "trace":             trace
     }
