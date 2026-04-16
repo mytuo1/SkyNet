@@ -39,6 +39,12 @@ EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
 es = AsyncElasticsearch(ES_URL)
 
+# ── Embed client (uses embed-queue with Ollama fallback) ──────────────────────
+from embed_client import embed as _embed_fn
+
+async def embed(text: str) -> list:
+    return await _embed_fn(text, service="neocortex")
+
 # ── Index Mappings ────────────────────────────────────────────────────────────
 
 KNOWLEDGE_MAPPING = {
@@ -124,37 +130,6 @@ async def shutdown():
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
-
-async def embed(text: str) -> list:
-    """Generate embedding via local Ollama — 15s timeout per attempt."""
-    for attempt in range(2):
-        try:
-            t0 = time.time()
-            resp = await http.post(
-                f"{OLLAMA_URL}/api/embeddings",
-                json={"model": EMBED_MODEL, "prompt": text[:2000], "keep_alive": -1},
-                timeout=15.0
-            )
-            elapsed = (time.time() - t0) * 1000
-            vec = resp.json()["embedding"]
-            # Guard against zero-magnitude vectors (cosine similarity rejects them)
-            if all(v == 0.0 for v in vec[:10]):
-                print(f"[neocortex] embed returned zero vector after {elapsed:.0f}ms", flush=True)
-                return []
-            if elapsed > 3000:
-                print(f"[neocortex] embed slow: {elapsed:.0f}ms", flush=True)
-            return vec
-        except (httpx.ConnectTimeout, httpx.ConnectError) as e:
-            elapsed = (time.time() - t0) * 1000
-            print(f"[neocortex] ERROR: Ollama unreachable at {OLLAMA_URL} after {elapsed:.0f}ms ({type(e).__name__}) — skipping embed (no retry)", flush=True)
-            return []
-        except Exception as e:
-            elapsed = (time.time() - t0) * 1000
-            print(f"[neocortex] embed attempt {attempt+1} failed after {elapsed:.0f}ms ({type(e).__name__}): {e}", flush=True)
-            if attempt == 0:
-                await asyncio.sleep(0.3)
-    return []
-
 
 # ── API Endpoints ─────────────────────────────────────────────────────────────
 

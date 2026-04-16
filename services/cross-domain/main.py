@@ -40,6 +40,12 @@ NEOCORTEX_URL = os.getenv("NEOCORTEX_URL",    "http://neocortex:8004")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",        "http://host.docker.internal:11434")
 EMBED_MODEL   = os.getenv("OLLAMA_EMBED_MODEL","nomic-embed-text")
 
+# ── Embed client (uses embed-queue with Ollama fallback) ──────────────────────
+from embed_client import embed as _embed_fn
+
+async def embed(text: str) -> list:
+    return await _embed_fn(text, service="cross-domain")
+
 # ── Pattern types ─────────────────────────────────────────────────────────────
 
 class PatternType(str, Enum):
@@ -117,36 +123,6 @@ async def health():
 @app.get("/knobs")
 async def get_knobs():
     return knobs.get().dict()
-
-
-async def embed(text: str) -> list:
-    """Generate embedding via local Ollama — 15s timeout per attempt."""
-    for attempt in range(2):
-        t0 = time.time()
-        try:
-            resp = await http.post(
-                f"{OLLAMA_URL}/api/embeddings",
-                json={"model": EMBED_MODEL, "prompt": text[:2000], "keep_alive": -1},
-                timeout=15.0
-            )
-            elapsed = (time.time() - t0) * 1000
-            vec = resp.json()["embedding"]
-            if all(v == 0.0 for v in vec[:10]):
-                print(f"[cross-domain] embed returned zero vector after {elapsed:.0f}ms", flush=True)
-                return []
-            if elapsed > 3000:
-                print(f"[cross-domain] embed slow: {elapsed:.0f}ms", flush=True)
-            return vec
-        except (httpx.ConnectTimeout, httpx.ConnectError) as e:
-            elapsed = (time.time() - t0) * 1000
-            print(f"[cross-domain] ERROR: Ollama unreachable at {OLLAMA_URL} after {elapsed:.0f}ms ({type(e).__name__}) — skipping embed (no retry)", flush=True)
-            return []
-        except Exception as e:
-            elapsed = (time.time() - t0) * 1000
-            print(f"[cross-domain] embed attempt {attempt+1} failed after {elapsed:.0f}ms ({type(e).__name__}): {e}", flush=True)
-            if attempt == 0:
-                await asyncio.sleep(0.3)
-    return []
 
 
 def cosine_similarity(a: list, b: list) -> float:
