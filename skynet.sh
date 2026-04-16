@@ -522,6 +522,7 @@ cmd_setup() {
         # List all GPUs if we have structured data
         if [ -n "$gpu_list" ] && [ "$gpu_count" -gt 1 ] 2>/dev/null; then
             echo "$gpu_list" | while IFS=',' read -r _idx _gname _gvram; do
+                _idx=$(echo "$_idx" | sed 's/^ *//')
                 _gname=$(echo "$_gname" | sed 's/^ *//')
                 _gvram=$(echo "$_gvram" | sed 's/^ *//')
                 echo -e "${GREEN}║  [${_idx}] ${_gname} — ${_gvram}${NC}"
@@ -559,9 +560,10 @@ cmd_setup() {
                     info "Which GPU(s) should Ollama and the Learner use?"
                     echo ""
                     echo "$gpu_list" | while IFS=',' read -r _idx _gname _gvram; do
+                        _idx=$(echo "$_idx" | tr -d ' ')
                         _gname=$(echo "$_gname" | sed 's/^ *//')
                         _gvram=$(echo "$_gvram" | sed 's/^ *//')
-                        echo "  [$(echo $_idx | tr -d ' ')] $_gname — $_gvram"
+                        echo "  [$_idx] $_gname — $_gvram"
                     done
                     echo "  [all] Use all $gpu_count GPUs"
                     echo ""
