@@ -1,0 +1,8 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY shared /shared
+COPY services/hypothalamus/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY services/hypothalamus/main.py .
+EXPOSE 8019
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8019", "--workers", "1"]

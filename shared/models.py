@@ -97,3 +97,9 @@ class ExperienceType:
     GRATITUDE_SIGNAL    = "GRATITUDE_SIGNAL"
     REGRET_SIGNAL       = "REGRET_SIGNAL"
     BELONGING_SIGNAL    = "BELONGING_SIGNAL"
+    # ── Hormonal / Intuition / Epiphany ──────────────────────────────────────
+    INTUITION_SIGNAL    = "INTUITION_SIGNAL"     # sixth sense fired
+    EPIPHANY_EVENT      = "EPIPHANY_EVENT"       # insight crystallized
+    HORMONE_SHIFT       = "HORMONE_SHIFT"        # significant hormonal state change
+    OVERSTIMULATION     = "OVERSTIMULATION"      # hormone overstimulation detected
+    DEPLETION           = "DEPLETION"            # hormone depletion detected
