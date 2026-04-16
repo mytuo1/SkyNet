@@ -85,6 +85,58 @@ EOF
     echo -e "${NC}"
 }
 
+# ── Docker Install Method Detection ──────────────────────────────────────────
+# Returns: "snap", "systemd", "desktop", "service", or "unknown"
+# Used for restart commands and nvidia-ctk daemon.json path.
+_docker_method() {
+    local _di
+    _di=$(docker info 2>/dev/null || true)
+    # Snap Docker: root dir under /var/snap/docker
+    if echo "$_di" | grep -q '/var/snap/docker'; then
+        echo "snap"; return
+    elif [ -d "/var/snap/docker" ] && command -v snap &>/dev/null; then
+        if snap list docker &>/dev/null; then
+            echo "snap"; return
+        fi
+    fi
+    # Docker Desktop: look for Desktop markers in docker info or context
+    if echo "$_di" | grep -qiE 'Docker Desktop|desktop-linux|desktop.linux'; then
+        echo "desktop"; return
+    elif docker context ls 2>/dev/null | grep -q 'desktop-linux'; then
+        echo "desktop"; return
+    fi
+    # systemd service
+    if command -v systemctl &>/dev/null && systemctl list-unit-files docker.service &>/dev/null 2>&1; then
+        echo "systemd"; return
+    fi
+    # SysV init / upstart
+    if [ -f /etc/init.d/docker ] || command -v service &>/dev/null; then
+        echo "service"; return
+    fi
+    echo "unknown"
+}
+
+# Print the right Docker restart command for the current install method.
+_docker_restart_hint() {
+    case "$(_docker_method)" in
+        snap)    info "  sudo snap restart docker" ;;
+        desktop) info "  Restart Docker Desktop from the system tray (right-click → Restart)" ;;
+        systemd) info "  sudo systemctl restart docker" ;;
+        service) info "  sudo service docker restart" ;;
+        *)       info "  Restart Docker (close and reopen, or use your init system)" ;;
+    esac
+}
+
+# Print nvidia-ctk configure command with the correct daemon.json path.
+_nvidia_ctk_hint() {
+    if [ "$(_docker_method)" = "snap" ]; then
+        # Snap Docker uses a different daemon.json location
+        info "  sudo nvidia-ctk runtime configure --runtime=docker --config /var/snap/docker/current/config/daemon.json"
+    else
+        info "  sudo nvidia-ctk runtime configure --runtime=docker"
+    fi
+}
+
 # ── Dependency Checks ─────────────────────────────────────────────────────────
 check_command() {
     command -v "$1" &>/dev/null || { error "$1 is not installed"; return 1; }
@@ -439,22 +491,48 @@ cmd_setup() {
                 gpu_mode="gpu"
                 success "Selected: GPU mode ($gpu_name)"
 
-                # Check nvidia-container-toolkit
+                # Check nvidia-container-toolkit / Docker GPU support
+                # Detects Docker install method (snap, systemd, Desktop, service)
+                # and gives correct nvidia-ctk path + restart command.
+                local _dmethod
+                _dmethod="$(_docker_method)"
+
                 if ! docker info 2>/dev/null | grep -qi nvidia; then
-                    warn "nvidia-container-toolkit not detected in Docker"
-                    echo ""
-                    if $is_wsl; then
-                        info "To enable GPU in Docker on WSL2:"
-                        info "  1. Ensure NVIDIA drivers are installed on Windows (not inside WSL)"
-                        info "  2. Inside WSL, install nvidia-container-toolkit:"
+                    if [ "$_dmethod" = "desktop" ]; then
+                        # Docker Desktop detected — it has built-in GPU support
+                        warn "Docker GPU runtime not yet active"
+                        echo ""
+                        info "You're using Docker Desktop, which has built-in NVIDIA GPU support."
+                        info "To enable it:"
+                        info "  1. Open Docker Desktop → Settings → Resources → WSL Integration"
+                        info "     (ensure your WSL distro is enabled)"
+                        info "  2. Settings → Docker Engine → ensure the config includes:"
+                        info '     "runtimes": { "nvidia": { "path": "nvidia-container-runtime" } }'
+                        info "  3. Restart Docker Desktop from the system tray (right-click → Restart)"
+                        info ""
+                        info "If GPU still isn't detected, install nvidia-container-toolkit inside WSL:"
+                        info "  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+                        info "  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
+                        info "  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
+                        _nvidia_ctk_hint
+                        info "  Then restart Docker Desktop from the system tray"
                     else
-                        info "Install nvidia-container-toolkit:"
+                        # Native Docker (snap, systemd, or service) — needs nvidia-container-toolkit
+                        warn "nvidia-container-toolkit not detected in Docker"
+                        echo ""
+                        if $is_wsl; then
+                            info "To enable GPU in Docker on WSL2:"
+                            info "  1. Ensure NVIDIA drivers are installed on Windows (not inside WSL)"
+                            info "  2. Install nvidia-container-toolkit inside WSL:"
+                        else
+                            info "Install nvidia-container-toolkit:"
+                        fi
+                        info "  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+                        info "  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
+                        info "  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
+                        _nvidia_ctk_hint
+                        _docker_restart_hint
                     fi
-                    info "  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
-                    info "  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
-                    info "  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
-                    info "  sudo nvidia-ctk runtime configure --runtime=docker"
-                    info "  sudo systemctl restart docker"
                     echo ""
                     read -rp "Continue with GPU mode anyway? [Y/n]: " cont
                     case "$(to_lower "${cont:-y}")" in

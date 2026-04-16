@@ -243,9 +243,23 @@ WSL2 passes through the host GPU to Linux containers. Requirements:
      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
      | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
-   sudo nvidia-ctk runtime configure --runtime=docker
-   sudo systemctl restart docker
    ```
+   Then configure and restart Docker based on your install method:
+   - **Snap Docker** (`docker info` shows `/var/snap/docker`):
+     ```bash
+     sudo nvidia-ctk runtime configure --runtime=docker \
+       --config /var/snap/docker/current/config/daemon.json
+     sudo snap restart docker
+     ```
+   - **Systemd Docker** (installed via `get.docker.com` or apt):
+     ```bash
+     sudo nvidia-ctk runtime configure --runtime=docker
+     sudo systemctl restart docker
+     ```
+   - **Docker Desktop** (Windows app with WSL2 backend):
+     Docker Desktop has built-in GPU support. Restart Docker Desktop from
+     the system tray. If GPU still isn't detected, install
+     nvidia-container-toolkit (above) then restart Docker Desktop.
 4. **Verify**: `docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi`
 
 ### Native Linux Setup (GPU)
