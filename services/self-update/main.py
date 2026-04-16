@@ -127,7 +127,7 @@ class GenerateServiceRequest(BaseModel):
 
 BRAIN_ARCHITECTURE_CONTEXT = """# Brain System — Architecture Context
 
-This is one microservice in a 23-service cognitive AI architecture.
+This is one microservice in a 24-service cognitive AI architecture.
 Each service is a FastAPI app in a Docker container.
 
 ## Core Rules

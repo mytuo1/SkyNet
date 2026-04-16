@@ -2,7 +2,7 @@
 
 ## What You're Running
 
-23 containerized services + infrastructure. Total system at rest: ~6-8GB RAM minimum.
+24 containerized services + infrastructure. Total system at rest: ~6-8GB RAM minimum.
 With learner model loaded: 12-16GB. With vision: +4GB.
 
 ```
@@ -35,6 +35,7 @@ dashboard        8080    128MB     minimal  Web UI — terminal, monitoring, log
 autonomy         8018    256MB     medium   Autonomous self-improvement loop
 hypothalamus     8019    128MB     minimal  Hormonal system — 16 hormones, 7 glands
 insight-engine   8020    128MB     minimal  Epiphany detection via graph analysis
+embed-queue      8021    128MB     minimal  Centralized embedding — Redis Streams MQ + cache
 ────────────────────────────────────────────────────────────────────
 TOTAL (no learner/vision):  ~6GB RAM
 TOTAL (full system):        ~16GB RAM
@@ -46,8 +47,8 @@ TOTAL (full system):        ~16GB RAM
 
 ```bash
 git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
-./skynet.sh setup    # installs deps, creates .env, pulls models
-./skynet.sh start    # builds and starts everything
+./skynet.sh setup    # installs deps, detects GPU, creates .env, pulls models
+./skynet.sh start    # builds, init DBs, warms Ollama, starts all 24 services
 ./skynet.sh dashboard  # opens http://localhost:8080
 ```
 
@@ -55,16 +56,30 @@ git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
 
 | Command | Description |
 |---------|-------------|
-| `./skynet.sh start` | Full startup: build, init DBs, start all services |
-| `./skynet.sh stop` | Graceful shutdown |
-| `./skynet.sh restart` | Quick restart — preserves all data and conversations |
-| `./skynet.sh status` | Show all service health |
-| `./skynet.sh logs [svc]` | Tail logs (all or specific service) |
+| `./skynet.sh setup` | First-time wizard: Docker, Ollama, **GPU/CPU selection**, .env, model pull |
+| `./skynet.sh start` | Full startup: build, init DBs, warm Ollama, start all 24 services |
+| `./skynet.sh stop` | Graceful shutdown (data preserved) |
+| `./skynet.sh restart` | Quick restart — no rebuild, keeps all data and conversations |
+| `./skynet.sh update` | Git pull + rebuild changed services + restart |
+| `./skynet.sh status` | Show all service health and brain diagnostics |
+| `./skynet.sh logs [svc]` | Tail logs (all or specific). Try: `./skynet.sh logs embed-queue` |
 | `./skynet.sh dashboard` | Open the web dashboard |
 | `./skynet.sh think` | Activate autonomous thinking |
-| `./skynet.sh update` | Git pull + rebuild changed services |
-| `./skynet.sh rebuild` | Wipe databases and rebuild fresh (confirms first) |
+| `./skynet.sh rebuild` | **DESTRUCTIVE** — wipe databases, rebuild all containers fresh |
 | `./skynet.sh reset` | Factory reset (alias for rebuild) |
+
+### Common scenarios
+
+| Scenario | Command |
+|----------|---------|
+| **First install** | `./skynet.sh setup` then `./skynet.sh start` |
+| **After code changes** (git pull) | `./skynet.sh update` |
+| **Quick restart** (no rebuild) | `./skynet.sh restart` |
+| **Config change** (edited .env) | `./skynet.sh restart` |
+| **After system reboot** | `./skynet.sh start` (Ollama auto-starts via systemd) |
+| **Wipe and reinstall** | `./skynet.sh rebuild` (confirms first, destroys all data) |
+| **Switch GPU ↔ CPU** | `./skynet.sh setup` (re-run, picks new mode) then `./skynet.sh rebuild` |
+| **Check embed queue** | `./skynet.sh logs embed-queue` or `curl localhost:8000/brain/embed-queue/stats` |
 
 ---
 
@@ -94,6 +109,111 @@ generic     — Any OpenAI-compatible endpoint (needs GENERIC_API_KEY + GENERIC_
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull nomic-embed-text   # 274MB — embeddings (required)
 ollama pull phi4                # 9GB — local inference (optional)
+```
+
+---
+
+## GPU / CPU Configuration
+
+`./skynet.sh setup` auto-detects your GPU and asks interactively:
+
+```
+╔══════════════════════════════════════════════════════╗
+║  dGPU DETECTED                                      ║
+║  NVIDIA GeForce RTX 3080 Ti Laptop GPU              ║
+║  VRAM: 16384 MiB                                    ║
+║  Runtime: WSL2 (GPU passthrough)                    ║
+╚══════════════════════════════════════════════════════╝
+
+Use GPU acceleration? [Y/n]:
+```
+
+### What GPU mode changes
+
+| Component | GPU mode | CPU mode |
+|-----------|----------|----------|
+| **Ollama** | Uses GPU for embeddings (fast) | `OLLAMA_NUM_GPU=0` forces CPU |
+| **Learner** (Phi-4-mini) | CUDA 12.1, float16, ~4GB VRAM | CPU, float32, ~8GB RAM |
+| **Docker** | Needs `nvidia-container-toolkit` | No extra drivers |
+| **TORCH_INDEX_URL** | `whl/cu121` | `whl/cpu` |
+
+### WSL2 Setup (Windows + GPU)
+
+WSL2 passes through the host GPU to Linux containers. Requirements:
+
+1. **Windows**: Install NVIDIA GPU drivers (Game Ready or Studio) — NOT inside WSL
+2. **WSL2**: GPU is automatically visible (`nvidia-smi` should work)
+3. **Docker GPU**: Install nvidia-container-toolkit inside WSL:
+   ```bash
+   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+     | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+     | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+   sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+   sudo nvidia-ctk runtime configure --runtime=docker
+   sudo systemctl restart docker
+   ```
+4. **Verify**: `docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi`
+
+### Native Linux Setup (GPU)
+
+Same as WSL2 step 3 above. The `./skynet.sh setup` wizard will guide you.
+
+### Switching between GPU and CPU
+
+```bash
+./skynet.sh setup    # re-run — select different mode
+./skynet.sh rebuild  # rebuild containers with new PyTorch (CUDA vs CPU)
+```
+
+---
+
+## Running Red-Hot — Zero Cold Starts
+
+The system is designed so all infrastructure is always hot and ready:
+
+### Ollama (host-side, never restarts, never unloads)
+
+- Runs as a systemd service on the host (not in Docker)
+- `OLLAMA_KEEP_ALIVE=-1` — models stay loaded in VRAM/RAM permanently
+- `OLLAMA_NUM_PARALLEL=4` — handles 4 concurrent embed requests
+- `restart: always` via systemd — survives reboots
+- `./skynet.sh start` warms up the embed model before starting services
+- Every API call includes `keep_alive: -1` to prevent unloading
+
+### Databases (always available)
+
+All database containers use `restart: unless-stopped`:
+- **Redis** — sub-ms latency, no cold start possible
+- **Elasticsearch** — JVM warm-up takes ~15s on first boot, then stays hot
+- **EdgeDB** — connection pool stays warm via health checks every 15s
+
+### Embed Queue (Redis Streams MQ)
+
+The `embed-queue` service (port 8021) centralizes all embedding calls:
+- **Cache**: Redis cache with 6h TTL — repeated texts return in <1ms
+- **Dedup**: Concurrent requests for identical text share one Ollama call
+- **Async queue**: Write-path embeds (store/encode) can be fire-and-forget via Redis Streams
+- **Background workers**: 2 stream consumers drain the queue continuously
+- **Stale job recovery**: XCLAIM reclaims stuck jobs after 30s
+- The queue drains fast enough that by the time the user reads a response (~5-30s), all write-path embeddings are indexed and searchable for the next interaction
+
+### Monitoring embed performance
+
+```bash
+# Docker logs show every Ollama call with timing and source service
+./skynet.sh logs embed-queue
+
+# Example output:
+# [embed-queue] SYNC src=neocortex cache=HIT 2ms dims=768 "What is machine learning?"
+# [embed-queue] SYNC src=hippocampus cache=MISS ollama=145ms dims=768 "User asked about ML"
+# [embed-queue] OLLAMA src=async:neocortex OK 142ms dims=768 "New knowledge to store"
+# [embed-queue] ASYNC src=neocortex job=a3f2b1 OK 148ms cache=MISS dims=768 callback=200 12ms
+
+# Stats API
+curl http://localhost:8000/brain/embed-queue/stats
+# Returns: cache_hit_rate, avg_ollama_ms, queue_depth, async completed/failed counts
 ```
 
 ---
@@ -600,8 +720,7 @@ MAX_TOKENS_MAIN=16384
 MAX_TOKENS_FAST=8192
 
 # 5. Restart services (no rebuild needed)
-docker compose restart thalamus compass verification cross-domain \
-                        metacognition framework-router self-update goals hypothalamus
+./skynet.sh restart
 
 # 6. Verify
 curl http://localhost:8000/health | grep llm_provider
@@ -620,7 +739,7 @@ Features:
 - **Emotion Tracker**: Glassmorphism panel (upper-left) with current feeling, overall mood bar, expandable history of last 20 interactions
 - **Hormonal State**: 16-hormone panel below emotion tracker showing real-time hormone levels per gland, with overstimulation/depletion warnings
 - **Hormone Injection**: Manual hormone injection panel (below hormone bars, above sessions) — pick any of the 16 hormones, set amount ±0.40, optional gland bypass
-- **Monitoring**: Per-service metrics (all 23 services), latency, error rates, sparkline charts (7-day history)
+- **Monitoring**: Per-service metrics (all 24 services), latency, error rates, sparkline charts (7-day history)
 - **Logging**: App logs per service + Docker container logs toggle, live WebSocket event stream
 - **Response Trace**: Every pipeline step with wall-clock ms timing, ordered `pipeline_order` summary, full hormone activity (levels, deltas, gland energy, modified knobs)
 - **Controls**: Rotary dial knobs (drag/scroll to adjust), personality presets, perception feed

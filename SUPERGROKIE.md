@@ -1,6 +1,6 @@
 # Brain System — Architecture Guide for supergrokie
 
-This repository contains a 23-service cognitive AI architecture.
+This repository contains a 24-service cognitive AI architecture.
 Each service is a FastAPI microservice in a Docker container.
 Services communicate only via HTTP — they never import each other.
 
@@ -29,6 +29,7 @@ PORT    SERVICE           PURPOSE
 8018    autonomy          Autonomous self-improvement loop
 8019    hypothalamus      Hormonal system — 16 hormones via 7 glands
 8020    insight-engine    Epiphany detection via graph analysis
+8021    embed-queue       Centralized embedding — Redis Streams MQ + cache
 8080    dashboard         Web UI — terminal, monitoring, logs, controls
 8090    knobs             Dynamic behavioral parameters — Redis
 ```

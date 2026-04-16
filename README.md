@@ -195,7 +195,7 @@ Long-horizon Agency → Persistent goal store + hierarchical planner (Goals serv
 Continual Learning → Local model with LoRA + EWC + Replay buffer (Learner service)
 </pre>
 
-### System Services — Full List (23 services):
+### System Services — Full List (24 services):
 <pre>
 HUMAN BRAIN REGION          CODE EQUIVALENT              PURPOSE
 ─────────────────────────────────────────────────────────────────
@@ -282,6 +282,10 @@ Control Center            →  Dashboard                  Web UI for monitoring,
 
 Autonomous Will           →  Autonomy                   Self-directed thinking,
                                                          risk-gated actions (port 8018)
+
+Corpus Callosum           →  Embed Queue                Centralized embedding MQ,
+                                                         Redis Streams cache + dedup
+                                                         (port 8021)
 </pre>
 
 ---
@@ -303,6 +307,7 @@ brain/
 │   ├── knobs.py                       ← KnobsClient (read-only, all services use)
 │   ├── events.py                      ← EventBus (Redis pub/sub)
 │   ├── llm_provider.py                ← Multi-provider LLM abstraction (9 providers)
+│   ├── embed_client.py               ← Embed client (embed-queue + Ollama fallback)
 │   └── __init__.py
 ├── services/
 │   ├── thalamus/                      ← Orchestrator,           port 8000
@@ -327,6 +332,7 @@ brain/
 │   ├── autonomy/                      ← Self-directed thinking, port 8018
 │   ├── hypothalamus/                  ← Hormonal system,        port 8019
 │   ├── insight-engine/                ← Epiphany detection,     port 8020
+│   ├── embed-queue/                   ← Embedding MQ + cache,   port 8021
 │   └── dashboard/                     ← Web UI + monitoring,    port 8080
 │
 │   Each service contains:
