@@ -391,26 +391,17 @@ def _load_models_sync():
                     bnb_4bit_compute_dtype=torch.float16
                 )
                 print("  4-bit quantization enabled (bitsandbytes + CUDA)")
-            except ImportError:
-                print("  bitsandbytes not available — using float16 on GPU")
+            except (ImportError, AttributeError) as e:
+                print(f"  bitsandbytes not usable — using float16 on GPU: {e}")
         else:
-            # CPU path: float32, try 4-bit if bitsandbytes available
+            # CPU path: float32 (bitsandbytes 4-bit quantization requires CUDA)
             model_kwargs["torch_dtype"] = torch.float32
-            try:
-                from transformers import BitsAndBytesConfig
-                import bitsandbytes
-                model_kwargs["quantization_config"] = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float32
-                )
-                print("  4-bit quantization enabled (bitsandbytes)")
-            except ImportError:
-                print("  bitsandbytes not available — loading in float32")
+            print("  Loading in float32 (CPU mode — 4-bit quantization requires CUDA)")
 
         # Try loading model; if stale cache causes ImportError, clear and retry
         try:
             _model = AutoModelForCausalLM.from_pretrained(model_source, **model_kwargs)
-        except (ImportError, ModuleNotFoundError) as e:
+        except (ImportError, ModuleNotFoundError, AttributeError) as e:
             print(f"  Model load failed (likely stale cache): {e}")
             if _clear_stale_hf_cache():
                 print("  Retrying model load with fresh cache...")
