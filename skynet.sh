@@ -108,8 +108,10 @@ check_deps() {
             success "Ollama is running"
             # Warn if Ollama is bound to 127.0.0.1 only (unreachable from Docker)
             if command -v ss &>/dev/null; then
-                if ss -tlnp 2>/dev/null | grep ':11434' | grep -q '127.0.0.1' && \
-                   ! ss -tlnp 2>/dev/null | grep ':11434' | grep -qE '0\.0\.0\.0|\*|\[::\]'; then
+                local ss_out
+                ss_out=$(ss -tlnp 2>/dev/null | grep ':11434' || true)
+                if echo "$ss_out" | grep -q '127.0.0.1' && \
+                   ! echo "$ss_out" | grep -qE '0\.0\.0\.0|\*|\[::\]'; then
                     warn "Ollama is bound to 127.0.0.1 — Docker containers cannot reach it"
                     warn "Fix: run './skynet.sh setup' or set OLLAMA_HOST=0.0.0.0 and restart Ollama"
                 fi

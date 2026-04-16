@@ -302,13 +302,16 @@ def _clear_stale_hf_cache():
     Stale cached modules cause ImportError at model load time.
     """
     import shutil
+    import re
     cache_base = Path("/models/hf_cache/modules/transformers_modules")
     if not cache_base.exists():
         return False
-    # Match both the literal and HF-encoded directory names
+    # Derive both literal and HF-encoded directory names from the configured model
+    model_name = LOCAL_MODEL_NAME  # e.g. "microsoft/phi-4-mini-instruct"
+    hf_encoded = re.sub(r'-', '_hyphen_', model_name)
     cleared = False
-    for pattern in ["microsoft/phi-4-mini-instruct", "microsoft/phi_hyphen_4_hyphen_mini_hyphen_instruct"]:
-        d = cache_base / pattern
+    for name in set([model_name, hf_encoded]):
+        d = cache_base / name
         if d.exists():
             shutil.rmtree(d, ignore_errors=True)
             print(f"  Cleared stale cache: {d}")
