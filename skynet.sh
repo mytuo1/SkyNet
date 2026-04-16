@@ -207,25 +207,19 @@ cmd_setup() {
                 # Check nvidia-container-toolkit
                 if ! docker info 2>/dev/null | grep -qi nvidia; then
                     warn "nvidia-container-toolkit not detected in Docker"
+                    echo ""
                     if $is_wsl; then
-                        echo ""
                         info "To enable GPU in Docker on WSL2:"
                         info "  1. Install NVIDIA drivers on Windows (not inside WSL)"
-                        info "  2. Inside WSL, run:"
-                        info "     curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
-                        info "     curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
-                        info "     sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
-                        info "     sudo nvidia-ctk runtime configure --runtime=docker"
-                        info "     sudo systemctl restart docker"
+                        info "  2. Inside WSL, run the commands below"
                     else
-                        echo ""
                         info "Install nvidia-container-toolkit:"
-                        info "  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
-                        info "  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
-                        info "  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
-                        info "  sudo nvidia-ctk runtime configure --runtime=docker"
-                        info "  sudo systemctl restart docker"
                     fi
+                    info "  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+                    info "  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
+                    info "  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
+                    info "  sudo nvidia-ctk runtime configure --runtime=docker"
+                    info "  sudo systemctl restart docker"
                     echo ""
                     read -rp "Continue with GPU mode anyway? [Y/n]: " cont
                     case "${cont,,}" in

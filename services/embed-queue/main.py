@@ -152,7 +152,7 @@ async def _cleanup_locks():
 # ── Core Embedding Logic ──────────────────────────────────────────────────────
 
 def _cache_key(text: str) -> str:
-    h = hashlib.sha256(text[:MAX_TEXT_LEN].encode("utf-8", errors="replace")).hexdigest()[:16]
+    h = hashlib.sha256(text[:MAX_TEXT_LEN].encode("utf-8", errors="replace")).hexdigest()[:32]
     return f"emb:{h}"
 
 
