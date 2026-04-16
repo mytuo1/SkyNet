@@ -370,7 +370,7 @@ def _load_models_sync():
         # Load model — CPU only, 4-bit quantization if bitsandbytes available
         model_kwargs = {
             "trust_remote_code": True,
-            "torch_dtype": torch.float32,    # CPU: float32
+            "torch_dtype": torch.float32,  # CPU: float32
             "low_cpu_mem_usage": True
         }
         if HF_TOKEN:
