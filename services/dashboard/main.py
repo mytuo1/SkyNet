@@ -648,7 +648,8 @@ async def api_docker_logs(
                                  "count": len(lines)})
 
     except Exception as exc:
-        return JSONResponse({"error": f"Failed to read Docker logs: {exc}"},
+        logger.warning("Docker logs error for %s: %s", service, exc)
+        return JSONResponse({"error": "Failed to read Docker logs"},
                             status_code=500)
 
 
