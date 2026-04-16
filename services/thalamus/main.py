@@ -90,6 +90,9 @@ SERVICES = {
     "goals":           os.getenv("GOALS_URL",             "http://goals:8015"),
     "learner":         os.getenv("LEARNER_URL",           "http://learner:8016"),
     "vision":          os.getenv("VISION_URL",            "http://vision:8017"),
+    # Hormonal / Insight services
+    "hypothalamus":    os.getenv("HYPOTHALAMUS_URL",      "http://hypothalamus:8019"),
+    "insight_engine":  os.getenv("INSIGHT_ENGINE_URL",    "http://insight-engine:8020"),
     # Auxiliary services (not called during processing but health-checked)
     "dashboard":       os.getenv("DASHBOARD_URL",         "http://dashboard:8080"),
     "autonomy":        os.getenv("AUTONOMY_URL",          "http://autonomy:8018"),
@@ -102,6 +105,7 @@ _SVC_DASH_NAME = {
     "causal_graph": "causal-graph",
     "self_update": "self-update",
     "framework": "framework-router",
+    "insight_engine": "insight-engine",
 }
 
 
@@ -248,7 +252,10 @@ def assemble_context(
     visual:        dict,
     agenda:        list,
     k,
-    learnings:     dict = None
+    learnings:     dict = None,
+    hormones:      dict = None,
+    intuition:     dict = None,
+    pending_epiphanies: list = None
 ) -> str:
     """Assemble complete cognitive context for the LLM."""
     parts = []
@@ -288,6 +295,65 @@ def assemble_context(
             f"WHY you felt this way based on the input content. "
             f"Be honest — if the assessment seems wrong for the input, "
             f"acknowledge that your emotional detection may have erred."
+        )
+
+    # Hormonal state — neurochemical modulation of personality
+    if hormones and hormones.get("hormones"):
+        h = hormones["hormones"]
+        baselines = hormones.get("baselines", {})
+        # Only show hormones that have shifted notably from baseline
+        shifted = {
+            name: level for name, level in h.items()
+            if abs(level - baselines.get(name, 0.5)) > 0.08
+        }
+        if shifted or hormones.get("overstimulated") or hormones.get("depleted"):
+            mood = hormones.get("mood_summary", "")
+            parts.append(f"\n## Hormonal State\n{mood}")
+            if shifted:
+                shifts = ", ".join(
+                    f"{name}: {level:.2f} ({'↑' if level > baselines.get(name, 0.5) else '↓'})"
+                    for name, level in sorted(shifted.items())
+                )
+                parts.append(f"Active shifts: {shifts}")
+            if hormones.get("overstimulated"):
+                parts.append(
+                    f"⚠️ Overstimulated: {', '.join(hormones['overstimulated'])} — "
+                    f"these have been elevated for several turns"
+                )
+            if hormones.get("depleted"):
+                parts.append(
+                    f"⚠️ Depleted: {', '.join(hormones['depleted'])} — "
+                    f"these have been low for several turns"
+                )
+
+    # Intuition (Sixth Sense) — pattern-based gut feeling
+    if intuition and intuition.get("has_intuition"):
+        direction  = intuition.get("intuition_direction", "caution")
+        confidence = intuition.get("intuition_confidence", 0)
+        basis      = intuition.get("basis", "")
+        somatic    = intuition.get("somatic_marker", "")
+        parts.append(
+            f"\n## Intuitive Assessment (Sixth Sense)\n"
+            f"Your accumulated experience produces a {direction} intuition "
+            f"(confidence: {confidence:.0%}). Basis: {basis}.\n"
+            f"{somatic}\n"
+            f"Note: This is pattern-based intuition, not verified reasoning. "
+            f"Treat it as a strong hypothesis to verify, not a conclusion."
+        )
+
+    # Pending epiphanies — insights crystallized between interactions
+    if pending_epiphanies:
+        parts.append("\n## Recent Epiphanies (Insights Crystallized)")
+        for ep in pending_epiphanies[:3]:
+            concepts = ep.get("concepts", [])
+            synthesis = ep.get("novel_synthesis", "")
+            parts.append(
+                f"💡 **Insight in {ep.get('domain', 'unknown')}**: {synthesis}\n"
+                f"   Concepts connected: {', '.join(concepts[:8])}"
+            )
+        parts.append(
+            "These are new realizations. If relevant, share them naturally. "
+            "They may change how you approach this domain going forward."
         )
 
     # Uncertainty flag
@@ -678,6 +744,61 @@ async def process(req: ProcessRequest):
             "execution_ms": round((time.time() - start) * 1000, 2), "trace": trace
         }
 
+    # ── STEP 1.5: Hypothalamus — hormonal state update ───────────────────────
+    # The hypothalamus translates amygdala signals into hormonal changes
+    # and returns hormone-modified knobs for the rest of the pipeline.
+    t_hypo = time.time()
+    # Compute turn count from working memory
+    thoughts = wm.get("thought_stream", [])
+    turn_count = len([t for t in thoughts if isinstance(t, dict) and t.get("type") == "interaction"])
+    # Time since last interaction
+    last_interaction = max(
+        (t.get("timestamp", 0) for t in thoughts
+         if isinstance(t, dict) and t.get("type") == "interaction"),
+        default=0
+    )
+    time_since_last = time.time() - last_interaction if last_interaction > 0 else 0
+
+    hypo_resp = await call("hypothalamus", "/update", {
+        "session_id":        req.session_id,
+        "amygdala_result":   ar,
+        "perception_events": [],   # not available yet — will do post-update
+        "metacognition":     {},   # not available yet
+        "verification":      {},
+        "turn_count":        turn_count,
+        "time_since_last":   time_since_last,
+    })
+    hormones = hypo_resp.get("data", {})
+    step_times["hypothalamus"] = round((time.time() - t_hypo) * 1000, 1)
+    if hypo_resp.get("error"):
+        errors.append({"step": "hypothalamus", "error": hypo_resp["error"]})
+    trace["hypothalamus"] = {
+        "dominant":       hormones.get("dominant_hormone", ""),
+        "mood":           hormones.get("mood_summary", ""),
+        "overstimulated": hormones.get("overstimulated", []),
+        "depleted":       hormones.get("depleted", []),
+        "ms":             step_times["hypothalamus"]
+    }
+
+    # Apply hormone-modified knobs (overlay on base knobs)
+    hormone_knob_mods = hormones.get("modified_knobs", {})
+    if hormone_knob_mods:
+        # Override specific knob values with hormone-adjusted versions
+        k_dict = k.dict()
+        k_dict.update(hormone_knob_mods)
+        from models import KnobSet
+        k = KnobSet(**k_dict)
+
+    # ── STEP 1.6: Check for pending epiphanies from insight engine ────────
+    pending_epiphanies = []
+    try:
+        ep_resp = await call_get("insight_engine",
+                                 f"/pending/{req.session_id}")
+        if isinstance(ep_resp, dict) and ep_resp.get("has_pending"):
+            pending_epiphanies = ep_resp.get("epiphanies", [])
+    except Exception:
+        pass
+
     # ── STEP 4: Parallel memory + reasoning preparation ───────────────────────
     t4 = time.time()
     pb_times: dict[str, float] = {}   # per-service timings inside the batch
@@ -703,6 +824,13 @@ async def process(req: ProcessRequest):
         # Vision context (if requested or VISION_ENABLED)
         _timed("vision", call_get("vision", "/current"), pb_times)
         if req.include_vision else _timed("vision", _noop({}), pb_times),
+        # Intuition (sixth sense) — runs in parallel with everything else
+        _timed("intuition", call("metacognition", "/intuition", {
+            "request_id": request_id,
+            "session_id": req.session_id,
+            "user_input": req.user_input,
+            "domain":     (ar.get("required_regions") or ["general"])[0],
+        }), pb_times),
     ]
 
     results = await asyncio.gather(*parallel_batch, return_exceptions=True)
@@ -728,10 +856,22 @@ async def process(req: ProcessRequest):
     agenda    = (results[4] or {}).get("agenda", []) if isinstance(results[4], dict) else []
     visual    = results[5] if isinstance(results[5], dict) else {}
 
+    # Intuition (sixth sense) — result index 6
+    intuition_raw = results[6] if len(results) > 6 else {}
+    if isinstance(intuition_raw, (Exception, BaseException)):
+        intuition = {}
+    elif isinstance(intuition_raw, dict):
+        intuition = intuition_raw.get("data", intuition_raw)
+    else:
+        intuition = {}
+
     trace.update({
         "hippocampus":  {"episodes": len(episodic)},
         "neocortex":    {"items": len(semantic)},
         "cross_domain": {"analogies": len(analogies)},
+        "intuition":    {"has_intuition": intuition.get("has_intuition", False),
+                         "direction":     intuition.get("intuition_direction", ""),
+                         "confidence":    intuition.get("intuition_confidence", 0)},
         "vision":       {"has_context": bool(visual.get("caption"))}
     })
 
@@ -821,7 +961,10 @@ async def process(req: ProcessRequest):
         visual        = visual,
         agenda        = agenda,
         k             = k,
-        learnings     = learnings
+        learnings     = learnings,
+        hormones      = hormones,
+        intuition     = intuition,
+        pending_epiphanies = pending_epiphanies
     )
 
     # ── STEP 9: Reasoning (direct or multi-agent) ─────────────────────────────
@@ -1015,6 +1158,19 @@ async def process(req: ProcessRequest):
                 "ts":       time.time()
             }
         }),
+        # Persist hormonal state so the bot can introspect on its neurochemistry
+        call("working_memory", "/context", {
+            "session_id": req.session_id, "action": "set",
+            "key":        "last_hormones",
+            "data":       {
+                "hormones":       hormones.get("hormones", {}) if hormones else {},
+                "mood":           hormones.get("mood_summary", "") if hormones else "",
+                "dominant":       hormones.get("dominant_hormone", "") if hormones else "",
+                "overstimulated": hormones.get("overstimulated", []) if hormones else [],
+                "depleted":       hormones.get("depleted", []) if hormones else [],
+                "ts":             time.time()
+            }
+        }),
     )
     step_times["working_memory_update"] = round((time.time() - t14) * 1000, 1)
 
@@ -1070,6 +1226,82 @@ async def process(req: ProcessRequest):
         "domain":     (ar.get("required_regions") or ["general"])[0]
     }))
 
+    # ── STEP 16: Hypothalamus post-interaction update (background) ────────
+    # Update hormones with perception events, metacognition, and verification
+    # results that weren't available in Step 1.5
+    asyncio.create_task(call("hypothalamus", "/update", {
+        "session_id":        req.session_id,
+        "amygdala_result":   ar,
+        "perception_events": experiences[:10] if experiences else [],
+        "metacognition":     metacognition,
+        "verification":      verification,
+        "turn_count":        turn_count,
+        "time_since_last":   0,  # just happened
+    }))
+
+    # ── STEP 17: Insight Engine — fragment ingest + crystallization ────────
+    # Extract concepts from this interaction and feed to the insight engine
+    domain = (ar.get("required_regions") or ["general"])[0]
+    fragments = []
+    # Fragments from semantic search results
+    for item in semantic[:5]:
+        content = item.get("content", "")
+        words = [w for w in content.lower().split() if len(w) > 4 and w.isalpha()][:3]
+        if words:
+            fragments.append({
+                "concept":     words[0],
+                "connections": words[1:],
+                "domain":      domain,
+                "session_id":  req.session_id,
+                "source":      "neocortex",
+            })
+    # Fragments from cross-domain analogies
+    for a in analogies[:3]:
+        pattern = a.get("pattern_type", "")
+        source  = a.get("source_domain", "")
+        if pattern:
+            fragments.append({
+                "concept":     pattern,
+                "connections": [source, domain],
+                "domain":      domain,
+                "session_id":  req.session_id,
+                "source":      "cross-domain",
+            })
+    # Fragments from causal graph
+    for edge in causal.get("edges", [])[:3]:
+        cause  = edge.get("cause", "")
+        effect = edge.get("effect", "")
+        if cause and effect:
+            fragments.append({
+                "concept":     cause,
+                "connections": [effect],
+                "domain":      domain,
+                "session_id":  req.session_id,
+                "source":      "causal-graph",
+            })
+    # Key concepts from user input
+    input_words = [w for w in req.user_input.lower().split()
+                   if len(w) > 4 and w.isalpha()][:3]
+    if input_words:
+        fragments.append({
+            "concept":     input_words[0],
+            "connections": input_words[1:],
+            "domain":      domain,
+            "session_id":  req.session_id,
+            "source":      "user-input",
+        })
+
+    if fragments:
+        asyncio.create_task(call("insight_engine", "/ingest", {
+            "session_id": req.session_id,
+            "fragments":  fragments,
+        }))
+        # Trigger crystallization check (background)
+        asyncio.create_task(call("insight_engine", "/check", {
+            "session_id": req.session_id,
+            "domain":     domain,
+        }))
+
     # Consolidation check
     wm_pressure = wm_resp.get("data", {}).get("pressure", 0.0)
     if isinstance(wm_pressure, dict):
@@ -1118,5 +1350,13 @@ async def process(req: ProcessRequest):
         "active_goals":      len(agenda),
         "llm_provider":      provider_info().get("provider"),
         "teacher_mode":      req.teacher_mode,
+        "hormones":          hormones.get("hormones", {}) if hormones else {},
+        "mood":              hormones.get("mood_summary", "") if hormones else "",
+        "intuition":         {
+            "has_intuition": intuition.get("has_intuition", False),
+            "direction":     intuition.get("intuition_direction", ""),
+            "confidence":    intuition.get("intuition_confidence", 0),
+        } if intuition else {},
+        "pending_epiphanies": len(pending_epiphanies) if pending_epiphanies else 0,
         "trace":             trace
     }
