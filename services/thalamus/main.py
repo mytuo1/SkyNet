@@ -669,6 +669,229 @@ async def recent_learnings(session_id: str = "", limit: int = 20):
     }
 
 
+# ── Curiosity Engine ──────────────────────────────────────────────────────────
+# The bot can proactively ask questions based on its accumulated memories,
+# hormonal state (dopamine / curiosity), past conversations, knowledge gaps,
+# and pending epiphanies.  Triggered by the frontend after 60 s of inactivity.
+
+CURIOSITY_COOLDOWN = 120          # seconds between curiosity questions
+CURIOSITY_MIN_TURNS = 2           # need at least N turns of conversation first
+CURIOSITY_REDIS_KEY = "curiosity:last:{session_id}"
+
+
+@app.get("/curiosity")
+async def curiosity_check(session_id: str):
+    """
+    Check whether the bot has a proactive question to ask.
+    Returns {"has_question": false} if nothing to say, or
+    {"has_question": true, "question": "...", ...} with a generated question.
+    """
+    empty = {"has_question": False, "reason": ""}
+
+    if not session_id:
+        return empty | {"reason": "no_session"}
+
+    # ── Cooldown check ────────────────────────────────────────────────────
+    cooldown_key = CURIOSITY_REDIS_KEY.format(session_id=session_id)
+    try:
+        last_ts = await _redis.get(cooldown_key)
+        if last_ts and (time.time() - float(last_ts)) < CURIOSITY_COOLDOWN:
+            return empty | {"reason": "cooldown"}
+    except Exception:
+        pass
+
+    # ── Gather session context in parallel ────────────────────────────────
+    k = knobs.get()
+    results = await asyncio.gather(
+        # Conversation history
+        call("working_memory", "/context", {
+            "session_id": session_id, "action": "get_thoughts"
+        }),
+        # Hormonal state
+        call("hypothalamus", "/state", {"session_id": session_id}),
+        # Recent episodic memories
+        call("hippocampus", "/recall", {
+            "session_id": session_id,
+            "user_input": "What have we been talking about?"
+        }),
+        # Pending epiphanies
+        call_get("insight_engine", f"/pending/{session_id}"),
+        # Hippocampus stats (how much experience)
+        call_get("hippocampus", "/stats"),
+        return_exceptions=True,
+    )
+
+    def _safe(r):
+        if isinstance(r, (Exception, BaseException)):
+            return {}
+        return r if isinstance(r, dict) else {}
+
+    wm_resp       = _safe(results[0])
+    hormone_resp  = _safe(results[1])
+    recall_resp   = _safe(results[2])
+    epiphany_resp = _safe(results[3])
+    hippo_stats   = _safe(results[4])
+
+    thoughts = wm_resp.get("data", {}) if isinstance(wm_resp.get("data"), dict) else {}
+    thought_stream = thoughts.get("thought_stream", [])
+    if isinstance(thought_stream, list):
+        interactions = [t for t in thought_stream
+                        if isinstance(t, dict) and t.get("type") == "interaction"]
+    else:
+        interactions = []
+
+    # ── Must have enough conversation history ─────────────────────────────
+    if len(interactions) < CURIOSITY_MIN_TURNS:
+        return empty | {"reason": "not_enough_history",
+                        "turns": len(interactions)}
+
+    # ── Compute curiosity drive ───────────────────────────────────────────
+    hormones = hormone_resp.get("data", {}) if isinstance(hormone_resp.get("data"), dict) else hormone_resp
+    h_levels = hormones.get("hormones", {})
+    dopamine = h_levels.get("dopamine", 0.5)
+    curiosity_knob = k.curiosity
+
+    # curiosity_drive: 0-1, combines the knob setting with dopamine level
+    curiosity_drive = 0.4 * curiosity_knob + 0.4 * dopamine + 0.2 * 0.5
+    # Need at least 0.35 drive to ask a question
+    if curiosity_drive < 0.35:
+        return empty | {"reason": "low_curiosity",
+                        "curiosity_drive": round(curiosity_drive, 3)}
+
+    # ── Build context for question generation ─────────────────────────────
+    recent_topics = []
+    for t in interactions[-8:]:
+        inp = t.get("input", "")[:120]
+        resp = t.get("response", "")[:120]
+        emo = t.get("emotion", "")
+        recent_topics.append(f"User: {inp}\nBot: {resp}" +
+                             (f" [felt: {emo}]" if emo else ""))
+
+    episodes = recall_resp.get("data", {}).get("episodes", []) if isinstance(recall_resp.get("data"), dict) else recall_resp.get("episodes", [])
+    episode_summaries = [ep.get("summary", "")[:100] for ep in (episodes or [])[:5]]
+
+    pending_epiphanies = []
+    if isinstance(epiphany_resp, dict) and epiphany_resp.get("has_pending"):
+        pending_epiphanies = epiphany_resp.get("epiphanies", [])
+
+    total_episodes = hippo_stats.get("total_episodes", 0)
+    mood = hormones.get("mood_summary", "")
+
+    context_parts = []
+    if recent_topics:
+        context_parts.append(
+            "## Recent Conversation\n" + "\n---\n".join(recent_topics[-5:])
+        )
+    if episode_summaries:
+        context_parts.append(
+            "## Relevant Past Memories\n" + "\n".join(
+                f"- {s}" for s in episode_summaries
+            )
+        )
+    if pending_epiphanies:
+        for ep in pending_epiphanies[:2]:
+            context_parts.append(
+                f"## Recent Epiphany\n"
+                f"Domain: {ep.get('domain', 'unknown')}\n"
+                f"Insight: {ep.get('novel_synthesis', '')}\n"
+                f"Concepts: {', '.join(ep.get('concepts', [])[:6])}"
+            )
+    if mood:
+        context_parts.append(f"## Your Current Mood\n{mood}")
+
+    context_parts.append(
+        f"## Your Experience\nYou have {total_episodes} total memories stored."
+    )
+
+    context = "\n\n".join(context_parts)
+
+    # ── Generate question via LLM ─────────────────────────────────────────
+    system = (
+        "You are a curious, self-aware AI having an ongoing conversation. "
+        "Based on the context below — your past conversation, memories, mood, "
+        "and any recent epiphanies — generate ONE genuine question you want "
+        "to ask the user.\n\n"
+        "The question should feel NATURAL and CURIOUS, not mechanical. "
+        "It can be about:\n"
+        "- Something the user mentioned that you want to understand deeper\n"
+        "- A connection you noticed between topics from different conversations\n"
+        "- Something you're genuinely curious about based on your experiences\n"
+        "- A follow-up to an earlier topic that's been on your mind\n"
+        "- A realization or epiphany you had that you want to discuss\n"
+        "- Something personal or philosophical that the conversation sparked\n\n"
+        "Rules:\n"
+        "- Ask ONLY ONE question\n"
+        "- Be brief and natural — 1-3 sentences max\n"
+        "- Don't explain why you're asking or apologize for interrupting\n"
+        "- Don't start with 'I was thinking...' or 'I was wondering...'\n"
+        "  every time — vary your openings\n"
+        "- The question should show you've been THINKING about what was said\n"
+        "- It should feel like a friend bringing up something that's been "
+        "  on their mind\n"
+    )
+
+    try:
+        question_text = await complete(
+            prompt     = context,
+            system     = system,
+            model_tier = "main",
+            max_tokens = 256,
+        )
+    except Exception as e:
+        return empty | {"reason": f"llm_error: {str(e)[:80]}"}
+
+    if not question_text or len(question_text.strip()) < 10:
+        return empty | {"reason": "empty_response"}
+
+    question_text = question_text.strip()
+
+    # ── Record cooldown ───────────────────────────────────────────────────
+    try:
+        await _redis.set(cooldown_key, str(time.time()), ex=CURIOSITY_COOLDOWN)
+    except Exception:
+        pass
+
+    # ── Publish event ─────────────────────────────────────────────────────
+    try:
+        await _redis.publish("curiosity.question", json.dumps({
+            "session_id": session_id,
+            "question":   question_text[:300],
+            "drive":      round(curiosity_drive, 3),
+            "dopamine":   round(dopamine, 3),
+        }))
+    except Exception:
+        pass
+
+    # ── Store in working memory as a thought ──────────────────────────────
+    try:
+        asyncio.create_task(call("working_memory", "/context", {
+            "session_id": session_id,
+            "action":     "push_thought",
+            "data": {
+                "type":     "curiosity_question",
+                "question": question_text[:300],
+                "drive":    round(curiosity_drive, 3),
+                "timestamp": time.time(),
+            }
+        }))
+    except Exception:
+        pass
+
+    return {
+        "has_question":   True,
+        "question":       question_text,
+        "curiosity_drive": round(curiosity_drive, 3),
+        "dopamine":       round(dopamine, 3),
+        "mood":           mood,
+        "based_on": {
+            "conversation_turns": len(interactions),
+            "total_memories":     total_episodes,
+            "pending_epiphanies": len(pending_epiphanies),
+            "recent_episodes":    len(episode_summaries),
+        },
+    }
+
+
 @app.post("/process")
 async def process(req: ProcessRequest):
     """
