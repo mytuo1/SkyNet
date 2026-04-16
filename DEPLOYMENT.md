@@ -2,7 +2,7 @@
 
 ## What You're Running
 
-21 containerized services + infrastructure. Total system at rest: ~6-8GB RAM minimum.
+23 containerized services + infrastructure. Total system at rest: ~6-8GB RAM minimum.
 With learner model loaded: 12-16GB. With vision: +4GB.
 
 ```
@@ -33,6 +33,8 @@ learner          8016    4-8GB     high     Local model (Phi-4-mini)
 vision           8017    2-4GB     medium   Camera + CLIP
 dashboard        8080    128MB     minimal  Web UI — terminal, monitoring, logs
 autonomy         8018    256MB     medium   Autonomous self-improvement loop
+hypothalamus     8019    128MB     minimal  Hormonal system — 16 hormones, 7 glands
+insight-engine   8020    128MB     minimal  Epiphany detection via graph analysis
 ────────────────────────────────────────────────────────────────────
 TOTAL (no learner/vision):  ~6GB RAM
 TOTAL (full system):        ~16GB RAM
@@ -507,6 +509,26 @@ curl http://localhost:8000/brain/vision/stats
 # Active goals
 curl http://localhost:8000/brain/goals/goals
 
+# Hormonal state (per session)
+curl http://localhost:8000/brain/hypothalamus/state/<session_id>
+
+# Inject a hormone manually (e.g. boost dopamine by 0.15)
+curl -X POST http://localhost:8000/brain/hypothalamus/inject \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "my_session", "hormone": "dopamine", "amount": 0.15}'
+
+# Inject with gland bypass (exact amount, ignores gland capacity)
+curl -X POST http://localhost:8000/brain/hypothalamus/inject \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "my_session", "hormone": "cortisol", "amount": -0.10, "bypass_gland": true}'
+
+# Docker container logs (via dashboard API)
+curl http://localhost:8080/api/docker-logs/thalamus?tail=100
+curl http://localhost:8080/api/docker-logs/hypothalamus?tail=50
+
+# Insight Engine — pending epiphanies
+curl http://localhost:8000/brain/insight-engine/pending/<session_id>
+
 # Restart a single service (hot swap)
 docker compose restart compass
 
@@ -579,7 +601,7 @@ MAX_TOKENS_FAST=8192
 
 # 5. Restart services (no rebuild needed)
 docker compose restart thalamus compass verification cross-domain \
-                        metacognition framework-router self-update goals
+                        metacognition framework-router self-update goals hypothalamus
 
 # 6. Verify
 curl http://localhost:8000/health | grep llm_provider
@@ -593,11 +615,14 @@ Features:
 - **Terminal**: Chat with the brain, voice input (STT), webcam emotional analysis
 - **Chat History**: Conversations are persisted in browser localStorage and survive page refresh. Trace/debug data is stripped before saving to prevent localStorage overflow. Switch between sessions in the sidebar — each session's full history is restored.
 - **Session Recall**: The brain remembers the entire conversation within a session. Full messages are stored in Redis working memory (200 turns, 7-day TTL, no truncation) and fed to the LLM as context, so it can reference previous exchanges naturally.
-- **3D Brain**: Three.js rendered brain with 10 anatomical regions, auto-rotation, click-to-expand, drag to rotate, emissive glow on activation during cognitive processing
+- **3D Brain**: Three.js rendered brain with 14 anatomical regions (including hypothalamus + insightEngine), auto-rotation, click-to-expand, drag to rotate, emissive glow on activation during cognitive processing
 - **Pixelated Face**: Pixel-art avatar (80x80) showing current emotion — 6 distinct expressions (neutral, joy, curiosity, alarm, regret, belonging)
 - **Emotion Tracker**: Glassmorphism panel (upper-left) with current feeling, overall mood bar, expandable history of last 20 interactions
-- **Monitoring**: Per-service metrics, latency, error rates, sparkline charts (7-day history)
-- **Logging**: Structured logs per service, live WebSocket event stream
+- **Hormonal State**: 16-hormone panel below emotion tracker showing real-time hormone levels per gland, with overstimulation/depletion warnings
+- **Hormone Injection**: Manual hormone injection panel (below hormone bars, above sessions) — pick any of the 16 hormones, set amount ±0.40, optional gland bypass
+- **Monitoring**: Per-service metrics (all 23 services), latency, error rates, sparkline charts (7-day history)
+- **Logging**: App logs per service + Docker container logs toggle, live WebSocket event stream
+- **Response Trace**: Every pipeline step with wall-clock ms timing, ordered `pipeline_order` summary, full hormone activity (levels, deltas, gland energy, modified knobs)
 - **Controls**: Rotary dial knobs (drag/scroll to adjust), personality presets, perception feed
 - **Autonomy**: Activate/deactivate autonomous thinking, view self-generated insights
 - **Premium Theme**: Glassmorphism, gradient backgrounds, glowing borders, smooth transitions

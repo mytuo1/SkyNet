@@ -195,7 +195,7 @@ Long-horizon Agency → Persistent goal store + hierarchical planner (Goals serv
 Continual Learning → Local model with LoRA + EWC + Replay buffer (Learner service)
 </pre>
 
-### System Services — Full List (21 services):
+### System Services — Full List (23 services):
 <pre>
 HUMAN BRAIN REGION          CODE EQUIVALENT              PURPOSE
 ─────────────────────────────────────────────────────────────────
@@ -267,6 +267,16 @@ Synaptic Plasticity       →  Learner                    Continual local model
 Visual Cortex             →  Vision                     Camera input, CLIP
                                                          embeddings, visual memory
 
+Hypothalamus              →  Hypothalamus               Hormonal regulation — 16
+                                                         hormones via 7 glands,
+                                                         modifies behavior knobs
+                                                         (port 8019)
+
+Temporal Association      →  Insight Engine             Epiphany detection via
+                                                         graph analysis, cross-
+                                                         domain crystallization
+                                                         (port 8020)
+
 Control Center            →  Dashboard                  Web UI for monitoring,
                                                          knobs, logs (port 8080)
 
@@ -315,6 +325,8 @@ brain/
 │   ├── learner/                       ← Continual local model,  port 8016
 │   ├── vision/                        ← Camera + CLIP,          port 8017
 │   ├── autonomy/                      ← Self-directed thinking, port 8018
+│   ├── hypothalamus/                  ← Hormonal system,        port 8019
+│   ├── insight-engine/                ← Epiphany detection,     port 8020
 │   └── dashboard/                     ← Web UI + monitoring,    port 8080
 │
 │   Each service contains:
