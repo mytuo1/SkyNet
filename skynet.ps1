@@ -58,9 +58,10 @@ function Show-Banner {
 
 function Invoke-ComposeBuild {
     param([string[]]$BuildArgs)
+    $composeCmd = Get-ComposeCommand
     for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
         try {
-            docker compose build @BuildArgs
+            Invoke-Expression "$composeCmd build $($BuildArgs -join ' ')"
             return
         } catch {
             if ($attempt -lt $MaxRetries) {
@@ -71,6 +72,23 @@ function Invoke-ComposeBuild {
         }
     }
     Write-Die "Build failed after $MaxRetries attempts"
+}
+
+# ── GPU compose command (includes docker-compose.gpu.yml when GPU_MODE=gpu) ───
+function Get-ComposeCommand {
+    if (Test-Path ".env") {
+        $gpuLine = Get-Content ".env" | Where-Object { $_ -match '^GPU_MODE=gpu$' }
+        if ($gpuLine -and (Test-Path "docker-compose.gpu.yml")) {
+            # Verify NVIDIA runtime is available before using GPU compose
+            $dockerInfo = docker info 2>&1 | Out-String
+            if ($dockerInfo -match "nvidia|cuda" ) {
+                return "docker compose -f docker-compose.yml -f docker-compose.gpu.yml"
+            } else {
+                Write-Warn "GPU_MODE=gpu but NVIDIA runtime not found — falling back to CPU"
+            }
+        }
+    }
+    return "docker compose"
 }
 
 function Test-UrlReachable {
@@ -333,6 +351,15 @@ CAMERA_INDEX=0
     } else {
         Add-Content ".env" "`n# GPU/CPU — set by skynet.ps1 setup (gpu_mode=$gpuMode)`nTORCH_INDEX_URL=$torchUrl"
     }
+
+    # Persist GPU_MODE so start/restart pick up the GPU override compose file
+    $envContent = Get-Content ".env" -Raw
+    if ($envContent -match 'GPU_MODE=') {
+        $envContent = $envContent -replace 'GPU_MODE=.*', "GPU_MODE=$gpuMode"
+        Set-Content ".env" $envContent -NoNewline -Encoding UTF8
+    } else {
+        Add-Content ".env" "`nGPU_MODE=$gpuMode"
+    }
     Write-Ok "Learner PyTorch: $gpuMode ($torchUrl)"
 
     # Pull Ollama models
@@ -359,23 +386,25 @@ function Invoke-Start {
     Show-Banner
     Test-Dependencies
 
+    $compose = Get-ComposeCommand
+
     Write-Info "Building containers..."
     Invoke-ComposeBuild
 
     # Phase 1: Infrastructure
     Write-Info "Starting infrastructure (Redis, Elasticsearch, EdgeDB)..."
-    docker compose up -d redis elasticsearch edgedb
+    Invoke-Expression "$compose up -d redis elasticsearch edgedb"
 
     Write-Info "Waiting for databases to be healthy..."
     for ($i = 0; $i -lt 30; $i++) {
-        $ps = docker compose ps 2>&1 | Out-String
+        $ps = Invoke-Expression "$compose ps 2>&1" | Out-String
         if ($ps -match "healthy") { break }
         Start-Sleep -Seconds 2
     }
     Write-Ok "Databases ready"
 
     Write-Info "Initializing databases..."
-    try { docker compose up db-init 2>$null } catch { Write-Warn "db-init may have already run" }
+    try { Invoke-Expression "$compose up db-init 2>`$null" } catch { Write-Warn "db-init may have already run" }
 
     # Phase 2: Warm up Ollama
     Write-Info "Warming up Ollama (pre-loading embed model)..."
@@ -397,7 +426,7 @@ function Invoke-Start {
 
     # Phase 3: Start all services
     Write-Info "Starting all services..."
-    docker compose up -d
+    Invoke-Expression "$compose up -d"
 
     Write-Info "Waiting for system health..."
     for ($i = 0; $i -lt 60; $i++) {
@@ -429,17 +458,19 @@ function Invoke-Start {
 # ── Stop ──────────────────────────────────────────────────────────────────────
 function Invoke-Stop {
     Show-Banner
+    $compose = Get-ComposeCommand
     Write-Info "Gracefully shutting down all services..."
-    docker compose down
+    Invoke-Expression "$compose down"
     Write-Ok "All services stopped"
 }
 
 # ── Restart ───────────────────────────────────────────────────────────────────
 function Invoke-Restart {
     Show-Banner
+    $compose = Get-ComposeCommand
     Write-Info "Restarting services (preserving all data)..."
-    docker compose stop
-    docker compose up -d
+    Invoke-Expression "$compose stop"
+    Invoke-Expression "$compose up -d"
     Write-Info "Waiting for system health..."
     for ($i = 0; $i -lt 30; $i++) {
         if (Test-UrlReachable "$GatewayUrl/health") { break }
@@ -455,9 +486,10 @@ function Invoke-Restart {
 # ── Status ────────────────────────────────────────────────────────────────────
 function Invoke-Status {
     Show-Banner
+    $compose = Get-ComposeCommand
     Write-Info "Service Status:"
     Write-Host ""
-    docker compose ps
+    Invoke-Expression "$compose ps"
     Write-Host ""
     Write-Info "Brain Health:"
     try {
@@ -470,13 +502,14 @@ function Invoke-Status {
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 function Invoke-Logs {
+    $compose = Get-ComposeCommand
     if ($ExtraArgs -and $ExtraArgs.Count -gt 0) {
         $svc = $ExtraArgs[0]
         Write-Info "Tailing logs for $svc..."
-        docker compose logs -f $svc
+        Invoke-Expression "$compose logs -f $svc"
     } else {
         Write-Info "Tailing all logs..."
-        docker compose logs -f
+        Invoke-Expression "$compose logs -f"
     }
 }
 
@@ -506,6 +539,7 @@ function Invoke-Think {
 # ── Update ────────────────────────────────────────────────────────────────────
 function Invoke-Update {
     Show-Banner
+    $compose = Get-ComposeCommand
     Write-Info "Pulling latest code..."
     try { git pull --rebase } catch { git pull }
 
@@ -513,7 +547,7 @@ function Invoke-Update {
     Invoke-ComposeBuild
 
     Write-Info "Restarting updated services..."
-    docker compose up -d
+    Invoke-Expression "$compose up -d"
 
     Write-Ok "Update complete"
     Write-Info "Check health: .\skynet.ps1 status"
@@ -522,6 +556,7 @@ function Invoke-Update {
 # ── Rebuild ───────────────────────────────────────────────────────────────────
 function Invoke-Rebuild {
     Show-Banner
+    $compose = Get-ComposeCommand
     Write-Warn "REBUILD — This will wipe ALL databases and rebuild everything fresh"
     Write-Host ""
     $confirm = Read-Host "Type 'REBUILD' to confirm"
@@ -531,7 +566,7 @@ function Invoke-Rebuild {
     }
 
     Write-Info "Stopping all services and removing volumes..."
-    docker compose down -v --remove-orphans
+    Invoke-Expression "$compose down -v --remove-orphans"
 
     Write-Info "Rebuilding all containers..."
     Invoke-ComposeBuild @("--no-cache")
@@ -545,6 +580,7 @@ function Invoke-Rebuild {
 # ── Reset ─────────────────────────────────────────────────────────────────────
 function Invoke-Reset {
     Show-Banner
+    $compose = Get-ComposeCommand
     Write-Warn "FACTORY RESET — This will destroy ALL data (memories, models, goals, etc.)"
     Write-Host ""
     $confirm = Read-Host "Type 'RESET' to confirm"
@@ -554,7 +590,7 @@ function Invoke-Reset {
     }
 
     Write-Info "Stopping all services..."
-    docker compose down -v --remove-orphans
+    Invoke-Expression "$compose down -v --remove-orphans"
 
     Write-Info "Rebuilding from scratch..."
     Invoke-ComposeBuild @("--no-cache")

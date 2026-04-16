@@ -371,6 +371,9 @@ def _load_models_sync():
         has_cuda = torch.cuda.is_available()
         device_label = f"cuda ({torch.cuda.get_device_name(0)})" if has_cuda else "cpu"
         print(f"  Device: {device_label}")
+        if has_cuda:
+            print(f"  CUDA version: {torch.version.cuda}")
+            print(f"  GPU memory: {torch.cuda.get_device_properties(0).total_mem / 1024**3:.1f} GB")
 
         model_kwargs = {
             "trust_remote_code": True,
@@ -379,6 +382,7 @@ def _load_models_sync():
         if HF_TOKEN:
             model_kwargs["token"] = HF_TOKEN
 
+        use_quantization = False
         if has_cuda:
             # GPU path: float16 + device_map auto (fits model across available VRAM)
             model_kwargs["torch_dtype"] = torch.float16
@@ -390,20 +394,22 @@ def _load_models_sync():
                     load_in_4bit=True,
                     bnb_4bit_compute_dtype=torch.float16
                 )
+                use_quantization = True
                 print("  4-bit quantization enabled (bitsandbytes + CUDA)")
             except (ImportError, AttributeError) as e:
                 print(f"  bitsandbytes not usable — using float16 on GPU: {e}")
         else:
-            # CPU path: float32 (bitsandbytes 4-bit quantization requires CUDA)
+            # CPU path: float32, NO quantization (bitsandbytes 4-bit requires CUDA)
             model_kwargs["torch_dtype"] = torch.float32
             print("  Loading in float32 (CPU mode — 4-bit quantization requires CUDA)")
 
         # Try loading model with retries:
-        #  1. Normal load (may include 4-bit quantization)
+        #  1. Normal load (may include 4-bit quantization on GPU)
         #  2. Stale HF cache → clear and retry
-        #  3. Quantization error → strip quantization_config and retry
+        #  3. Quantization / bitsandbytes error → strip quantization_config and retry
+        #  4. GPU OOM or driver error → fall back to CPU entirely
         _model = None
-        for _load_attempt in range(3):
+        for _load_attempt in range(4):
             try:
                 _model = AutoModelForCausalLM.from_pretrained(model_source, **model_kwargs)
                 break
@@ -414,16 +420,35 @@ def _load_models_sync():
                     continue
                 raise
             except Exception as e:
-                err_msg = str(e)
-                # bitsandbytes / quantization errors → retry without quantization
-                if "quantization_config" in model_kwargs and (
-                    "frozenset" in err_msg or "bitsandbytes" in err_msg.lower()
-                    or "quantiz" in err_msg.lower() or isinstance(e, AttributeError)
-                ):
+                err_msg = str(e).lower()
+                is_quant_error = (
+                    "frozenset" in err_msg or "bitsandbytes" in err_msg
+                    or "quantiz" in err_msg or isinstance(e, AttributeError)
+                )
+                is_gpu_error = (
+                    "cuda" in err_msg or "out of memory" in err_msg
+                    or "device" in err_msg
+                )
+
+                # Attempt A: Strip quantization and retry on GPU
+                if "quantization_config" in model_kwargs and is_quant_error:
                     print(f"  Quantization failed: {e}")
-                    print("  Retrying without 4-bit quantization...")
+                    print("  Retrying without 4-bit quantization (GPU float16)...")
                     model_kwargs.pop("quantization_config", None)
+                    use_quantization = False
                     continue
+
+                # Attempt B: Fall back from GPU to CPU entirely
+                if has_cuda and (is_quant_error or is_gpu_error):
+                    print(f"  GPU load failed: {e}")
+                    print("  Falling back to CPU (float32, no quantization)...")
+                    model_kwargs.pop("quantization_config", None)
+                    model_kwargs.pop("device_map", None)
+                    model_kwargs["torch_dtype"] = torch.float32
+                    use_quantization = False
+                    has_cuda = False  # prevent further GPU attempts
+                    continue
+
                 raise
         if _model is None:
             raise RuntimeError("All model load attempts failed")

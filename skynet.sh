@@ -153,6 +153,87 @@ _nvidia_ctk_hint() {
     fi
 }
 
+# ── GPU Runtime Validation (called at every start/restart) ────────────────────
+# When GPU_MODE=gpu is set in .env, this function ensures the NVIDIA container
+# runtime actually works before Docker tries to start GPU containers.
+#
+# On WSL2, libnvidia-ml.so.1 lives at /usr/lib/wsl/lib/ but ldconfig can lose
+# the registration after a WSL restart. This function re-applies the fix every
+# time — it's idempotent and takes <100ms.
+#
+# If the GPU runtime is broken and unfixable, it falls back to CPU compose
+# (no docker-compose.gpu.yml) so the learner still starts on CPU.
+_ensure_gpu_runtime() {
+    # Only relevant when GPU mode is active
+    [ -f .env ] && grep -q '^GPU_MODE=gpu' .env 2>/dev/null || return 0
+
+    local is_wsl=false
+    grep -qi microsoft /proc/version 2>/dev/null && is_wsl=true
+
+    # ── WSL2: Always ensure NVIDIA libraries are registered ──────────────
+    # The ldconfig entry can be lost after a WSL restart (wsl --shutdown).
+    # Re-applying is cheap and idempotent.
+    if $is_wsl && [ -d /usr/lib/wsl/lib ]; then
+        if ! ldconfig -p 2>/dev/null | grep -q libnvidia-ml; then
+            info "WSL2: Registering NVIDIA libraries with ldconfig..."
+            echo "/usr/lib/wsl/lib" | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf >/dev/null 2>&1
+            sudo ldconfig 2>/dev/null
+            if ldconfig -p 2>/dev/null | grep -q libnvidia-ml; then
+                success "WSL2 NVIDIA libraries registered"
+            else
+                warn "Could not register WSL2 NVIDIA libs — GPU containers may fail"
+                warn "  Manual fix: echo '/usr/lib/wsl/lib' | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf && sudo ldconfig"
+            fi
+        fi
+    fi
+
+    # ── Verify nvidia-container-cli (the binary Docker actually uses) ────
+    if command -v nvidia-container-cli &>/dev/null; then
+        if nvidia-container-cli info &>/dev/null; then
+            return 0  # GPU runtime is healthy
+        fi
+
+        # nvidia-container-cli failed — ldconfig may need a Docker restart to take effect
+        warn "nvidia-container-cli failed — attempting Docker restart..."
+        local _dm
+        _dm="$(_docker_method)"
+        case "$_dm" in
+            snap)    sudo snap restart docker 2>/dev/null ;;
+            systemd) sudo systemctl restart docker 2>/dev/null ;;
+            service) sudo service docker restart 2>/dev/null ;;
+            desktop) info "Please restart Docker Desktop from the system tray" ;;
+        esac
+        sleep 3
+
+        if nvidia-container-cli info &>/dev/null; then
+            success "GPU runtime recovered after Docker restart"
+            return 0
+        fi
+
+        # Still broken — fall back to CPU
+        warn "NVIDIA GPU runtime is not working — falling back to CPU for this session"
+        warn "  The learner will start on CPU (slower but functional)"
+        warn "  To fix permanently:"
+        if $is_wsl; then
+            warn "    echo '/usr/lib/wsl/lib' | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf && sudo ldconfig"
+        fi
+        warn "    Ensure nvidia-container-toolkit is installed and Docker is restarted"
+        COMPOSE="docker compose"
+        return 0
+    fi
+
+    # No nvidia-container-cli — check if Docker at least knows about NVIDIA runtime
+    if docker info 2>/dev/null | grep -qi nvidia; then
+        return 0
+    fi
+
+    # No NVIDIA runtime at all — fall back to CPU
+    warn "NVIDIA container runtime not detected — falling back to CPU for this session"
+    warn "  Install nvidia-container-toolkit to enable GPU containers"
+    COMPOSE="docker compose"
+    return 0
+}
+
 # ── Dependency Checks ─────────────────────────────────────────────────────────
 check_command() {
     command -v "$1" &>/dev/null || { error "$1 is not installed"; return 1; }
@@ -1040,6 +1121,9 @@ cmd_start() {
     banner
     check_deps
 
+    # Validate GPU runtime before building (may fall back COMPOSE to CPU-only)
+    _ensure_gpu_runtime
+
     info "Building containers..."
     compose_build
 
@@ -1133,6 +1217,10 @@ cmd_stop() {
 
 cmd_restart() {
     banner
+
+    # Validate GPU runtime before restarting (may fall back COMPOSE to CPU-only)
+    _ensure_gpu_runtime
+
     info "Restarting services (preserving all data)..."
     $COMPOSE stop
     $COMPOSE up -d
