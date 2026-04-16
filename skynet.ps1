@@ -156,24 +156,56 @@ function Invoke-Setup {
     $gpuMode = "cpu"
     $gpuName = ""
     $gpuVram = ""
+    $gpuVendor = ""
 
+    # Method 1: nvidia-smi (NVIDIA GPU)
     if (Test-CommandExists "nvidia-smi") {
         try {
             $gpuName = (nvidia-smi --query-gpu=name --format=csv,noheader 2>$null | Select-Object -First 1).Trim()
             $gpuVram = (nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>$null | Select-Object -First 1).Trim()
+            if ($gpuName) { $gpuVendor = "nvidia" }
+        } catch {}
+        # Fallback: parse nvidia-smi table output
+        if (-not $gpuName) {
+            try {
+                $smiOut = nvidia-smi 2>$null | Out-String
+                if ($smiOut -match 'NVIDIA\s+([A-Za-z0-9 ]+)') { $gpuName = "NVIDIA $($Matches[1])".Trim(); $gpuVendor = "nvidia" }
+            } catch {}
+        }
+    }
+
+    # Method 2: WMI query (works even without nvidia-smi, detects ALL GPUs)
+    if (-not $gpuVendor) {
+        try {
+            $wmiGpus = Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notmatch 'Microsoft|Basic|Remote' }
+            foreach ($wmiGpu in $wmiGpus) {
+                if ($wmiGpu.Name -match 'NVIDIA') {
+                    $gpuName = $wmiGpu.Name
+                    $gpuVram = "{0:N0} MiB" -f ($wmiGpu.AdapterRAM / 1MB)
+                    $gpuVendor = "nvidia"
+                    break
+                }
+                if ($wmiGpu.Name -match 'AMD|Radeon') {
+                    $gpuName = $wmiGpu.Name
+                    $gpuVram = "{0:N0} MiB" -f ($wmiGpu.AdapterRAM / 1MB)
+                    $gpuVendor = "amd"
+                    break
+                }
+            }
         } catch {}
     }
 
-    if ($gpuName) {
+    if ($gpuVendor -eq "nvidia") {
         Write-Host ""
-        Write-Host "  ╔══════════════════════════════════════════════════════╗" -ForegroundColor Green
-        Write-Host "  ║  dGPU DETECTED                                      ║" -ForegroundColor Green
-        Write-Host "  ║  $gpuName" -ForegroundColor Green
-        Write-Host "  ║  VRAM: $gpuVram" -ForegroundColor Green
-        Write-Host "  ╚══════════════════════════════════════════════════════╝" -ForegroundColor Green
+        Write-Host "  +======================================================+" -ForegroundColor Green
+        Write-Host "  |  NVIDIA dGPU DETECTED                                 |" -ForegroundColor Green
+        Write-Host "  |  $gpuName" -ForegroundColor Green
+        if ($gpuVram) { Write-Host "  |  VRAM: $gpuVram" -ForegroundColor Green }
+        Write-Host "  +======================================================+" -ForegroundColor Green
         Write-Host ""
-        Write-Host "  GPU mode:  Ollama uses your GPU for embeddings (fast)"
-        Write-Host "             Learner uses CUDA for local model inference"
+        Write-Host "  GPU mode:  Ollama uses your NVIDIA GPU for inference + embeddings"
+        Write-Host "             Learner uses CUDA for local model training/inference"
         Write-Host ""
         Write-Host "  CPU mode:  Everything runs on CPU (slower but no GPU drivers needed)"
         Write-Host ""
@@ -185,8 +217,28 @@ function Invoke-Setup {
             $gpuMode = "gpu"
             Write-Ok "Selected: GPU mode ($gpuName)"
         }
+    } elseif ($gpuVendor -eq "amd") {
+        Write-Host ""
+        Write-Host "  +======================================================+" -ForegroundColor Green
+        Write-Host "  |  AMD GPU DETECTED                                     |" -ForegroundColor Green
+        Write-Host "  |  $gpuName" -ForegroundColor Green
+        Write-Host "  +======================================================+" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "  GPU mode:  Ollama can use AMD GPU via ROCm"
+        Write-Host "             Learner uses ROCm PyTorch"
+        Write-Host ""
+        Write-Host "  CPU mode:  Everything runs on CPU"
+        Write-Host ""
+        $choice = Read-Host "Use GPU acceleration? [Y/n]"
+        if ($choice -match '^[Nn]') {
+            $gpuMode = "cpu"
+            Write-Info "Selected: CPU mode"
+        } else {
+            $gpuMode = "gpu"
+            Write-Ok "Selected: GPU mode - AMD ROCm ($gpuName)"
+        }
     } else {
-        Write-Info "No NVIDIA GPU detected — using CPU mode"
+        Write-Info "No dedicated GPU detected — using CPU mode"
     }
 
     # ── Configure Ollama (Windows environment variables) ─────────────────────
@@ -214,7 +266,15 @@ function Invoke-Setup {
     }
 
     # ── PyTorch URL ──────────────────────────────────────────────────────────
-    $torchUrl = if ($gpuMode -eq "gpu") { "https://download.pytorch.org/whl/cu121" } else { "https://download.pytorch.org/whl/cpu" }
+    if ($gpuMode -eq "gpu") {
+        if ($gpuVendor -eq "amd") {
+            $torchUrl = "https://download.pytorch.org/whl/rocm6.0"
+        } else {
+            $torchUrl = "https://download.pytorch.org/whl/cu121"
+        }
+    } else {
+        $torchUrl = "https://download.pytorch.org/whl/cpu"
+    }
 
     # ── Create .env ──────────────────────────────────────────────────────────
     if (-not (Test-Path ".env")) {

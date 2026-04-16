@@ -130,7 +130,14 @@ All commands work identically across platforms (`./skynet.sh` on Linux/macOS/WSL
 - Same as Linux — use `./skynet.sh`
 - GPU passthrough: install NVIDIA drivers on **Windows** (not inside WSL)
 - `nvidia-smi` should work inside WSL2 if Windows drivers are installed
+- The script checks `/usr/lib/wsl/lib/nvidia-smi` automatically (the WSL2 GPU driver path)
+- If running with `sudo`, the script handles PATH differences for nvidia-smi detection
 - Docker: use Docker Desktop with WSL2 backend, or install Docker inside WSL2
+- **Troubleshooting GPU not detected in WSL2**:
+  1. Ensure NVIDIA Game Ready / Studio drivers are installed on **Windows** (not inside WSL)
+  2. Run `nvidia-smi` (without sudo) — it should show your GPU
+  3. If it works without sudo but not with sudo: the script now checks the WSL path automatically
+  4. If it doesn't work at all: update your Windows NVIDIA drivers and restart WSL (`wsl --shutdown`)
 
 ---
 
@@ -187,12 +194,40 @@ Use GPU acceleration? [Y/n]:
 
 ### What GPU mode changes
 
-| Component | GPU mode | CPU mode |
-|-----------|----------|----------|
-| **Ollama** | Uses GPU for embeddings (fast) | `OLLAMA_NUM_GPU=0` forces CPU |
-| **Learner** (Phi-4-mini) | CUDA 12.1, float16, ~4GB VRAM | CPU, float32, ~8GB RAM |
-| **Docker** | Needs `nvidia-container-toolkit` | No extra drivers |
-| **TORCH_INDEX_URL** | `whl/cu121` | `whl/cpu` |
+| Component | GPU mode (NVIDIA) | GPU mode (AMD) | CPU mode |
+|-----------|----------|---------|----------|
+| **Ollama** | Uses NVIDIA GPU (fast) | Uses ROCm (fast) | `OLLAMA_NUM_GPU=0` forces CPU |
+| **Learner** (Phi-4-mini) | CUDA 12.1, float16, ~4GB VRAM | ROCm 6.0, float16 | CPU, float32, ~8GB RAM |
+| **Docker** | Needs `nvidia-container-toolkit` | Needs ROCm drivers | No extra drivers |
+| **TORCH_INDEX_URL** | `whl/cu121` | `whl/rocm6.0` | `whl/cpu` |
+
+### GPU Auto-Detection Methods
+
+The setup script uses multiple detection methods in order of priority:
+
+**NVIDIA GPU detection (`skynet.sh`):**
+1. `nvidia-smi` via system PATH
+2. `/usr/lib/wsl/lib/nvidia-smi` — WSL2 driver shim (not in sudo PATH)
+3. `/usr/local/cuda/bin/nvidia-smi` — CUDA toolkit install
+4. `/usr/bin/nvidia-smi`, `/usr/local/bin/nvidia-smi` — standard FHS paths
+5. If running under `sudo` on WSL2: drops to real user (`$SUDO_USER`) since WSL interop may fail under root
+6. `/proc/driver/nvidia/version` — kernel driver loaded (detects GPU even without nvidia-smi)
+7. `lspci` hardware scan (native Linux only)
+8. `/dev/nvidia0` device node (GPU exists but tools missing)
+
+**AMD GPU detection (`skynet.sh`):**
+1. `rocm-smi --showproductname`
+2. `rocminfo` agent name
+3. `/dev/kfd` device exists (ROCm kernel driver)
+4. `lspci` hardware scan for Radeon/AMD discrete GPUs
+
+**Windows GPU detection (`skynet.ps1`):**
+1. `nvidia-smi` CLI
+2. `Win32_VideoController` WMI query (detects NVIDIA and AMD without CLI tools)
+
+**macOS GPU detection:**
+- Apple Silicon: `sysctl -n machdep.cpu.brand_string` (Metal auto-accelerated)
+- Intel Macs: CPU only (no CUDA/ROCm)
 
 ### WSL2 Setup (Windows + GPU)
 

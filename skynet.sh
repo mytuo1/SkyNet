@@ -246,6 +246,7 @@ cmd_setup() {
     local gpu_mode="cpu"
     local gpu_name=""
     local gpu_vram=""
+    local gpu_vendor=""   # "nvidia" | "amd" | "apple" | ""
     local is_wsl=false
     local is_apple_silicon=false
 
@@ -261,30 +262,169 @@ cmd_setup() {
         cpu_brand=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)
         if echo "$cpu_brand" | grep -qi "apple"; then
             is_apple_silicon=true
+            gpu_vendor="apple"
+            gpu_name="$cpu_brand"
             info "Detected: Apple Silicon ($cpu_brand)"
             info "Ollama uses Metal acceleration automatically — no configuration needed"
         fi
     fi
 
-    # Detect NVIDIA GPU (Linux, WSL, or Git Bash on Windows)
-    if command -v nvidia-smi &>/dev/null; then
-        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
-        gpu_vram=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null | head -1 || true)
+    # ── NVIDIA GPU Detection (multi-method, ironclad) ────────────────────────
+    # Method 1: Find nvidia-smi binary
+    #   - PATH lookup (works on native Linux, non-sudo WSL)
+    #   - /usr/lib/wsl/lib/nvidia-smi (WSL2 driver shim — the REAL location on WSL2)
+    #   - /usr/local/cuda/bin/nvidia-smi (CUDA toolkit install)
+    #   - Standard FHS paths (covers edge cases)
+    # Method 2: If running under sudo on WSL2, nvidia-smi may fail because WSL
+    #   interop doesn't work under root. Drop to the real user ($SUDO_USER).
+    # Method 3: /proc/driver/nvidia/version (kernel driver loaded, no nvidia-smi needed)
+    # Method 4: lspci hardware scan (native Linux only — not available on WSL2)
+    if [ -z "$gpu_vendor" ]; then
+        local nvidia_smi_cmd=""
+
+        # Scan all known nvidia-smi paths
+        local nv_paths="nvidia-smi /usr/lib/wsl/lib/nvidia-smi /usr/local/cuda/bin/nvidia-smi /usr/bin/nvidia-smi /usr/local/bin/nvidia-smi /opt/cuda/bin/nvidia-smi"
+        for nv_path in $nv_paths; do
+            if [ "$nv_path" = "nvidia-smi" ]; then
+                # PATH-based lookup
+                if command -v nvidia-smi &>/dev/null; then
+                    nvidia_smi_cmd="nvidia-smi"
+                    break
+                fi
+            elif [ -x "$nv_path" ]; then
+                nvidia_smi_cmd="$nv_path"
+                break
+            fi
+        done
+
+        # Build environment for nvidia-smi (WSL2 needs LD_LIBRARY_PATH for libnvidia-ml.so)
+        local nv_env=""
+        if [ -d "/usr/lib/wsl/lib" ]; then
+            nv_env="LD_LIBRARY_PATH=/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}"
+        fi
+
+        # Try running nvidia-smi
+        if [ -n "$nvidia_smi_cmd" ]; then
+            # Attempt 1: Run directly (works in most cases)
+            gpu_name=$(env $nv_env $nvidia_smi_cmd --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
+            gpu_vram=$(env $nv_env $nvidia_smi_cmd --query-gpu=memory.total --format=csv,noheader 2>/dev/null | head -1 || true)
+
+            # Attempt 2: On WSL2 under sudo, nvidia-smi may fail (WSL interop broken under root).
+            #            Drop to the real user who invoked sudo.
+            if [ -z "$gpu_name" ] && [ -n "${SUDO_USER:-}" ] && $is_wsl; then
+                info "nvidia-smi failed as root — trying as $SUDO_USER (WSL2 interop)..."
+                gpu_name=$(su - "$SUDO_USER" -c "env $nv_env $nvidia_smi_cmd --query-gpu=name --format=csv,noheader 2>/dev/null" 2>/dev/null | head -1 || true)
+                gpu_vram=$(su - "$SUDO_USER" -c "env $nv_env $nvidia_smi_cmd --query-gpu=memory.total --format=csv,noheader 2>/dev/null" 2>/dev/null | head -1 || true)
+            fi
+
+            # Attempt 3: Parse human-readable nvidia-smi table output (older drivers)
+            if [ -z "$gpu_name" ]; then
+                local smi_output=""
+                smi_output=$(env $nv_env $nvidia_smi_cmd 2>/dev/null || true)
+                if [ -z "$smi_output" ] && [ -n "${SUDO_USER:-}" ] && $is_wsl; then
+                    smi_output=$(su - "$SUDO_USER" -c "env $nv_env $nvidia_smi_cmd 2>/dev/null" 2>/dev/null || true)
+                fi
+                if [ -n "$smi_output" ]; then
+                    gpu_name=$(echo "$smi_output" | grep -oE 'NVIDIA [A-Za-z0-9 ]+' | head -1 || true)
+                    gpu_vram=$(echo "$smi_output" | grep -oE '[0-9]+MiB\s*/\s*[0-9]+MiB' | head -1 | sed 's|.*/ *||' || true)
+                fi
+            fi
+        fi
+
+        # Method 3: /proc/driver/nvidia/version — kernel driver is loaded even without nvidia-smi
+        if [ -z "$gpu_name" ] && [ -f /proc/driver/nvidia/version ]; then
+            info "NVIDIA kernel driver detected via /proc/driver/nvidia/version"
+            local nv_driver_ver
+            nv_driver_ver=$(cat /proc/driver/nvidia/version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
+            gpu_name="NVIDIA GPU (driver ${nv_driver_ver:-unknown})"
+            gpu_vram="unknown"
+        fi
+
+        # Method 4: lspci hardware scan (native Linux — not available on WSL2)
+        if [ -z "$gpu_name" ] && ! $is_wsl && command -v lspci &>/dev/null; then
+            local lspci_nvidia
+            lspci_nvidia=$(lspci 2>/dev/null | grep -i 'nvidia' | grep -iE 'vga|3d|display' | head -1 || true)
+            if [ -n "$lspci_nvidia" ]; then
+                gpu_name=$(echo "$lspci_nvidia" | sed 's/.*: //' || true)
+                gpu_vram="unknown (install nvidia-smi for details)"
+                info "NVIDIA GPU found via lspci (nvidia-smi not available)"
+            fi
+        fi
+
+        # Method 5: Check for /dev/nvidia* device nodes (GPU exists even if tools are missing)
+        if [ -z "$gpu_name" ] && [ -e /dev/nvidia0 ]; then
+            gpu_name="NVIDIA GPU (device /dev/nvidia0 — install nvidia-smi for details)"
+            gpu_vram="unknown"
+            info "NVIDIA GPU device node found at /dev/nvidia0"
+        fi
+
+        if [ -n "$gpu_name" ]; then
+            gpu_vendor="nvidia"
+        fi
     fi
 
-    if [ -n "$gpu_name" ]; then
+    # ── AMD ROCm GPU Detection ───────────────────────────────────────────────
+    if [ -z "$gpu_vendor" ] && [ "$OS" != "macos" ]; then
+        local amd_gpu_name=""
+
+        # Method 1: rocm-smi
+        if command -v rocm-smi &>/dev/null; then
+            amd_gpu_name=$(rocm-smi --showproductname 2>/dev/null | grep -i 'card' | head -1 | sed 's/.*: *//' || true)
+        fi
+
+        # Method 2: rocminfo
+        if [ -z "$amd_gpu_name" ] && command -v rocminfo &>/dev/null; then
+            amd_gpu_name=$(rocminfo 2>/dev/null | grep -A2 'Marketing Name' | grep -v 'Marketing' | head -1 | sed 's/^ *//' || true)
+            if [ -z "$amd_gpu_name" ]; then
+                amd_gpu_name=$(rocminfo 2>/dev/null | grep 'Name:' | grep -vi 'cpu' | head -1 | sed 's/.*Name: *//' || true)
+            fi
+        fi
+
+        # Method 3: /dev/kfd exists (ROCm kernel driver loaded)
+        if [ -z "$amd_gpu_name" ] && [ -c /dev/kfd ]; then
+            amd_gpu_name="AMD GPU (/dev/kfd present)"
+            # Try lspci for a better name
+            if command -v lspci &>/dev/null; then
+                local lspci_amd
+                lspci_amd=$(lspci 2>/dev/null | grep -i 'amd\|radeon' | grep -iE 'vga|3d|display' | head -1 || true)
+                if [ -n "$lspci_amd" ]; then
+                    amd_gpu_name=$(echo "$lspci_amd" | sed 's/.*: //')
+                fi
+            fi
+        fi
+
+        # Method 4: lspci fallback for AMD discrete GPUs
+        if [ -z "$amd_gpu_name" ] && ! $is_wsl && command -v lspci &>/dev/null; then
+            local lspci_amd
+            lspci_amd=$(lspci 2>/dev/null | grep -iE 'radeon|amd.*navi|amd.*vega|amd.*rx' | grep -iE 'vga|3d|display' | head -1 || true)
+            if [ -n "$lspci_amd" ]; then
+                amd_gpu_name=$(echo "$lspci_amd" | sed 's/.*: //')
+            fi
+        fi
+
+        if [ -n "$amd_gpu_name" ]; then
+            gpu_vendor="amd"
+            gpu_name="$amd_gpu_name"
+            gpu_vram="unknown (use rocm-smi for details)"
+        fi
+    fi
+
+    # ── GPU Mode Selection (interactive prompt) ──────────────────────────────
+    if [ "$gpu_vendor" = "nvidia" ]; then
         echo ""
         echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-        echo -e "${GREEN}║  dGPU DETECTED                                      ║${NC}"
+        echo -e "${GREEN}║  NVIDIA dGPU DETECTED                               ║${NC}"
         echo -e "${GREEN}║  ${gpu_name}${NC}"
-        echo -e "${GREEN}║  VRAM: ${gpu_vram}${NC}"
+        if [ "$gpu_vram" != "unknown" ] && [ -n "$gpu_vram" ]; then
+            echo -e "${GREEN}║  VRAM: ${gpu_vram}${NC}"
+        fi
         if $is_wsl; then
             echo -e "${GREEN}║  Runtime: WSL2 (GPU passthrough)                    ║${NC}"
         fi
         echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
         echo ""
-        echo "  GPU mode:  Ollama uses your GPU for embeddings (fast)"
-        echo "             Learner uses CUDA for local model inference"
+        echo "  GPU mode:  Ollama uses your NVIDIA GPU for inference + embeddings"
+        echo "             Learner uses CUDA for local model training/inference"
         echo "             Requires: nvidia-container-toolkit (for Docker GPU)"
         echo ""
         echo "  CPU mode:  Everything runs on CPU (slower but no GPU drivers needed)"
@@ -305,8 +445,8 @@ cmd_setup() {
                     echo ""
                     if $is_wsl; then
                         info "To enable GPU in Docker on WSL2:"
-                        info "  1. Install NVIDIA drivers on Windows (not inside WSL)"
-                        info "  2. Inside WSL, run the commands below"
+                        info "  1. Ensure NVIDIA drivers are installed on Windows (not inside WSL)"
+                        info "  2. Inside WSL, install nvidia-container-toolkit:"
                     else
                         info "Install nvidia-container-toolkit:"
                     fi
@@ -323,6 +463,31 @@ cmd_setup() {
                 fi
                 ;;
         esac
+    elif [ "$gpu_vendor" = "amd" ]; then
+        echo ""
+        echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║  AMD GPU DETECTED (ROCm)                            ║${NC}"
+        echo -e "${GREEN}║  ${gpu_name}${NC}"
+        echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo "  GPU mode:  Ollama can use AMD GPU via ROCm"
+        echo "             Learner uses ROCm PyTorch for local model inference"
+        echo "             Requires: ROCm drivers + amdgpu-dkms"
+        echo ""
+        echo "  CPU mode:  Everything runs on CPU"
+        echo ""
+        read -rp "Use GPU acceleration? [Y/n]: " gpu_choice
+        case "$(to_lower "${gpu_choice:-y}")" in
+            n|no)
+                gpu_mode="cpu"
+                info "Selected: CPU mode"
+                ;;
+            *)
+                gpu_mode="gpu"
+                success "Selected: GPU mode — AMD ROCm ($gpu_name)"
+                info "Note: Learner will be built with ROCm PyTorch (rocm6.0)"
+                ;;
+        esac
     elif $is_apple_silicon; then
         # Apple Silicon: Metal is automatic, no GPU/CPU choice needed for Ollama
         # Learner still uses CPU (no CUDA on Mac)
@@ -330,10 +495,18 @@ cmd_setup() {
         info "Apple Silicon: Ollama uses Metal GPU automatically"
         info "Learner (Phi-4-mini) will use CPU (CUDA not available on macOS)"
     else
-        info "No NVIDIA GPU detected — using CPU mode"
+        echo ""
+        info "No dedicated GPU detected — using CPU mode"
         if $is_wsl; then
-            info "If you have an NVIDIA GPU, install drivers on Windows first"
-            info "Then 'nvidia-smi' should work inside WSL2"
+            warn "WSL2 GPU troubleshooting:"
+            info "  1. Install NVIDIA Game Ready / Studio drivers on Windows (NOT inside WSL)"
+            info "  2. Restart WSL: wsl --shutdown (from PowerShell), then reopen"
+            info "  3. Verify: nvidia-smi (should show your GPU)"
+            info "  4. If using sudo: try running without sudo, or use: sudo -E ./skynet.sh setup"
+            info "  5. NVIDIA driver path on WSL2: /usr/lib/wsl/lib/nvidia-smi"
+        elif [ "$OS" = "linux" ]; then
+            info "If you have an NVIDIA GPU: install nvidia-driver-XXX (or nvidia-utils)"
+            info "If you have an AMD GPU: install ROCm (rocm-smi, amdgpu-dkms)"
         fi
         gpu_mode="cpu"
     fi
@@ -346,7 +519,11 @@ cmd_setup() {
     # ── Write GPU/CPU choice to .env ─────────────────────────────────────────
     local torch_url
     if [ "$gpu_mode" = "gpu" ]; then
-        torch_url="https://download.pytorch.org/whl/cu121"
+        if [ "$gpu_vendor" = "amd" ]; then
+            torch_url="https://download.pytorch.org/whl/rocm6.0"
+        else
+            torch_url="https://download.pytorch.org/whl/cu121"
+        fi
     else
         torch_url="https://download.pytorch.org/whl/cpu"
     fi
@@ -411,20 +588,49 @@ ENVEOF
     fi
     success "Learner PyTorch: $gpu_mode ($torch_url)"
 
-    # Pull Ollama models
+    # Pull Ollama models — wait for Ollama to be ready first
+    # (systemd restart above may take a moment)
+    info "Waiting for Ollama to be ready..."
+    local ollama_ready=false
+    for i in $(seq 1 15); do
+        if curl -sf http://localhost:11434/api/tags &>/dev/null; then
+            ollama_ready=true
+            break
+        fi
+        sleep 2
+    done
+    if $ollama_ready; then
+        success "Ollama is ready"
+    else
+        warn "Ollama not responding on port 11434 — trying to start it..."
+        if command -v systemctl &>/dev/null; then
+            sudo systemctl start ollama 2>/dev/null || true
+            sleep 3
+        fi
+    fi
+
     info "Pulling Ollama embedding model..."
-    ollama pull nomic-embed-text 2>/dev/null && success "nomic-embed-text ready" || warn "Could not pull nomic-embed-text"
+    if ollama pull nomic-embed-text; then
+        success "nomic-embed-text ready"
+    else
+        warn "Could not pull nomic-embed-text — you can retry later with: ollama pull nomic-embed-text"
+    fi
 
     info "Pulling Ollama local inference model..."
-    ollama pull phi4 2>/dev/null && success "phi4 ready" || warn "Could not pull phi4 (optional)"
+    if ollama pull phi4; then
+        success "phi4 ready"
+    else
+        warn "Could not pull phi4 (optional) — retry with: ollama pull phi4"
+    fi
 
     echo ""
     success "Setup complete! Edit .env with your API keys, then run: ./skynet.sh start"
     echo ""
     info "  Platform: $OS"
     info "  GPU mode: $gpu_mode"
-    if [ -n "$gpu_name" ]; then
-        info "  GPU:      $gpu_name ($gpu_vram)"
+    if [ -n "$gpu_name" ] && [ "$gpu_vendor" != "apple" ]; then
+        info "  GPU:      $gpu_name${gpu_vram:+ ($gpu_vram)}"
+        info "  Vendor:   $gpu_vendor"
     fi
     if $is_apple_silicon; then
         info "  Apple Silicon: Metal (auto-accelerated)"
@@ -435,6 +641,9 @@ ENVEOF
         else
             info "  WSL2: CPU mode"
         fi
+    fi
+    if [ "$gpu_vendor" = "amd" ] && [ "$gpu_mode" = "gpu" ]; then
+        info "  PyTorch:  ROCm 6.0 ($torch_url)"
     fi
 }
 
