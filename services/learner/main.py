@@ -398,16 +398,35 @@ def _load_models_sync():
             model_kwargs["torch_dtype"] = torch.float32
             print("  Loading in float32 (CPU mode — 4-bit quantization requires CUDA)")
 
-        # Try loading model; if stale cache causes ImportError, clear and retry
-        try:
-            _model = AutoModelForCausalLM.from_pretrained(model_source, **model_kwargs)
-        except (ImportError, ModuleNotFoundError, AttributeError) as e:
-            print(f"  Model load failed (likely stale cache): {e}")
-            if _clear_stale_hf_cache():
-                print("  Retrying model load with fresh cache...")
+        # Try loading model with retries:
+        #  1. Normal load (may include 4-bit quantization)
+        #  2. Stale HF cache → clear and retry
+        #  3. Quantization error → strip quantization_config and retry
+        _model = None
+        for _load_attempt in range(3):
+            try:
                 _model = AutoModelForCausalLM.from_pretrained(model_source, **model_kwargs)
-            else:
+                break
+            except (ImportError, ModuleNotFoundError) as e:
+                if _load_attempt == 0 and _clear_stale_hf_cache():
+                    print(f"  Model load failed (stale cache): {e}")
+                    print("  Retrying with fresh cache...")
+                    continue
                 raise
+            except (AttributeError, RuntimeError, Exception) as e:
+                err_msg = str(e)
+                # bitsandbytes / quantization errors → retry without quantization
+                if "quantization_config" in model_kwargs and (
+                    "frozenset" in err_msg or "bitsandbytes" in err_msg.lower()
+                    or "quantiz" in err_msg.lower() or isinstance(e, AttributeError)
+                ):
+                    print(f"  Quantization failed: {e}")
+                    print("  Retrying without 4-bit quantization...")
+                    model_kwargs.pop("quantization_config", None)
+                    continue
+                raise
+        if _model is None:
+            raise RuntimeError("All model load attempts failed")
 
         # Load LoRA adapter if it exists
         adapter_dir = Path(ADAPTER_PATH)
