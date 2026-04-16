@@ -456,11 +456,19 @@ services:
       context: .
       dockerfile: services/metacognition/Dockerfile
     container_name: brain_metacognition
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - HIPPOCAMPUS_URL=${HIPPOCAMPUS_URL}
+      - NEOCORTEX_URL=${NEOCORTEX_URL}
+      - CROSS_DOMAIN_URL=${CROSS_DOMAIN_URL}
+      - CEREBELLUM_URL=${CEREBELLUM_URL}
     <<: [*common-env, *common-network, *common-restart]
     depends_on:
       redis:
         condition: service_healthy
       neocortex:
+        condition: service_healthy
+      hippocampus:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8014/health')"]
@@ -625,6 +633,42 @@ services:
       <<: *common-healthcheck
 
   # ═══════════════════════════════════════════════════════════════════════════
+  # HORMONAL / INSIGHT SERVICES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Hypothalamus (hormonal state engine — lightweight, Redis-only) ────────
+  hypothalamus:
+    build:
+      context: .
+      dockerfile: services/hypothalamus/Dockerfile
+    container_name: brain_hypothalamus
+    <<: [*common-env, *common-network, *common-restart]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8019/health')"]
+      <<: *common-healthcheck
+
+  # ── Insight Engine (epiphany detection — background graph analysis) ──────
+  insight-engine:
+    build:
+      context: .
+      dockerfile: services/insight-engine/Dockerfile
+    container_name: brain_insight_engine
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - NEOCORTEX_URL=${NEOCORTEX_URL}
+      - KNOBS_URL=${KNOBS_URL}
+    <<: [*common-env, *common-network, *common-restart]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8020/health')"]
+      <<: *common-healthcheck
+
+  # ═══════════════════════════════════════════════════════════════════════════
   # THALAMUS — Master Orchestrator (starts last, depends on everything)
   # ═══════════════════════════════════════════════════════════════════════════
   thalamus:
@@ -660,6 +704,8 @@ services:
       - LEARNER_URL=${LEARNER_URL}
       - VISION_URL=${VISION_URL}
       - OLLAMA_URL=${OLLAMA_URL}
+      - HYPOTHALAMUS_URL=${HYPOTHALAMUS_URL}
+      - INSIGHT_ENGINE_URL=${INSIGHT_ENGINE_URL}
     <<: [*common-network, *common-restart, *common-extra-hosts]
     depends_on:
       amygdala:
@@ -695,6 +741,10 @@ services:
       goals:
         condition: service_healthy
       learner:
+        condition: service_healthy
+      hypothalamus:
+        condition: service_healthy
+      insight-engine:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
