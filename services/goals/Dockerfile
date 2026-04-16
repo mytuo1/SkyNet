@@ -6,4 +6,4 @@ COPY services/goals/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY services/goals/main.py .
 EXPOSE 8015
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8015", "--workers", "2"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8015", "--workers", "1"]

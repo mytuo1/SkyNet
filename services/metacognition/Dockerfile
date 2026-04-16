@@ -6,4 +6,4 @@ COPY services/metacognition/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY services/metacognition/main.py .
 EXPOSE 8014
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8014", "--workers", "2"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8014", "--workers", "1"]

@@ -992,7 +992,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY services/{service_name}/main.py .
 EXPOSE {port}
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{port}",
-     "--workers", "2"]
+     "--workers", "1"]
 </pre>
 
 ### .env file (minimum required fields):
