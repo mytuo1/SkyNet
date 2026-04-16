@@ -413,7 +413,7 @@ def _load_models_sync():
                     print("  Retrying with fresh cache...")
                     continue
                 raise
-            except (AttributeError, RuntimeError, Exception) as e:
+            except Exception as e:
                 err_msg = str(e)
                 # bitsandbytes / quantization errors → retry without quantization
                 if "quantization_config" in model_kwargs and (
