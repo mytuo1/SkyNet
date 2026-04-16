@@ -6,12 +6,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc g++ curl git \
     && rm -rf /var/lib/apt/lists/*
 
-# === CRITICAL: Install Torch CPU wheel FIRST with correct index ===
-# Must use --index-url (not --extra-index-url) to avoid pulling CUDA wheels
+# === Torch installation — GPU (CUDA 12.1) with CPU fallback ===
+# TORCH_INDEX_URL can be overridden in docker-compose build args:
+#   CPU only: https://download.pytorch.org/whl/cpu
+#   CUDA 12.1: https://download.pytorch.org/whl/cu121  (default)
+#   CUDA 12.4: https://download.pytorch.org/whl/cu124
+#   ROCm 6.0:  https://download.pytorch.org/whl/rocm6.0
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
 RUN pip install --no-cache-dir \
     torch==2.5.1 \
     torchvision==0.20.1 \
-    --index-url https://download.pytorch.org/whl/cpu
+    --index-url ${TORCH_INDEX_URL}
 
 # Now install everything else (torch already satisfied, won't be re-installed)
 COPY shared /shared

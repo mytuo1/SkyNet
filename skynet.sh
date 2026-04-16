@@ -162,16 +162,30 @@ cmd_setup() {
     # ── Ollama binding: ensure it listens on 0.0.0.0 for Docker access ──────
     # By default Ollama binds to 127.0.0.1, which is unreachable from Docker
     # containers. On Linux with systemd we create a drop-in override.
+    # Also set KEEP_ALIVE=-1 so models never unload (huge latency win).
     if [ "$(uname)" = "Linux" ] && command -v systemctl &>/dev/null; then
         local override_dir="/etc/systemd/system/ollama.service.d"
         local override_file="$override_dir/override.conf"
-        if [ ! -f "$override_file" ] || ! grep -q 'OLLAMA_HOST=0.0.0.0' "$override_file" 2>/dev/null; then
-            info "Configuring Ollama to listen on 0.0.0.0 (required for Docker)..."
+        local needs_update=false
+        if [ ! -f "$override_file" ]; then
+            needs_update=true
+        elif ! grep -q 'OLLAMA_HOST=0.0.0.0' "$override_file" 2>/dev/null; then
+            needs_update=true
+        elif ! grep -q 'OLLAMA_KEEP_ALIVE' "$override_file" 2>/dev/null; then
+            needs_update=true
+        fi
+        if $needs_update; then
+            info "Configuring Ollama (0.0.0.0, keep_alive=-1, num_parallel=4)..."
             sudo mkdir -p "$override_dir"
-            printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\n' | sudo tee "$override_file" > /dev/null
+            cat <<'EOF' | sudo tee "$override_file" > /dev/null
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0"
+Environment="OLLAMA_KEEP_ALIVE=-1"
+Environment="OLLAMA_NUM_PARALLEL=4"
+EOF
             sudo systemctl daemon-reload
             sudo systemctl restart ollama 2>/dev/null || true
-            success "Ollama configured to listen on 0.0.0.0"
+            success "Ollama configured (0.0.0.0 + keep_alive=-1 + num_parallel=4)"
         else
             success "Ollama already configured for Docker access"
         fi

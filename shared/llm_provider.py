@@ -356,6 +356,7 @@ async def _ollama_complete(prompt: str, system: str, model: str,
         "model":   model,
         "messages": messages,
         "stream":  False,
+        "keep_alive": -1,
         "options": {
             "num_predict":  max_tokens,
             "temperature":  temperature,

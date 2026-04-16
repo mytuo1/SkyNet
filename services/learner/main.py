@@ -367,25 +367,45 @@ def _load_models_sync():
         if _tokenizer.pad_token is None:
             _tokenizer.pad_token = _tokenizer.eos_token
 
-        # Load model — CPU only, 4-bit quantization if bitsandbytes available
+        # Load model — auto-detect GPU, fall back to CPU
+        has_cuda = torch.cuda.is_available()
+        device_label = f"cuda ({torch.cuda.get_device_name(0)})" if has_cuda else "cpu"
+        print(f"  Device: {device_label}")
+
         model_kwargs = {
             "trust_remote_code": True,
-            "torch_dtype": torch.float32,  # CPU: float32
-            "low_cpu_mem_usage": True
+            "low_cpu_mem_usage": True,
         }
         if HF_TOKEN:
             model_kwargs["token"] = HF_TOKEN
 
-        try:
-            from transformers import BitsAndBytesConfig
-            import bitsandbytes
-            model_kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float32
-            )
-            print("  4-bit quantization enabled (bitsandbytes)")
-        except ImportError:
-            print("  bitsandbytes not available — loading in float32")
+        if has_cuda:
+            # GPU path: float16 + device_map auto (fits model across available VRAM)
+            model_kwargs["torch_dtype"] = torch.float16
+            model_kwargs["device_map"] = "auto"
+            try:
+                from transformers import BitsAndBytesConfig
+                import bitsandbytes
+                model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16
+                )
+                print("  4-bit quantization enabled (bitsandbytes + CUDA)")
+            except ImportError:
+                print("  bitsandbytes not available — using float16 on GPU")
+        else:
+            # CPU path: float32, try 4-bit if bitsandbytes available
+            model_kwargs["torch_dtype"] = torch.float32
+            try:
+                from transformers import BitsAndBytesConfig
+                import bitsandbytes
+                model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float32
+                )
+                print("  4-bit quantization enabled (bitsandbytes)")
+            except ImportError:
+                print("  bitsandbytes not available — loading in float32")
 
         # Try loading model; if stale cache causes ImportError, clear and retry
         try:
@@ -422,14 +442,15 @@ def _load_models_sync():
         emotion_dir = Path(EMOTION_MODEL_PATH)
         if (emotion_dir / "config.json").exists():
             try:
+                emotion_device = 0 if has_cuda else -1
                 _emotion_pipe = pipeline(
                     "text-classification",
                     model=EMOTION_MODEL_PATH,
                     tokenizer=EMOTION_MODEL_PATH,
                     top_k=5,
-                    device=-1
+                    device=emotion_device
                 )
-                print(f"  Emotion classifier loaded from {EMOTION_MODEL_PATH}")
+                print(f"  Emotion classifier loaded from {EMOTION_MODEL_PATH} (device={'cuda:0' if has_cuda else 'cpu'})")
             except Exception as e:
                 print(f"  Emotion classifier load failed: {e}")
         else:

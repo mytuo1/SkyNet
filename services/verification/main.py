@@ -111,7 +111,7 @@ async def embed(text: str) -> list:
         try:
             resp = await http.post(
                 f"{OLLAMA_URL}/api/embeddings",
-                json={"model": EMBED_MODEL, "prompt": text[:2000]},
+                json={"model": EMBED_MODEL, "prompt": text[:2000], "keep_alive": -1},
                 timeout=15.0
             )
             elapsed = (time.time() - t0) * 1000
