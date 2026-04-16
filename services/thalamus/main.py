@@ -1289,7 +1289,7 @@ async def process(req: ProcessRequest):
         "fast_path": bool(skill_match and skill_match.get("similarity", 0) > 0.88
                          and skill_match.get("exec_success", False)),
         "ms": step_times["cerebellum"]
-    })
+    }
 
     if skill_match and skill_match.get("similarity", 0) > 0.88 \
             and skill_match.get("exec_success", False):

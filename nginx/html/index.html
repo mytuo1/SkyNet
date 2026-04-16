@@ -131,6 +131,25 @@ button{font-family:var(--font)}
 .hormone-bar-fill{height:100%;border-radius:3px;transition:width .4s ease}
 .hormone-val{width:28px;text-align:right;font-family:var(--mono);font-size:.64rem;color:var(--text-dim)}
 .hormone-mood-text{font-size:.68rem;color:var(--text-dim);font-style:italic;margin-top:4px;line-height:1.3}
+/* Hormone Injection Panel */
+.inject-panel{margin-top:8px;padding:8px;background:rgba(255,82,82,.04);border:1px solid rgba(255,82,82,.12);border-radius:var(--radius)}
+.inject-panel-title{font-size:.7rem;font-weight:700;color:#ff5252;margin-bottom:6px;letter-spacing:.5px}
+.inject-row{display:flex;gap:4px;align-items:center;margin-bottom:4px}
+.inject-row select,.inject-row input{padding:3px 6px;font-size:.68rem;border:1px solid var(--border);border-radius:4px;
+  background:var(--surface-solid);color:var(--text);font-family:var(--mono)}
+.inject-row select{flex:1;min-width:0}
+.inject-row input[type=number]{width:52px;text-align:center}
+.inject-row input[type=range]{flex:1;accent-color:#ff5252;height:14px}
+.inject-btn{padding:3px 10px;border-radius:4px;border:1px solid rgba(255,82,82,.3);background:rgba(255,82,82,.1);
+  color:#ff5252;font-size:.66rem;cursor:pointer;font-weight:600;transition:all .2s}
+.inject-btn:hover{background:rgba(255,82,82,.2);border-color:#ff5252}
+.inject-bypass{font-size:.62rem;color:var(--text-dim);display:flex;align-items:center;gap:3px}
+.inject-result{font-size:.62rem;color:var(--text-dim);margin-top:3px;min-height:14px;font-family:var(--mono)}
+/* Log source toggle */
+.log-source-toggle{display:flex;gap:0;border:1px solid var(--border);border-radius:4px;overflow:hidden}
+.log-source-btn{padding:4px 10px;font-size:.72rem;border:none;background:transparent;color:var(--text-dim);
+  cursor:pointer;transition:all .2s}
+.log-source-btn.active{background:var(--accent);color:#000;font-weight:600}
 .badge-mood{display:inline-block;padding:1px 7px;border-radius:10px;font-size:.68rem;font-weight:600;
   background:rgba(232,160,96,.15);color:#e8a060;border:1px solid rgba(232,160,96,.25);margin-left:4px}
 .badge-intuition{display:inline-block;padding:1px 7px;border-radius:10px;font-size:.68rem;font-weight:600;
@@ -465,6 +484,57 @@ button{font-family:var(--font)}
       <div id="hormone-bars"></div>
       <div class="hormone-mood-text" id="hormone-mood-text">—</div>
     </div>
+    <!-- Hormone Injection (manual control) -->
+    <div class="inject-panel" id="inject-panel">
+      <div class="inject-panel-title">&#x1F489; Inject Hormone</div>
+      <div class="inject-row">
+        <select id="inject-hormone">
+          <option value="">— select —</option>
+          <optgroup label="Adrenal">
+            <option value="adrenaline">Adrenaline</option>
+            <option value="cortisol">Cortisol</option>
+            <option value="norepinephrine">Norepinephrine</option>
+          </optgroup>
+          <optgroup label="VTA">
+            <option value="dopamine">Dopamine</option>
+            <option value="anandamide">Anandamide</option>
+            <option value="PEA">PEA</option>
+          </optgroup>
+          <optgroup label="Pituitary">
+            <option value="oxytocin">Oxytocin</option>
+            <option value="vasopressin">Vasopressin</option>
+            <option value="endorphins">Endorphins</option>
+          </optgroup>
+          <optgroup label="Pineal">
+            <option value="serotonin">Serotonin</option>
+            <option value="melatonin">Melatonin</option>
+          </optgroup>
+          <optgroup label="Nuclei">
+            <option value="GABA">GABA</option>
+            <option value="glutamate">Glutamate</option>
+          </optgroup>
+          <optgroup label="Basal">
+            <option value="acetylcholine">Acetylcholine</option>
+          </optgroup>
+          <optgroup label="Gonads">
+            <option value="testosterone">Testosterone</option>
+            <option value="estrogen">Estrogen</option>
+          </optgroup>
+        </select>
+      </div>
+      <div class="inject-row">
+        <span style="font-size:.62rem;color:var(--text-dim);width:14px">&#x2212;</span>
+        <input type="range" id="inject-amount-slider" min="-0.40" max="0.40" step="0.01" value="0.10"/>
+        <span style="font-size:.62rem;color:var(--text-dim);width:10px">+</span>
+        <input type="number" id="inject-amount" min="-0.40" max="0.40" step="0.01" value="0.10"/>
+      </div>
+      <div class="inject-row">
+        <label class="inject-bypass"><input type="checkbox" id="inject-bypass"/> Bypass gland</label>
+        <span style="flex:1"></span>
+        <button class="inject-btn" id="inject-btn">&#x1F489; Inject</button>
+      </div>
+      <div class="inject-result" id="inject-result"></div>
+    </div>
   </div>
 
   <!-- Session History -->
@@ -541,6 +611,10 @@ button{font-family:var(--font)}
 <!-- PAGE: Logging -->
 <div class="page" id="page-logging">
   <div class="log-toolbar">
+    <div class="log-source-toggle">
+      <button class="log-source-btn active" id="log-src-app" data-source="app">App Logs</button>
+      <button class="log-source-btn" id="log-src-docker" data-source="docker">Docker Logs</button>
+    </div>
     <select id="log-svc-select">
       <option value="all">All Services</option>
     </select>
@@ -1435,6 +1509,43 @@ function updateHormonePanel(hormones,mood){
   moodEl.textContent=mood||'\u2014';
 }
 
+/* -- Hormone Injection Panel ------------------------------------------ */
+(function(){
+  var slider=$('#inject-amount-slider');
+  var numInput=$('#inject-amount');
+  var resultEl=$('#inject-result');
+  /* Sync slider ↔ number input */
+  slider.addEventListener('input',function(){numInput.value=parseFloat(slider.value).toFixed(2)});
+  numInput.addEventListener('input',function(){slider.value=numInput.value});
+
+  $('#inject-btn').addEventListener('click',function(){
+    var hormone=$('#inject-hormone').value;
+    var amount=parseFloat(numInput.value);
+    var bypass=$('#inject-bypass').checked;
+    if(!hormone){resultEl.textContent='Select a hormone first';return}
+    if(isNaN(amount)||amount===0){resultEl.textContent='Set a non-zero amount';return}
+    if(!SESSION){resultEl.textContent='No active session';return}
+
+    resultEl.textContent='Injecting...';
+    fetch('/brain/hypothalamus/inject',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({session_id:SESSION,hormone:hormone,amount:amount,bypass_gland:bypass})
+    }).then(function(r){return r.json()}).then(function(d){
+      if(d.error){resultEl.textContent='\u274C '+d.error;return}
+      var dir=d.delta>0?'\u2191':'\u2193';
+      resultEl.innerHTML='<span style="color:'+(d.delta>0?'var(--success)':'var(--error)')+'">'+
+        dir+' '+d.hormone+': '+d.old_level.toFixed(2)+' \u2192 '+d.new_level.toFixed(2)+
+        ' ('+d.actual.toFixed(3)+' via '+d.gland+') '+d.latency_ms+'ms</span>';
+      /* Refresh hormone panel — fetch fresh state */
+      fetch('/brain/hypothalamus/state/'+encodeURIComponent(SESSION))
+        .then(function(r){return r.json()})
+        .then(function(st){if(st.hormones)updateHormonePanel(st.hormones,null)})
+        .catch(function(){});
+    }).catch(function(err){resultEl.textContent='\u274C '+err.message});
+  });
+})();
+
 /* -- Chat / Terminal -------------------------------------------------- */
 var busy=false;
 var camStream=null,camEnabled=false,sttActive=false;
@@ -1973,14 +2084,58 @@ setInterval(function(){
 
 /* -- Logging ---------------------------------------------------------- */
 var svcColors={};
+var logSource='app'; /* 'app' or 'docker' */
 ALL_SVC_LIST.forEach(function(s,i){svcColors[s]='hsl('+(i*17)%360+',55%,65%)'});
 ALL_SVC_LIST.forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;$('#log-svc-select').appendChild(o)});
 
+/* Log source toggle */
+document.querySelectorAll('.log-source-btn').forEach(function(btn){
+  btn.addEventListener('click',function(){
+    document.querySelectorAll('.log-source-btn').forEach(function(b){b.classList.remove('active')});
+    btn.classList.add('active');
+    logSource=btn.dataset.source;
+    refreshLogs();
+  });
+});
+
 function refreshLogs(){
+  if(logSource==='docker'){
+    refreshDockerLogs();
+  }else{
+    refreshAppLogs();
+  }
+}
+
+function refreshAppLogs(){
   var svc=$('#log-svc-select').value;
   var level=$('#log-level-select').value;
   var url=svc==='all'?'/api/logs/all?limit=200':('/api/logs/'+encodeURIComponent(svc)+'?limit=200&level='+level);
   fetch(url).then(function(r){return r.json()}).then(function(d){renderLogs(d.logs||[])}).catch(function(){});
+}
+
+function refreshDockerLogs(){
+  var svc=$('#log-svc-select').value;
+  if(svc==='all'){
+    /* Fetch docker logs for all services in parallel */
+    var promises=ALL_SVC_LIST.map(function(s){
+      return fetch('/api/docker-logs/'+encodeURIComponent(s)+'?tail=30')
+        .then(function(r){return r.json()})
+        .then(function(d){return d.logs||[]})
+        .catch(function(){return []});
+    });
+    Promise.all(promises).then(function(results){
+      var all=[];
+      results.forEach(function(logs){all=all.concat(logs)});
+      /* Sort by timestamp string descending */
+      all.sort(function(a,b){return (b.timestamp_str||'').localeCompare(a.timestamp_str||'')});
+      renderLogs(all.slice(0,500));
+    });
+  }else{
+    fetch('/api/docker-logs/'+encodeURIComponent(svc)+'?tail=200')
+      .then(function(r){return r.json()})
+      .then(function(d){renderLogs(d.logs||[])})
+      .catch(function(){$('#log-scroll').innerHTML='<div style="color:var(--error);padding:12px">Failed to fetch Docker logs</div>'});
+  }
 }
 
 function renderLogs(logs){
@@ -1993,11 +2148,18 @@ function renderLogs(logs){
     if(search&&(l.message||'').toLowerCase().indexOf(search)<0&&(l.service||'').toLowerCase().indexOf(search)<0)return;
     var div=document.createElement('div');
     div.className='log-line level-'+(l.level||'info');
-    var ts=new Date((l.timestamp||0)*1000);
-    var timeStr=ts.toLocaleTimeString();
+    var timeStr='';
+    if(l.timestamp_str){
+      /* Docker timestamp */
+      try{var dt=new Date(l.timestamp_str);timeStr=dt.toLocaleTimeString()}catch(e){timeStr=l.timestamp_str.substring(11,19)}
+    }else if(l.timestamp){
+      var ts=new Date((l.timestamp||0)*1000);
+      timeStr=ts.toLocaleTimeString();
+    }
     var color=svcColors[l.service]||'var(--text-dim)';
+    var srcBadge=l.source==='docker'?' <span style="font-size:.58rem;color:var(--accent);opacity:.6">&#x1F40B;</span>':'';
     div.innerHTML='<span class="log-ts">'+timeStr+'</span>'+
-      '<span class="log-svc" style="color:'+color+'">'+esc(l.service||'?')+'</span>'+
+      '<span class="log-svc" style="color:'+color+'">'+esc(l.service||'?')+srcBadge+'</span>'+
       '<span class="log-lvl lvl-'+(l.level||'info')+'">'+esc(l.level||'info')+'</span>'+
       '<span class="log-msg">'+esc(l.message||'')+'</span>';
     c.appendChild(div);
