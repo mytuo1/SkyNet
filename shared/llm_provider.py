@@ -33,6 +33,13 @@ GENERIC_BASE_URL   = os.getenv("GENERIC_BASE_URL", "")
 # Ollama config (no key needed — local)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
 
+# Web search — master toggle (set in .env or per-service env)
+# Default: true — the model decides when to actually search based on the prompt
+WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "true").lower() == "true"
+
+# Providers that support server-side web search via their API
+_WEB_SEARCH_PROVIDERS = {"openai", "anthropic", "xai", "gemini"}
+
 # Token limit overrides
 MAX_TOKENS_MAIN = int(os.getenv("MAX_TOKENS_MAIN", "0")) or None
 MAX_TOKENS_FAST = int(os.getenv("MAX_TOKENS_FAST", "0")) or None
@@ -132,11 +139,16 @@ async def complete(
     max_tokens:  int   = 8192,
     temperature: float = 0.7,
     json_mode:   bool  = False,
+    web_search:  bool  = False,
 ) -> str:
     """
     Universal completion function.
     Same call signature regardless of which provider is active.
     Returns the text response as a string.
+
+    web_search: When True, enables server-side web search for providers that
+    support it (OpenAI, Anthropic, xAI, Gemini). The model decides when to
+    search based on the prompt. Falls back to normal completion for other providers.
     """
     if not has_api_key():
         return f"[No API key for provider={PROVIDER}]"
@@ -157,7 +169,28 @@ async def complete(
     elif json_mode:
         system = "Respond only with valid JSON. No markdown code blocks."
 
-    # Route to the right backend
+    # ── Web search path (Responses API for OpenAI/xAI, native tools for Anthropic/Gemini)
+    if web_search and PROVIDER in _WEB_SEARCH_PROVIDERS:
+        if PROVIDER == "openai":
+            api_key, base_url = _OPENAI_COMPAT_PROVIDERS["openai"]()
+            return await _with_retry(
+                _responses_api_search, base_url, api_key, prompt, system,
+                chosen_model, max_tokens, temperature)
+        if PROVIDER == "xai":
+            api_key, base_url = _OPENAI_COMPAT_PROVIDERS["xai"]()
+            return await _with_retry(
+                _responses_api_search, base_url, api_key, prompt, system,
+                chosen_model, max_tokens, temperature)
+        if PROVIDER == "anthropic":
+            return await _with_retry(
+                _anthropic_search_complete, prompt, system, chosen_model,
+                max_tokens, temperature)
+        if PROVIDER == "gemini":
+            return await _with_retry(
+                _gemini_search_complete, prompt, system, chosen_model,
+                max_tokens, temperature)
+
+    # ── Standard completion path (no web search)
     if PROVIDER == "anthropic":
         return await _with_retry(
             _anthropic_complete, prompt, system, chosen_model,
@@ -212,6 +245,64 @@ async def complete_json(
         return {}
 
 
+async def complete_with_search_details(
+    prompt:      str,
+    system:      str   = "",
+    model_tier:  str   = "main",
+    model:       str   = None,
+    max_tokens:  int   = 8192,
+    temperature: float = 0.7,
+) -> tuple:
+    """Complete with web search enabled, returning (text, search_details).
+
+    search_details is a dict with:
+      searched: bool — whether the model actually performed a web search
+      queries:  list[str] — search queries the model used
+      sources:  list[{url, title}] — pages the model consulted
+      citations: list[{url, title}] — inline citations in the response
+
+    The model decides autonomously whether to search based on the prompt.
+    If the current provider doesn't support web search, falls back to
+    normal completion with search_details = {"searched": False}.
+    """
+    if not has_api_key():
+        return f"[No API key for provider={PROVIDER}]", {"searched": False}
+
+    chosen_model = model or get_model(model_tier)
+    max_tokens = _effective_max_tokens(max_tokens, model_tier)
+    no_search = {"searched": False, "queries": [], "sources": [], "citations": []}
+
+    if PROVIDER not in _WEB_SEARCH_PROVIDERS:
+        text = await complete(prompt, system, model_tier=model_tier, model=model,
+                              max_tokens=max_tokens, temperature=temperature)
+        return text, no_search
+
+    try:
+        if PROVIDER == "openai":
+            api_key, base_url = _OPENAI_COMPAT_PROVIDERS["openai"]()
+            return await _responses_api_search_detailed(
+                base_url, api_key, prompt, system, chosen_model,
+                max_tokens, temperature)
+        if PROVIDER == "xai":
+            api_key, base_url = _OPENAI_COMPAT_PROVIDERS["xai"]()
+            return await _responses_api_search_detailed(
+                base_url, api_key, prompt, system, chosen_model,
+                max_tokens, temperature)
+        if PROVIDER == "anthropic":
+            return await _anthropic_search_detailed(
+                prompt, system, chosen_model, max_tokens, temperature)
+        if PROVIDER == "gemini":
+            return await _gemini_search_detailed(
+                prompt, system, chosen_model, max_tokens, temperature)
+    except Exception as e:
+        print(f"[llm_provider] web search failed, falling back: {e}", flush=True)
+
+    # Fallback to normal completion
+    text = await complete(prompt, system, model_tier=model_tier, model=model,
+                          max_tokens=max_tokens, temperature=temperature)
+    return text, no_search
+
+
 # ── Retry wrapper ─────────────────────────────────────────────────────────────
 
 async def _with_retry(fn, *args, _retries: int = 1, **kwargs) -> str:
@@ -221,6 +312,366 @@ async def _with_retry(fn, *args, _retries: int = 1, **kwargs) -> str:
         await asyncio.sleep(1)
         result = await fn(*args, **kwargs)
     return result
+
+
+# ── Web Search implementations ────────────────────────────────────────────────
+# These use each provider's native server-side web search tools.
+# The model decides when to search based on the prompt content.
+# Each returns (text, search_details_dict) when called via complete_with_search_details().
+
+def _extract_search_details_openai(data: dict) -> dict:
+    """Extract search queries, sources, and citations from OpenAI/xAI Responses API output."""
+    details: dict = {"searched": False, "queries": [], "sources": [], "citations": []}
+    for item in data.get("output", []):
+        if item.get("type") == "web_search_call":
+            details["searched"] = True
+            action = item.get("action", {})
+            if isinstance(action, dict):
+                # search action may include queries
+                q = action.get("query") or action.get("queries")
+                if q:
+                    if isinstance(q, list):
+                        details["queries"].extend(q)
+                    else:
+                        details["queries"].append(str(q))
+                # sources list
+                for src in action.get("sources", []):
+                    details["sources"].append({
+                        "url": src.get("url", ""),
+                        "title": src.get("title", ""),
+                    })
+        if item.get("type") == "message":
+            for part in item.get("content", []):
+                for ann in part.get("annotations", []):
+                    if ann.get("type") == "url_citation":
+                        details["citations"].append({
+                            "url": ann.get("url", ""),
+                            "title": ann.get("title", ""),
+                        })
+    return details
+
+
+def _extract_search_details_anthropic(data: dict) -> dict:
+    """Extract search details from Anthropic Messages API response with web_search tool."""
+    details: dict = {"searched": False, "queries": [], "sources": [], "citations": []}
+    for block in data.get("content", []):
+        btype = block.get("type", "")
+        if btype == "server_tool_use" and block.get("name") == "web_search":
+            details["searched"] = True
+            inp = block.get("input", {})
+            if inp.get("query"):
+                details["queries"].append(inp["query"])
+        if btype == "web_search_tool_result":
+            for result in block.get("content", []):
+                if result.get("type") == "web_search_result":
+                    details["sources"].append({
+                        "url": result.get("url", ""),
+                        "title": result.get("title", ""),
+                    })
+        if btype == "text":
+            for ann in block.get("annotations", []):
+                if ann.get("type") == "web_search_result_location":
+                    details["citations"].append({
+                        "url": ann.get("url", ""),
+                        "title": ann.get("title", ""),
+                    })
+    return details
+
+
+async def _responses_api_search(
+    base_url: str, api_key: str, prompt: str, system: str,
+    model: str, max_tokens: int, temperature: float,
+) -> str:
+    """OpenAI / xAI Responses API with web_search tool.
+
+    Uses /v1/responses — the model performs live web search server-side
+    and returns the answer with inline URL citations.
+    """
+    input_msgs: list = []
+    if system:
+        input_msgs.append({"role": "system", "content": system})
+    input_msgs.append({"role": "user", "content": prompt})
+
+    body: dict = {
+        "model":            model,
+        "input":            input_msgs,
+        "tools":            [{"type": "web_search"}],
+        "max_output_tokens": max_tokens,
+    }
+    if temperature != 0.7:
+        body["temperature"] = temperature
+
+    url = f"{base_url.rstrip('/')}/responses"
+    headers: dict = {
+        "Content-Type":  "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    try:
+        resp = await _http.post(url, headers=headers, json=body)
+        data = resp.json()
+
+        # Top-level output_text is the clean final answer
+        if data.get("output_text"):
+            return data["output_text"]
+
+        # Fallback: walk the output array for the message block
+        for item in reversed(data.get("output", [])):
+            if item.get("type") == "message":
+                for part in item.get("content", []):
+                    if part.get("type") == "output_text" and part.get("text"):
+                        return part["text"]
+
+        return f"[{PROVIDER} search error: {data.get('error', data)}]"
+    except Exception as e:
+        return f"[{PROVIDER} search failed: {str(e)[:80]}]"
+
+
+async def _responses_api_search_detailed(
+    base_url: str, api_key: str, prompt: str, system: str,
+    model: str, max_tokens: int, temperature: float,
+) -> tuple:
+    """Like _responses_api_search but returns (text, search_details)."""
+    input_msgs: list = []
+    if system:
+        input_msgs.append({"role": "system", "content": system})
+    input_msgs.append({"role": "user", "content": prompt})
+
+    body: dict = {
+        "model":            model,
+        "input":            input_msgs,
+        "tools":            [{"type": "web_search"}],
+        "max_output_tokens": max_tokens,
+    }
+    if temperature != 0.7:
+        body["temperature"] = temperature
+
+    url = f"{base_url.rstrip('/')}/responses"
+    headers: dict = {
+        "Content-Type":  "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    try:
+        resp = await _http.post(url, headers=headers, json=body)
+        data = resp.json()
+        details = _extract_search_details_openai(data)
+
+        text = data.get("output_text", "")
+        if not text:
+            for item in reversed(data.get("output", [])):
+                if item.get("type") == "message":
+                    for part in item.get("content", []):
+                        if part.get("type") == "output_text" and part.get("text"):
+                            text = part["text"]
+                            break
+                    if text:
+                        break
+
+        if not text:
+            text = f"[{PROVIDER} search error: {data.get('error', data)}]"
+        return text, details
+    except Exception as e:
+        return f"[{PROVIDER} search failed: {str(e)[:80]}]", {"searched": False}
+
+
+async def _anthropic_search_complete(
+    prompt: str, system: str, model: str,
+    max_tokens: int, temperature: float,
+) -> str:
+    """Anthropic Messages API with web_search server-side tool.
+
+    Claude decides when to search based on the prompt. The search runs
+    server-side — no client round-trips needed. Returns the final text
+    block which includes inline citations.
+    """
+    messages = [{"role": "user", "content": prompt}]
+    body: dict = {
+        "model":      model,
+        "max_tokens": max_tokens,
+        "messages":   messages,
+        "tools":      [{"type": "web_search_20250305", "name": "web_search"}],
+    }
+    if system:
+        body["system"] = system
+    if temperature != 0.7:
+        body["temperature"] = temperature
+
+    try:
+        resp = await _http.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key":         ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type":      "application/json",
+            },
+            json=body,
+        )
+        data = resp.json()
+
+        # Extract the last text block (after any tool_use / search results)
+        if "content" in data and data["content"]:
+            for block in reversed(data["content"]):
+                if block.get("type") == "text" and block.get("text"):
+                    return block["text"]
+
+        return f"[Anthropic search error: {data.get('error', data)}]"
+    except Exception as e:
+        return f"[Anthropic search failed: {str(e)[:80]}]"
+
+
+async def _anthropic_search_detailed(
+    prompt: str, system: str, model: str,
+    max_tokens: int, temperature: float,
+) -> tuple:
+    """Like _anthropic_search_complete but returns (text, search_details)."""
+    messages = [{"role": "user", "content": prompt}]
+    body: dict = {
+        "model":      model,
+        "max_tokens": max_tokens,
+        "messages":   messages,
+        "tools":      [{"type": "web_search_20250305", "name": "web_search"}],
+    }
+    if system:
+        body["system"] = system
+    if temperature != 0.7:
+        body["temperature"] = temperature
+
+    try:
+        resp = await _http.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key":         ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type":      "application/json",
+            },
+            json=body,
+        )
+        data = resp.json()
+        details = _extract_search_details_anthropic(data)
+
+        text = ""
+        if "content" in data and data["content"]:
+            for block in reversed(data["content"]):
+                if block.get("type") == "text" and block.get("text"):
+                    text = block["text"]
+                    break
+
+        if not text:
+            text = f"[Anthropic search error: {data.get('error', data)}]"
+        return text, details
+    except Exception as e:
+        return f"[Anthropic search failed: {str(e)[:80]}]", {"searched": False}
+
+
+async def _gemini_search_complete(
+    prompt: str, system: str, model: str,
+    max_tokens: int, temperature: float,
+) -> str:
+    """Google Gemini with Google Search grounding tool.
+
+    Adds the google_search tool — Gemini fetches live search results
+    and incorporates them into the response.
+    """
+    contents: list = []
+    if system:
+        contents.append({"role": "user", "parts": [{"text": system}]})
+        contents.append({"role": "model", "parts": [{"text": "Understood."}]})
+    contents.append({"role": "user", "parts": [{"text": prompt}]})
+
+    body = {
+        "contents": contents,
+        "tools": [{"google_search": {}}],
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            "temperature":     temperature,
+        },
+    }
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent?key={GEMINI_API_KEY}"
+    )
+
+    try:
+        resp = await _http.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json=body,
+        )
+        data = resp.json()
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                return parts[0].get("text", "")
+        error = data.get("error", {})
+        return f"[Gemini search error: {error.get('message', data)}]"
+    except Exception as e:
+        return f"[Gemini search failed: {str(e)[:80]}]"
+
+
+async def _gemini_search_detailed(
+    prompt: str, system: str, model: str,
+    max_tokens: int, temperature: float,
+) -> tuple:
+    """Like _gemini_search_complete but returns (text, search_details)."""
+    contents: list = []
+    if system:
+        contents.append({"role": "user", "parts": [{"text": system}]})
+        contents.append({"role": "model", "parts": [{"text": "Understood."}]})
+    contents.append({"role": "user", "parts": [{"text": prompt}]})
+
+    body = {
+        "contents": contents,
+        "tools": [{"google_search": {}}],
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            "temperature":     temperature,
+        },
+    }
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent?key={GEMINI_API_KEY}"
+    )
+
+    try:
+        resp = await _http.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json=body,
+        )
+        data = resp.json()
+        details: dict = {"searched": False, "queries": [], "sources": [], "citations": []}
+
+        # Gemini grounding metadata
+        grounding = data.get("candidates", [{}])[0].get("groundingMetadata", {})
+        if grounding:
+            details["searched"] = True
+            for q in grounding.get("webSearchQueries", []):
+                details["queries"].append(q)
+            for chunk in grounding.get("groundingChunks", []):
+                web = chunk.get("web", {})
+                if web:
+                    details["sources"].append({
+                        "url": web.get("uri", ""),
+                        "title": web.get("title", ""),
+                    })
+
+        text = ""
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                text = parts[0].get("text", "")
+
+        if not text:
+            error = data.get("error", {})
+            text = f"[Gemini search error: {error.get('message', data)}]"
+        return text, details
+    except Exception as e:
+        return f"[Gemini search failed: {str(e)[:80]}]", {"searched": False}
 
 
 # ── Provider implementations ──────────────────────────────────────────────────
@@ -356,6 +807,7 @@ async def _ollama_complete(prompt: str, system: str, model: str,
         "model":   model,
         "messages": messages,
         "stream":  False,
+        "keep_alive": -1,
         "options": {
             "num_predict":  max_tokens,
             "temperature":  temperature,
@@ -407,4 +859,6 @@ def provider_info() -> dict:
         "main_model":           get_model("main"),
         "fast_model":           get_model("fast"),
         "configured_providers": configured,
+        "web_search_enabled":   WEB_SEARCH_ENABLED,
+        "web_search_supported": PROVIDER in _WEB_SEARCH_PROVIDERS,
     }

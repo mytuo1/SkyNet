@@ -195,7 +195,7 @@ Long-horizon Agency → Persistent goal store + hierarchical planner (Goals serv
 Continual Learning → Local model with LoRA + EWC + Replay buffer (Learner service)
 </pre>
 
-### System Services — Full List (21 services):
+### System Services — Full List (24 services):
 <pre>
 HUMAN BRAIN REGION          CODE EQUIVALENT              PURPOSE
 ─────────────────────────────────────────────────────────────────
@@ -267,11 +267,25 @@ Synaptic Plasticity       →  Learner                    Continual local model
 Visual Cortex             →  Vision                     Camera input, CLIP
                                                          embeddings, visual memory
 
+Hypothalamus              →  Hypothalamus               Hormonal regulation — 16
+                                                         hormones via 7 glands,
+                                                         modifies behavior knobs
+                                                         (port 8019)
+
+Temporal Association      →  Insight Engine             Epiphany detection via
+                                                         graph analysis, cross-
+                                                         domain crystallization
+                                                         (port 8020)
+
 Control Center            →  Dashboard                  Web UI for monitoring,
                                                          knobs, logs (port 8080)
 
 Autonomous Will           →  Autonomy                   Self-directed thinking,
                                                          risk-gated actions (port 8018)
+
+Corpus Callosum           →  Embed Queue                Centralized embedding MQ,
+                                                         Redis Streams cache + dedup
+                                                         (port 8021)
 </pre>
 
 ---
@@ -293,6 +307,7 @@ brain/
 │   ├── knobs.py                       ← KnobsClient (read-only, all services use)
 │   ├── events.py                      ← EventBus (Redis pub/sub)
 │   ├── llm_provider.py                ← Multi-provider LLM abstraction (9 providers)
+│   ├── embed_client.py               ← Embed client (embed-queue + Ollama fallback)
 │   └── __init__.py
 ├── services/
 │   ├── thalamus/                      ← Orchestrator,           port 8000
@@ -315,6 +330,9 @@ brain/
 │   ├── learner/                       ← Continual local model,  port 8016
 │   ├── vision/                        ← Camera + CLIP,          port 8017
 │   ├── autonomy/                      ← Self-directed thinking, port 8018
+│   ├── hypothalamus/                  ← Hormonal system,        port 8019
+│   ├── insight-engine/                ← Epiphany detection,     port 8020
+│   ├── embed-queue/                   ← Embedding MQ + cache,   port 8021
 │   └── dashboard/                     ← Web UI + monitoring,    port 8080
 │
 │   Each service contains:
@@ -992,7 +1010,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY services/{service_name}/main.py .
 EXPOSE {port}
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{port}",
-     "--workers", "2"]
+     "--workers", "1"]
 </pre>
 
 ### .env file (minimum required fields):
@@ -1380,14 +1398,16 @@ Goals persist in Redis            Goals must survive service restarts. Redis
 # Clone and enter
 git clone https://github.com/mytuo1/SkyNet.git && cd SkyNet
 
-# First-time setup (installs deps, creates .env, pulls models)
-./skynet.sh setup
+# First-time setup (installs deps, detects GPU, creates .env, pulls models)
+./skynet.sh setup          # Linux / macOS / WSL
+.\skynet.ps1 setup         # Windows (PowerShell)
 
 # Start everything
-./skynet.sh start
+./skynet.sh start          # Linux / macOS / WSL
+.\skynet.ps1 start         # Windows (PowerShell)
 
 # Open the dashboard
-./skynet.sh dashboard   # opens http://localhost:8080
+./skynet.sh dashboard      # opens http://localhost:8080
 
 # Activate autonomous thinking
 ./skynet.sh think

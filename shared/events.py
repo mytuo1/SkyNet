@@ -25,6 +25,9 @@ class EventBus:
         "session.ended":          "Session completed",
         "analogical.insight":     "Cross-domain analogy discovered",
         "pattern.registered":     "New logic pattern stored",
+        "hormone.shift":          "Significant hormonal state change detected",
+        "intuition.fired":        "Sixth sense signal from accumulated experience",
+        "epiphany.crystallized":  "Insight fragments formed a complete picture",
     }
 
     def __init__(self, redis_url: str = None):

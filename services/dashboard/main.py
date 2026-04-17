@@ -43,10 +43,25 @@ ALL_SERVICES = {
     "compass": 8009, "framework-router": 8010, "self-update": 8011,
     "causal-graph": 8012, "simulator": 8013, "metacognition": 8014,
     "goals": 8015, "learner": 8016, "vision": 8017, "knobs": 8090,
-    "autonomy": 8018, "dashboard": 8080,
+    "autonomy": 8018, "hypothalamus": 8019, "insight-engine": 8020,
+    "embed-queue": 8021,
+    "dashboard": 8080,
     # Infrastructure
     "gateway": 80, "redis": 6379, "elasticsearch": 9200, "edgedb": 5656,
 }
+
+# Map service names to Docker container names
+# Convention: brain_{service_name} with hyphens → underscores
+SERVICE_TO_CONTAINER = {
+    svc: f"brain_{svc.replace('-', '_')}" for svc in ALL_SERVICES
+}
+# Infrastructure containers use brain_ prefix too
+SERVICE_TO_CONTAINER.update({
+    "gateway": "brain_gateway",
+    "redis": "brain_redis",
+    "elasticsearch": "brain_elasticsearch",
+    "edgedb": "brain_edgedb",
+})
 
 PUBSUB_CHANNELS = [
     "experience.new",
@@ -61,6 +76,11 @@ PUBSUB_CHANNELS = [
     "session.ended",
     "analogical.insight",
     "pattern.registered",
+    "hormone.shift",
+    "intuition.fired",
+    "epiphany.crystallized",
+    "curiosity.question",
+    "curiosity.answered",
 ]
 
 logger = logging.getLogger("dashboard")
@@ -553,6 +573,94 @@ async def api_logs_service(
 
 
 # ---------------------------------------------------------------------------
+# Docker container logs
+# ---------------------------------------------------------------------------
+
+DOCKER_SOCK = "/var/run/docker.sock"
+
+
+@app.get("/api/docker-logs/{service}")
+async def api_docker_logs(
+    service: str,
+    tail: int = Query(200, ge=1, le=2000),
+):
+    """Fetch recent stdout/stderr from a Docker container via the Engine API."""
+    container = SERVICE_TO_CONTAINER.get(service)
+    if not container:
+        return JSONResponse({"error": f"Unknown service: {service}",
+                             "available": list(SERVICE_TO_CONTAINER.keys())},
+                            status_code=400)
+
+    if not os.path.exists(DOCKER_SOCK):
+        return JSONResponse({"error": "Docker socket not available",
+                             "hint": "Mount /var/run/docker.sock into dashboard"},
+                            status_code=503)
+
+    try:
+        # Use httpx with Unix Domain Socket transport to talk to Docker Engine
+        transport = httpx.AsyncHTTPTransport(uds=DOCKER_SOCK)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://localhost") as docker:
+            resp = await docker.get(
+                f"/containers/{container}/logs",
+                params={"stdout": "true", "stderr": "true",
+                        "tail": str(tail), "timestamps": "true"},
+                timeout=10.0,
+            )
+            if resp.status_code == 404:
+                return JSONResponse({"error": f"Container '{container}' not found",
+                                     "service": service}, status_code=404)
+            if resp.status_code != 200:
+                return JSONResponse({"error": f"Docker API error: {resp.status_code}",
+                                     "body": resp.text[:500]}, status_code=502)
+
+            # Docker multiplexed stream: 8-byte header per frame
+            # byte 0 = stream type (1=stdout, 2=stderr), bytes 4-7 = size (big-endian)
+            raw = resp.content
+            lines = []
+            pos = 0
+            while pos + 8 <= len(raw):
+                stream_type = raw[pos]   # 1=stdout, 2=stderr
+                size = int.from_bytes(raw[pos + 4:pos + 8], "big")
+                pos += 8
+                if pos + size > len(raw):
+                    break
+                chunk = raw[pos:pos + size]
+                pos += size
+                try:
+                    text = chunk.decode("utf-8", errors="replace").rstrip("\n")
+                except Exception:
+                    continue
+                level = "error" if stream_type == 2 else "info"
+                # Try to extract timestamp (Docker format: 2024-01-01T00:00:00.000Z)
+                ts_str = ""
+                if len(text) > 30 and text[4] == '-' and text[10] == 'T':
+                    ts_str = text[:30]
+                    text = text[31:].lstrip()
+                lines.append({
+                    "service": service,
+                    "level": level,
+                    "message": text,
+                    "timestamp_str": ts_str,
+                    "source": "docker"
+                })
+
+            return JSONResponse({"logs": lines, "container": container,
+                                 "count": len(lines)})
+
+    except Exception as exc:
+        logger.warning("Docker logs error for %s: %s", service, exc)
+        return JSONResponse({"error": "Failed to read Docker logs"},
+                            status_code=500)
+
+
+@app.get("/api/docker-services")
+async def api_docker_services():
+    """List all known service-to-container mappings."""
+    return JSONResponse({"services": SERVICE_TO_CONTAINER})
+
+
+# ---------------------------------------------------------------------------
 # WebSocket — Redis pub/sub event stream
 # ---------------------------------------------------------------------------
 
@@ -623,6 +731,11 @@ _CHANNEL_SERVICE_MAP = {
     "session.ended": "thalamus",
     "analogical.insight": "cross-domain",
     "pattern.registered": "learner",
+    "hormone.shift": "hypothalamus",
+    "intuition.fired": "metacognition",
+    "epiphany.crystallized": "insight-engine",
+    "curiosity.question": "thalamus",
+    "curiosity.answered": "thalamus",
 }
 
 

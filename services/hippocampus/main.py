@@ -37,6 +37,12 @@ NEOCORTEX_URL = os.getenv("NEOCORTEX_URL", "http://neocortex:8004")
 OLLAMA_MODEL  = os.getenv("OLLAMA_LOCAL_MODEL",  "phi4")
 EMBED_MODEL   = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
+# ── Embed client (uses embed-queue with Ollama fallback) ──────────────────────
+from embed_client import embed as _embed_fn
+
+async def embed(text: str) -> list:
+    return await _embed_fn(text, service="hippocampus")
+
 db: Optional[edgedb.AsyncIOClient] = None
 
 
@@ -62,37 +68,6 @@ async def shutdown():
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
-async def embed(text: str) -> list:
-    """Generate embedding via local Ollama — 15s timeout per attempt."""
-    for attempt in range(2):
-        t0 = time.time()
-        try:
-            resp = await http.post(
-                f"{OLLAMA_URL}/api/embeddings",
-                json={"model": EMBED_MODEL, "prompt": text[:2000]},
-                timeout=15.0
-            )
-            elapsed = (time.time() - t0) * 1000
-            vec = resp.json()["embedding"]
-            # Guard against zero-magnitude vectors
-            if all(v == 0.0 for v in vec[:10]):
-                print(f"[hippocampus] embed returned zero vector after {elapsed:.0f}ms", flush=True)
-                return []
-            if elapsed > 3000:
-                print(f"[hippocampus] embed slow: {elapsed:.0f}ms", flush=True)
-            return vec
-        except (httpx.ConnectTimeout, httpx.ConnectError) as e:
-            elapsed = (time.time() - t0) * 1000
-            print(f"[hippocampus] ERROR: Ollama unreachable at {OLLAMA_URL} after {elapsed:.0f}ms ({type(e).__name__}) — skipping embed (no retry)", flush=True)
-            return []
-        except Exception as e:
-            elapsed = (time.time() - t0) * 1000
-            print(f"[hippocampus] embed attempt {attempt+1} failed after {elapsed:.0f}ms ({type(e).__name__}): {e}", flush=True)
-            if attempt == 0:
-                await asyncio.sleep(0.3)
-    return []
-
-
 def cosine_similarity(a: list, b: list) -> float:
     va = np.array(a, dtype=np.float32)
     vb = np.array(b, dtype=np.float32)
@@ -104,7 +79,8 @@ def cosine_similarity(a: list, b: list) -> float:
 
 async def quick_summarize(content: str) -> str:
     """Summarize content locally without using Claude API."""
-    if len(content.split()) <= 35:
+    word_count = len(content.split())
+    if word_count <= 60:
         return content
     for attempt in range(2):
         try:
@@ -116,7 +92,7 @@ async def quick_summarize(content: str) -> str:
                     "stream": False,
                     "options": {"num_predict": 80}
                 },
-                timeout=30.0
+                timeout=5.0  # short: falls back to truncation if Ollama is busy/cold
             )
             return resp.json().get("response", content[:200]).strip()
         except (httpx.ConnectTimeout, httpx.ConnectError) as e:
@@ -230,9 +206,12 @@ async def encode_episode(req: EncodeRequest,
     start   = time.time()
     content = req.content or req.user_input
 
-    embedding = await embed(content)
-    summary   = await quick_summarize(content)
-    related   = await find_related_episodes(embedding, limit=5) if embedding else []
+    # Embed and summarize in parallel (independent operations)
+    embedding, summary = await asyncio.gather(
+        embed(content),
+        quick_summarize(content),
+    )
+    related = await find_related_episodes(embedding, limit=5) if embedding else []
 
     try:
         episode = await db.query_single("""

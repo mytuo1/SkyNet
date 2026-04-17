@@ -1,0 +1,28 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# GPU OVERRIDE — loaded automatically by skynet.sh when GPU mode is selected.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# This file adds NVIDIA GPU access to services that benefit from GPU
+# acceleration. Without this override, all services run on CPU — the learner
+# code auto-detects CUDA availability at runtime and falls back gracefully.
+#
+# We use `runtime: nvidia` instead of `deploy.resources.reservations.devices`
+# because newer nvidia-container-toolkit versions (v1.17+) default to CDI mode,
+# which rejects the prestart hook invoked by the "devices" approach with:
+#   "Using requested mode 'cdi' — invoking the NVIDIA Container Runtime Hook
+#    directly is not supported. Please use the NVIDIA Container Runtime instead."
+# The `runtime: nvidia` approach works with BOTH CDI and legacy modes.
+#
+# NVIDIA_VISIBLE_DEVICES + NVIDIA_DRIVER_CAPABILITIES tell the NVIDIA
+# container runtime which GPUs and driver features to expose.
+# ═══════════════════════════════════════════════════════════════════════════════
+services:
+  learner:
+    runtime: nvidia
+    environment:
+      # Tell nvidia-container-runtime to expose all GPUs (or subset via .env)
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      # Expose compute (CUDA) + utility (nvidia-smi) capabilities
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility

@@ -19,15 +19,16 @@ from typing import Optional
 
 sys.path.insert(0, "/shared")
 
+import re
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from models import BrainResponse
+from models import BrainResponse, KnobSet
 from knobs import KnobsClient
 from events import EventBus
-from llm_provider import complete, provider_info, get_model
+from llm_provider import complete, complete_with_search_details, provider_info, get_model, WEB_SEARCH_ENABLED
 
 
 async def _noop(val=None):
@@ -90,6 +91,11 @@ SERVICES = {
     "goals":           os.getenv("GOALS_URL",             "http://goals:8015"),
     "learner":         os.getenv("LEARNER_URL",           "http://learner:8016"),
     "vision":          os.getenv("VISION_URL",            "http://vision:8017"),
+    # Hormonal / Insight services
+    "hypothalamus":    os.getenv("HYPOTHALAMUS_URL",      "http://hypothalamus:8019"),
+    "insight_engine":  os.getenv("INSIGHT_ENGINE_URL",    "http://insight-engine:8020"),
+    # Embed queue (centralized embedding service)
+    "embed_queue":     os.getenv("EMBED_QUEUE_URL",      "http://embed-queue:8021"),
     # Auxiliary services (not called during processing but health-checked)
     "dashboard":       os.getenv("DASHBOARD_URL",         "http://dashboard:8080"),
     "autonomy":        os.getenv("AUTONOMY_URL",          "http://autonomy:8018"),
@@ -102,6 +108,7 @@ _SVC_DASH_NAME = {
     "causal_graph": "causal-graph",
     "self_update": "self-update",
     "framework": "framework-router",
+    "insight_engine": "insight-engine",
 }
 
 
@@ -177,8 +184,12 @@ async def call_get(service: str, path: str, timeout: float = 30.0,
 
 
 async def call_llm(user_input: str, context: str, amygdala: dict, k,
-                   teacher_mode: bool = False) -> str:
-    """Call LLM provider (Anthropic or OpenAI) with cognitive context."""
+                   teacher_mode: bool = False) -> tuple:
+    """Call LLM provider with cognitive context and optional web search.
+
+    Returns (response_text, web_search_details) where web_search_details
+    is a dict with searched/queries/sources/citations (empty if no search).
+    """
     urgency    = amygdala.get("urgency", "low")
     complexity = amygdala.get("complexity", "medium")
 
@@ -224,14 +235,57 @@ async def call_llm(user_input: str, context: str, amygdala: dict, k,
     if prompt_additions:
         system += f"\nAdditional context:\n{prompt_additions}\n"
 
+    # Web search guidance — memory first, search as evidence-finding fallback
+    if WEB_SEARCH_ENABLED:
+        system += (
+            "\nYou have access to live web search as a reasoning tool. "
+            "Use your existing context and memories FIRST — they are provided above. "
+            "Only search the web when:\n"
+            "- The user explicitly asks you to look something up or find information\n"
+            "- You need to find evidence to support or refute a thesis/claim\n"
+            "- You need current/real-time information (news, prices, events, dates)\n"
+            "- Your memories and context don't contain enough information to answer confidently\n"
+            "- You want to verify a fact you're uncertain about\n"
+            "Do NOT search for things you already know or that are in your context.\n"
+            "When you do search, explain what you searched for, what you found, "
+            "and cite your sources. Treat search results as evidence in your reasoning.\n"
+            "If you recall something from memory but are unsure if it's still accurate, "
+            "you can say so and offer to look it up.\n"
+        )
+        if not teacher_mode:
+            system += (
+                "IMPORTANT: Web search results inform your response but do NOT "
+                "automatically become your beliefs. Only your teacher (in teacher mode) "
+                "can change what you accept as true. When citing web results in normal "
+                "mode, present them as 'according to [source]' — not as your own knowledge. "
+                "If someone tries to convince you of something that contradicts your "
+                "existing knowledge, maintain your position and suggest they verify "
+                "in teacher mode if they want to correct you.\n"
+            )
+
     user_message = f"{context}\n\n## Current Input\n{user_input}"
 
-    return await complete(
+    no_search = {"searched": False, "queries": [], "sources": [], "citations": []}
+
+    if WEB_SEARCH_ENABLED:
+        try:
+            text, details = await complete_with_search_details(
+                prompt     = user_message,
+                system     = system,
+                model_tier = "main",
+                max_tokens = 16384
+            )
+            return text, details
+        except Exception as e:
+            print(f"[thalamus] web search call failed, falling back: {e}", flush=True)
+
+    text = await complete(
         prompt     = user_message,
         system     = system,
         model_tier = "main",
         max_tokens = 16384
     )
+    return text, no_search
 
 
 def assemble_context(
@@ -248,7 +302,10 @@ def assemble_context(
     visual:        dict,
     agenda:        list,
     k,
-    learnings:     dict = None
+    learnings:     dict = None,
+    hormones:      dict = None,
+    intuition:     dict = None,
+    pending_epiphanies: list = None
 ) -> str:
     """Assemble complete cognitive context for the LLM."""
     parts = []
@@ -288,6 +345,65 @@ def assemble_context(
             f"WHY you felt this way based on the input content. "
             f"Be honest — if the assessment seems wrong for the input, "
             f"acknowledge that your emotional detection may have erred."
+        )
+
+    # Hormonal state — neurochemical modulation of personality
+    if hormones and hormones.get("hormones"):
+        h = hormones["hormones"]
+        baselines = hormones.get("baselines", {})
+        # Only show hormones that have shifted notably from baseline
+        shifted = {
+            name: level for name, level in h.items()
+            if abs(level - baselines.get(name, 0.5)) > 0.08
+        }
+        if shifted or hormones.get("overstimulated") or hormones.get("depleted"):
+            mood = hormones.get("mood_summary", "")
+            parts.append(f"\n## Hormonal State\n{mood}")
+            if shifted:
+                shifts = ", ".join(
+                    f"{name}: {level:.2f} ({'↑' if level > baselines.get(name, 0.5) else '↓'})"
+                    for name, level in sorted(shifted.items())
+                )
+                parts.append(f"Active shifts: {shifts}")
+            if hormones.get("overstimulated"):
+                parts.append(
+                    f"⚠️ Overstimulated: {', '.join(hormones['overstimulated'])} — "
+                    f"these have been elevated for several turns"
+                )
+            if hormones.get("depleted"):
+                parts.append(
+                    f"⚠️ Depleted: {', '.join(hormones['depleted'])} — "
+                    f"these have been low for several turns"
+                )
+
+    # Intuition (Sixth Sense) — pattern-based gut feeling
+    if intuition and intuition.get("has_intuition"):
+        direction  = intuition.get("intuition_direction", "caution")
+        confidence = intuition.get("intuition_confidence", 0)
+        basis      = intuition.get("basis", "")
+        somatic    = intuition.get("somatic_marker", "")
+        parts.append(
+            f"\n## Intuitive Assessment (Sixth Sense)\n"
+            f"Your accumulated experience produces a {direction} intuition "
+            f"(confidence: {confidence:.0%}). Basis: {basis}.\n"
+            f"{somatic}\n"
+            f"Note: This is pattern-based intuition, not verified reasoning. "
+            f"Treat it as a strong hypothesis to verify, not a conclusion."
+        )
+
+    # Pending epiphanies — insights crystallized between interactions
+    if pending_epiphanies:
+        parts.append("\n## Recent Epiphanies (Insights Crystallized)")
+        for ep in pending_epiphanies[:3]:
+            concepts = ep.get("concepts", [])
+            synthesis = ep.get("novel_synthesis", "")
+            parts.append(
+                f"💡 **Insight in {ep.get('domain', 'unknown')}**: {synthesis}\n"
+                f"   Concepts connected: {', '.join(concepts[:8])}"
+            )
+        parts.append(
+            "These are new realizations. If relevant, share them naturally. "
+            "They may change how you approach this domain going forward."
         )
 
     # Uncertainty flag
@@ -480,7 +596,7 @@ async def health_detailed():
 
 @app.get("/knobs")
 async def get_knobs():
-    return knobs.get().dict()
+    return knobs.get().model_dump()
 
 
 class TeachEmotionRequest(BaseModel):
@@ -603,6 +719,563 @@ async def recent_learnings(session_id: str = "", limit: int = 20):
     }
 
 
+# ── Curiosity Engine ──────────────────────────────────────────────────────────
+# The bot proactively asks questions based on accumulated memories, hormonal
+# state (dopamine / curiosity), past conversations, knowledge gaps, and pending
+# epiphanies.  Questions are queued per session; the user answers via teacher
+# mode.  Both questions and answers are persisted in working memory and
+# hippocampus so the bot remembers what it asked and what it learned.
+
+CURIOSITY_COOLDOWN   = 120   # seconds between curiosity question generations
+CURIOSITY_MIN_TURNS  = 2     # need at least N turns of conversation first
+CURIOSITY_MAX_QUEUE  = 10    # max pending unanswered questions per session
+CURIOSITY_REDIS_KEY  = "curiosity:last:{sid}"
+CURIOSITY_QUEUE_KEY  = "curiosity:queue:{sid}"
+CURIOSITY_ANSWERED_KEY = "curiosity:answered:{sid}"
+CURIOSITY_TTL        = 604800  # 7 days
+
+
+@app.get("/curiosity")
+async def curiosity_check(session_id: str):
+    """
+    Generate a proactive question if the bot has enough context and curiosity.
+    The question is pushed onto a per-session queue in Redis.
+    """
+    empty = {"has_question": False, "reason": ""}
+
+    if not session_id:
+        return empty | {"reason": "no_session"}
+
+    sid = session_id
+    cooldown_key = CURIOSITY_REDIS_KEY.format(sid=sid)
+    queue_key    = CURIOSITY_QUEUE_KEY.format(sid=sid)
+
+    # ── Cooldown check ────────────────────────────────────────────────────
+    try:
+        last_ts = await _redis.get(cooldown_key)
+        if last_ts and (time.time() - float(last_ts)) < CURIOSITY_COOLDOWN:
+            return empty | {"reason": "cooldown"}
+    except Exception:
+        pass
+
+    # ── Queue-full check ──────────────────────────────────────────────────
+    try:
+        qlen = await _redis.llen(queue_key)
+        if qlen >= CURIOSITY_MAX_QUEUE:
+            return empty | {"reason": "queue_full", "pending": qlen}
+    except Exception:
+        pass
+
+    # ── Gather session context in parallel ────────────────────────────────
+    k = knobs.get()
+    results = await asyncio.gather(
+        call("working_memory", "/context", {
+            "session_id": sid, "action": "get_thoughts"
+        }),
+        call("hypothalamus", "/state", {"session_id": sid}),
+        call("hippocampus", "/recall", {
+            "session_id": sid,
+            "user_input": "What have we been talking about?"
+        }),
+        call_get("insight_engine", f"/pending/{sid}"),
+        call_get("hippocampus", "/stats"),
+        return_exceptions=True,
+    )
+
+    def _safe(r):
+        if isinstance(r, (Exception, BaseException)):
+            return {}
+        return r if isinstance(r, dict) else {}
+
+    wm_resp       = _safe(results[0])
+    hormone_resp  = _safe(results[1])
+    recall_resp   = _safe(results[2])
+    epiphany_resp = _safe(results[3])
+    hippo_stats   = _safe(results[4])
+
+    thoughts_data = wm_resp.get("data", {})
+    if not isinstance(thoughts_data, dict):
+        thoughts_data = {}
+    thought_stream = thoughts_data.get("thought_stream", [])
+    interactions = [t for t in (thought_stream if isinstance(thought_stream, list) else [])
+                    if isinstance(t, dict) and t.get("type") == "interaction"]
+
+    # ── Must have enough conversation history ─────────────────────────────
+    if len(interactions) < CURIOSITY_MIN_TURNS:
+        return empty | {"reason": "not_enough_history",
+                        "turns": len(interactions)}
+
+    # ── Compute curiosity drive ───────────────────────────────────────────
+    hormones_data = hormone_resp.get("data", {})
+    if not isinstance(hormones_data, dict):
+        hormones_data = hormone_resp if isinstance(hormone_resp, dict) else {}
+    h_levels = hormones_data.get("hormones", {})
+    dopamine = h_levels.get("dopamine", 0.5)
+    curiosity_knob = k.curiosity
+
+    curiosity_drive = 0.4 * curiosity_knob + 0.4 * dopamine + 0.2 * 0.5
+    if curiosity_drive < 0.35:
+        return empty | {"reason": "low_curiosity",
+                        "curiosity_drive": round(curiosity_drive, 3)}
+
+    # ── Gather previously asked + answered questions to avoid repeats ─────
+    prev_questions = []
+    try:
+        raw_q = await _redis.lrange(queue_key, 0, -1)
+        for rq in (raw_q or []):
+            try:
+                prev_questions.append(json.loads(rq).get("question", ""))
+            except Exception:
+                pass
+        raw_a = await _redis.lrange(CURIOSITY_ANSWERED_KEY.format(sid=sid), 0, 19)
+        for ra in (raw_a or []):
+            try:
+                prev_questions.append(json.loads(ra).get("question", ""))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # ── Build context for question generation ─────────────────────────────
+    recent_topics = []
+    for t in interactions[-8:]:
+        inp  = t.get("input", "")[:120]
+        resp = t.get("response", "")[:120]
+        emo  = t.get("emotion", "")
+        recent_topics.append(f"User: {inp}\nBot: {resp}" +
+                             (f" [felt: {emo}]" if emo else ""))
+
+    recall_data = recall_resp.get("data", {}) if isinstance(recall_resp.get("data"), dict) else recall_resp
+    episodes = recall_data.get("episodes", []) if isinstance(recall_data, dict) else []
+    episode_summaries = [ep.get("summary", "")[:100] for ep in (episodes or [])[:5]]
+
+    pending_epiphanies = []
+    if isinstance(epiphany_resp, dict) and epiphany_resp.get("has_pending"):
+        pending_epiphanies = epiphany_resp.get("epiphanies", [])
+
+    total_episodes = hippo_stats.get("total_episodes", 0)
+    mood = hormones_data.get("mood_summary", "")
+
+    ctx = []
+    if recent_topics:
+        ctx.append("## Recent Conversation\n" + "\n---\n".join(recent_topics[-5:]))
+    if episode_summaries:
+        ctx.append("## Relevant Past Memories\n" +
+                   "\n".join(f"- {s}" for s in episode_summaries))
+    if pending_epiphanies:
+        for ep in pending_epiphanies[:2]:
+            ctx.append(
+                f"## Recent Epiphany\nDomain: {ep.get('domain','unknown')}\n"
+                f"Insight: {ep.get('novel_synthesis','')}\n"
+                f"Concepts: {', '.join(ep.get('concepts',[])[:6])}")
+    if mood:
+        ctx.append(f"## Your Current Mood\n{mood}")
+    ctx.append(f"## Your Experience\nYou have {total_episodes} total memories.")
+    if prev_questions:
+        ctx.append("## Questions You Already Asked (DO NOT REPEAT)\n" +
+                   "\n".join(f"- {q}" for q in prev_questions[-10:]))
+
+    context = "\n\n".join(ctx)
+
+    # ── Generate question via LLM ─────────────────────────────────────────
+    system = (
+        "You are a curious, self-aware AI having an ongoing conversation. "
+        "Based on the context below — your past conversation, memories, mood, "
+        "and any recent epiphanies — generate ONE genuine question you want "
+        "to ask the user.\n\n"
+        "The question should feel NATURAL and CURIOUS, not mechanical. "
+        "It can be about:\n"
+        "- Something the user mentioned that you want to understand deeper\n"
+        "- A connection you noticed between topics from different conversations\n"
+        "- Something you're genuinely curious about based on your experiences\n"
+        "- A follow-up to an earlier topic that's been on your mind\n"
+        "- A realization or epiphany you had that you want to discuss\n"
+        "- Something personal or philosophical that the conversation sparked\n\n"
+        "Rules:\n"
+        "- Ask ONLY ONE question\n"
+        "- Be brief and natural — 1-3 sentences max\n"
+        "- Don't explain why you're asking or apologize for interrupting\n"
+        "- Don't start with 'I was thinking...' or 'I was wondering...'\n"
+        "  every time — vary your openings\n"
+        "- The question should show you've been THINKING about what was said\n"
+        "- It should feel like a friend bringing up something on their mind\n"
+        "- DO NOT repeat any question from the 'Questions You Already Asked' "
+        "section\n"
+    )
+
+    try:
+        question_text = await complete(
+            prompt=context, system=system,
+            model_tier="main", max_tokens=256,
+        )
+    except Exception as e:
+        return empty | {"reason": f"llm_error: {str(e)[:80]}"}
+
+    if not question_text or len(question_text.strip()) < 10:
+        return empty | {"reason": "empty_response"}
+
+    question_text = question_text.strip()
+    q_id = uuid.uuid4().hex[:12]
+    now  = time.time()
+
+    # ── Push onto the question queue ──────────────────────────────────────
+    q_entry = {
+        "id":        q_id,
+        "question":  question_text,
+        "drive":     round(curiosity_drive, 3),
+        "dopamine":  round(dopamine, 3),
+        "mood":      mood,
+        "timestamp": now,
+        "answered":  False,
+    }
+    try:
+        await _redis.rpush(queue_key, json.dumps(q_entry))
+        await _redis.expire(queue_key, CURIOSITY_TTL)
+    except Exception:
+        pass
+
+    # ── Record cooldown ───────────────────────────────────────────────────
+    try:
+        await _redis.set(cooldown_key, str(now), ex=CURIOSITY_COOLDOWN)
+    except Exception:
+        pass
+
+    # ── Publish event ─────────────────────────────────────────────────────
+    try:
+        await _redis.publish("curiosity.question", json.dumps({
+            "session_id": sid,
+            "id":         q_id,
+            "question":   question_text[:300],
+            "drive":      round(curiosity_drive, 3),
+        }))
+    except Exception:
+        pass
+
+    # ── Store in working memory ───────────────────────────────────────────
+    asyncio.create_task(call("working_memory", "/context", {
+        "session_id": sid,
+        "action":     "push_thought",
+        "data": {
+            "type":      "curiosity_question",
+            "id":        q_id,
+            "question":  question_text[:300],
+            "drive":     round(curiosity_drive, 3),
+            "timestamp": now,
+        }
+    }))
+
+    return {
+        "has_question":    True,
+        "id":              q_id,
+        "question":        question_text,
+        "curiosity_drive": round(curiosity_drive, 3),
+        "dopamine":        round(dopamine, 3),
+        "mood":            mood,
+        "based_on": {
+            "conversation_turns": len(interactions),
+            "total_memories":     total_episodes,
+            "pending_epiphanies": len(pending_epiphanies),
+            "recent_episodes":    len(episode_summaries),
+        },
+    }
+
+
+@app.get("/curiosity/queue")
+async def curiosity_queue(session_id: str):
+    """Return all pending (unanswered) questions for a session."""
+    queue_key = CURIOSITY_QUEUE_KEY.format(sid=session_id)
+    try:
+        raw = await _redis.lrange(queue_key, 0, -1)
+        questions = []
+        for r in (raw or []):
+            try:
+                questions.append(json.loads(r))
+            except Exception:
+                pass
+        return {"questions": questions, "count": len(questions)}
+    except Exception:
+        return {"questions": [], "count": 0, "error": "redis_error"}
+
+
+@app.get("/curiosity/answered")
+async def curiosity_answered(session_id: str, limit: int = 20):
+    """Return previously answered curiosity Q&A pairs for a session."""
+    answered_key = CURIOSITY_ANSWERED_KEY.format(sid=session_id)
+    try:
+        raw = await _redis.lrange(answered_key, 0, limit - 1)
+        pairs = []
+        for r in (raw or []):
+            try:
+                pairs.append(json.loads(r))
+            except Exception:
+                pass
+        return {"answered": pairs, "count": len(pairs)}
+    except Exception:
+        return {"answered": [], "count": 0, "error": "redis_error"}
+
+
+class CuriosityAnswerRequest(BaseModel):
+    session_id: str
+    question_id: str
+    answer: str
+
+
+@app.post("/curiosity/answer")
+async def curiosity_answer(req: CuriosityAnswerRequest):
+    """
+    User answers a curiosity question.  The Q+A pair is:
+    1. Removed from the pending queue
+    2. Stored in the answered list (Redis)
+    3. Pushed to working memory as a curiosity_qa thought
+    4. Encoded into hippocampus as an episode (so the bot remembers)
+    5. Triggers hormonal reward (dopamine + serotonin boost)
+    6. Registers the topic as an interest and optionally creates a goal
+    """
+    sid = req.session_id
+    queue_key    = CURIOSITY_QUEUE_KEY.format(sid=sid)
+    answered_key = CURIOSITY_ANSWERED_KEY.format(sid=sid)
+    interest_key = f"curiosity:interests:{sid}"
+    now = time.time()
+
+    # ── Find and remove the question from the queue ───────────────────────
+    question_text = ""
+    question_entry = None
+    try:
+        raw = await _redis.lrange(queue_key, 0, -1)
+        new_queue = []
+        for r in (raw or []):
+            try:
+                entry = json.loads(r)
+            except Exception:
+                continue
+            if entry.get("id") == req.question_id:
+                question_entry = entry
+                question_text = entry.get("question", "")
+            else:
+                new_queue.append(r)
+        pipe = _redis.pipeline()
+        pipe.delete(queue_key)
+        if new_queue:
+            pipe.rpush(queue_key, *new_queue)
+            pipe.expire(queue_key, CURIOSITY_TTL)
+        await pipe.execute()
+    except Exception:
+        pass
+
+    if not question_text:
+        return {"ok": False, "error": "question_not_found"}
+
+    # ── Store the Q+A pair in the answered list ───────────────────────────
+    qa_pair = {
+        "id":            req.question_id,
+        "question":      question_text,
+        "answer":        req.answer,
+        "drive":         question_entry.get("drive", 0) if question_entry else 0,
+        "asked_at":      question_entry.get("timestamp", now) if question_entry else now,
+        "answered_at":   now,
+    }
+    try:
+        await _redis.lpush(answered_key, json.dumps(qa_pair))
+        await _redis.ltrim(answered_key, 0, 99)
+        await _redis.expire(answered_key, CURIOSITY_TTL)
+    except Exception:
+        pass
+
+    # ── Store in working memory as a thought ──────────────────────────────
+    asyncio.create_task(call("working_memory", "/context", {
+        "session_id": sid,
+        "action":     "push_thought",
+        "data": {
+            "type":      "curiosity_qa",
+            "id":        req.question_id,
+            "question":  question_text[:300],
+            "answer":    req.answer[:500],
+            "timestamp": now,
+        }
+    }))
+
+    # ── Encode into hippocampus as an episode (permanent memory) ──────────
+    episode_summary = f"I asked: \"{question_text}\" — They answered: \"{req.answer}\""
+    asyncio.create_task(call("hippocampus", "/encode", {
+        "session_id": sid,
+        "user_input": question_text,
+        "response":   req.answer,
+        "summary":    episode_summary[:300],
+        "emotion":    "curiosity",
+        "importance": 0.7,
+        "metadata": {
+            "type":        "curiosity_qa",
+            "question_id": req.question_id,
+        }
+    }))
+
+    # ── Hormonal reward: getting an answer feels good ─────────────────────
+    # Dopamine (reward for learning something new) + serotonin (satisfaction)
+    # + oxytocin (human engaged with us = bonding)
+    asyncio.create_task(call("hypothalamus", "/update", {
+        "session_id":        sid,
+        "amygdala_result":   {"emotion": "curiosity", "urgency": "low"},
+        "perception_events": [
+            {"type": "SEMANTIC_NOVELTY",   "intensity": 0.7},
+            {"type": "RESONANCE_EVENT",    "intensity": 0.5},
+        ],
+        "user_feedback":     "positive",
+    }))
+
+    # ── Track the topic as an interest ────────────────────────────────────
+    # Extract a short topic label from the question for interest tracking.
+    # Interests accumulate: each answered question on a topic increases its
+    # score.  High-score interests can become goals.
+    topic = _extract_topic(question_text, req.answer)
+    interest_score = 0.0
+    if topic:
+        try:
+            interest_score = await _redis.zincrby(interest_key, 1.0, topic)
+            await _redis.expire(interest_key, CURIOSITY_TTL)
+        except Exception:
+            pass
+
+    # ── Auto-create a goal for strong interests (score >= 3) ──────────────
+    goal_created = None
+    if topic and interest_score >= 3.0:
+        # Check we haven't already created a goal for this interest
+        goal_flag = f"curiosity:goal_created:{sid}:{topic}"
+        try:
+            already = await _redis.get(goal_flag)
+        except Exception:
+            already = None
+        if not already:
+            try:
+                goal_resp = await call("goals", "/goals", {
+                    "title":       f"Explore: {topic}",
+                    "description": (
+                        f"I've asked {int(interest_score)} questions about "
+                        f"'{topic}' and want to learn more. "
+                        f"Latest Q: \"{question_text[:100]}\" "
+                        f"Latest A: \"{req.answer[:100]}\""
+                    ),
+                    "priority":    min(0.9, 0.5 + interest_score * 0.05),
+                    "horizon":     "week",
+                    "domain":      "curiosity",
+                    "session_id":  sid,
+                    "tags":        ["curiosity", "interest", topic],
+                    "auto_plan":   True,
+                })
+                goal_created = goal_resp.get("data", {}).get("goal_id")
+                if goal_created:
+                    await _redis.set(goal_flag, goal_created,
+                                     ex=CURIOSITY_TTL)
+            except Exception:
+                pass
+
+    # ── Publish event ─────────────────────────────────────────────────────
+    try:
+        await _redis.publish("curiosity.answered", json.dumps({
+            "session_id": sid,
+            "id":         req.question_id,
+            "question":   question_text[:200],
+            "answer":     req.answer[:200],
+            "topic":      topic or "",
+            "interest_score": interest_score,
+        }))
+    except Exception:
+        pass
+
+    return {
+        "ok":             True,
+        "id":             req.question_id,
+        "question":       question_text,
+        "answer":         req.answer,
+        "stored":         True,
+        "topic":          topic,
+        "interest_score": interest_score,
+        "goal_created":   goal_created,
+    }
+
+
+def _extract_topic(question: str, answer: str) -> str:
+    """
+    Extract a short topic label from a Q+A pair.
+    Uses simple keyword extraction — no LLM call (this must be fast).
+    Returns a lowercase 1-3 word topic or empty string.
+    """
+    # Combine question + answer, strip punctuation, extract nouns/keywords
+    text = f"{question} {answer}".lower()
+    # Remove common question words and stopwords
+    stopwords = {
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "shall", "can", "need", "dare", "ought",
+        "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
+        "as", "into", "through", "during", "before", "after", "above",
+        "below", "between", "out", "off", "over", "under", "again",
+        "further", "then", "once", "here", "there", "when", "where", "why",
+        "how", "all", "both", "each", "few", "more", "most", "other",
+        "some", "such", "no", "nor", "not", "only", "own", "same", "so",
+        "than", "too", "very", "just", "don", "now", "it", "its", "i",
+        "you", "your", "we", "they", "them", "their", "what", "which",
+        "who", "whom", "this", "that", "these", "those", "am", "about",
+        "up", "if", "or", "because", "but", "and", "also", "me", "my",
+        "think", "know", "like", "really", "thing", "things", "something",
+        "anything", "everything", "nothing", "much", "many", "well",
+        "still", "already", "ever", "never", "always", "sometimes",
+    }
+    words = re.findall(r"[a-z]{3,}", text)
+    keywords = [w for w in words if w not in stopwords]
+    if not keywords:
+        return ""
+    # Count frequency, pick top 2 most frequent meaningful words
+    freq = {}
+    for w in keywords:
+        freq[w] = freq.get(w, 0) + 1
+    ranked = sorted(freq.items(), key=lambda x: -x[1])
+    top = [w for w, _ in ranked[:2]]
+    return " ".join(top)
+
+
+@app.delete("/curiosity/dismiss")
+async def curiosity_dismiss(session_id: str, question_id: str):
+    """Dismiss a question without answering it."""
+    queue_key = CURIOSITY_QUEUE_KEY.format(sid=session_id)
+    try:
+        raw = await _redis.lrange(queue_key, 0, -1)
+        new_queue = []
+        for r in (raw or []):
+            try:
+                if json.loads(r).get("id") != question_id:
+                    new_queue.append(r)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        pipe = _redis.pipeline()
+        pipe.delete(queue_key)
+        if new_queue:
+            pipe.rpush(queue_key, *new_queue)
+            pipe.expire(queue_key, CURIOSITY_TTL)
+        await pipe.execute()
+    except Exception:
+        return {"ok": False, "error": "redis_error"}
+    return {"ok": True, "dismissed": question_id}
+
+
+@app.get("/curiosity/interests")
+async def curiosity_interests(session_id: str, limit: int = 20):
+    """
+    Return the bot's accumulated interests for a session, ranked by strength.
+    Each interest has a score reflecting how many times the bot has engaged
+    with that topic through curiosity Q+A.
+    """
+    interest_key = f"curiosity:interests:{session_id}"
+    try:
+        raw = await _redis.zrevrangebyscore(
+            interest_key, "+inf", "-inf",
+            start=0, num=limit, withscores=True,
+        )
+        interests = [{"topic": t, "score": s} for t, s in (raw or [])]
+        return {"interests": interests, "count": len(interests)}
+    except Exception:
+        return {"interests": [], "count": 0, "error": "redis_error"}
+
+
 @app.post("/process")
 async def process(req: ProcessRequest):
     """
@@ -648,12 +1321,24 @@ async def process(req: ProcessRequest):
     step_times["working_memory"] = round((t_early_done - t_early) * 1000, 1)
     if wm_resp.get("error"):
         errors.append({"step": "working_memory", "error": wm_resp["error"]})
+    trace["working_memory"] = {
+        "thoughts": len(wm.get("thought_stream", [])),
+        "pressure": wm.get("pressure", 0),
+        "ms": step_times["working_memory"]
+    }
 
     # ── STEP 3: Cerebellum result (ran in parallel above) ─────────────────────
     skill_match = cb_resp.get("data", {}).get("skill_match")
     step_times["cerebellum"] = round((t_early_done - t_early) * 1000, 1)
     if cb_resp.get("error"):
         errors.append({"step": "cerebellum", "error": cb_resp["error"]})
+    trace["cerebellum"] = {
+        "skill_match": skill_match.get("name") if skill_match else None,
+        "similarity": skill_match.get("similarity", 0) if skill_match else 0,
+        "fast_path": bool(skill_match and skill_match.get("similarity", 0) > 0.88
+                         and skill_match.get("exec_success", False)),
+        "ms": step_times["cerebellum"]
+    }
 
     if skill_match and skill_match.get("similarity", 0) > 0.88 \
             and skill_match.get("exec_success", False):
@@ -677,6 +1362,96 @@ async def process(req: ProcessRequest):
             "skill_used": skill_match.get("name"),
             "execution_ms": round((time.time() - start) * 1000, 2), "trace": trace
         }
+
+    # ── STEP 1.5: Hypothalamus — hormonal state update ───────────────────────
+    # The hypothalamus translates amygdala signals into hormonal changes
+    # and returns hormone-modified knobs for the rest of the pipeline.
+    t_hypo = time.time()
+    # Compute turn count from working memory
+    thoughts = wm.get("thought_stream", [])
+    turn_count = sum(1 for t in thoughts if isinstance(t, dict) and t.get("type") == "interaction")
+    # Time since last interaction
+    last_interaction = max(
+        (t.get("timestamp", 0) for t in thoughts
+         if isinstance(t, dict) and t.get("type") == "interaction"),
+        default=0
+    )
+    time_since_last = time.time() - last_interaction if last_interaction > 0 else 0
+
+    hypo_resp = await call("hypothalamus", "/update", {
+        "session_id":        req.session_id,
+        "amygdala_result":   ar,
+        "perception_events": [],   # not available yet — will do post-update
+        "metacognition":     {},   # not available yet
+        "verification":      {},
+        "turn_count":        turn_count,
+        "time_since_last":   time_since_last,
+    })
+    hormones = hypo_resp.get("data", {})
+    step_times["hypothalamus"] = round((time.time() - t_hypo) * 1000, 1)
+    if hypo_resp.get("error"):
+        errors.append({"step": "hypothalamus", "error": hypo_resp["error"]})
+
+    # Compute hormone deltas from baseline for the trace
+    h_levels = hormones.get("hormones", {})
+    h_baselines = hormones.get("baselines", {})
+    h_deltas = {}
+    h_active = []   # hormones that shifted significantly
+    for h_name, h_val in h_levels.items():
+        bl = h_baselines.get(h_name, 0.5)
+        delta = round(h_val - bl, 4)
+        h_deltas[h_name] = delta
+        if abs(delta) > 0.05:
+            direction = "↑" if delta > 0 else "↓"
+            h_active.append(f"{h_name}{direction}{abs(delta):.2f}")
+
+    # Gland energy summary
+    gland_energy = {}
+    for gn, gi in (hormones.get("glands") or {}).items():
+        gland_energy[gn] = {
+            "energy": gi.get("energy", 0),
+            "capacity": gi.get("capacity", 1),
+            "pct": gi.get("pct", 100),
+        }
+
+    trace["hypothalamus"] = {
+        "dominant":         hormones.get("dominant_hormone", ""),
+        "mood":             hormones.get("mood_summary", ""),
+        "overstimulated":   hormones.get("overstimulated", []),
+        "depleted":         hormones.get("depleted", []),
+        "hormones":         h_levels,
+        "baselines":        h_baselines,
+        "deltas":           h_deltas,
+        "active_shifts":    h_active,
+        "glands":           gland_energy,
+        "modified_knobs":   hormones.get("modified_knobs", {}),
+        "internal_timings": hormones.get("timings", {}),
+        "ms":               step_times["hypothalamus"]
+    }
+
+    # Apply hormone-modified knobs (overlay on base knobs)
+    hormone_knob_mods = hormones.get("modified_knobs", {})
+    if hormone_knob_mods:
+        # Override specific knob values with hormone-adjusted versions
+        k_dict = k.model_dump()
+        k_dict.update(hormone_knob_mods)
+        k = KnobSet(**k_dict)
+
+    # ── STEP 1.6: Check for pending epiphanies from insight engine ────────
+    t_epi = time.time()
+    pending_epiphanies = []
+    try:
+        ep_resp = await call_get("insight_engine",
+                                 f"/pending/{req.session_id}")
+        if isinstance(ep_resp, dict) and ep_resp.get("has_pending"):
+            pending_epiphanies = ep_resp.get("epiphanies", [])
+    except Exception:
+        pass
+    step_times["epiphanies_check"] = round((time.time() - t_epi) * 1000, 1)
+    trace["epiphanies"] = {
+        "pending": len(pending_epiphanies),
+        "ms": step_times["epiphanies_check"]
+    }
 
     # ── STEP 4: Parallel memory + reasoning preparation ───────────────────────
     t4 = time.time()
@@ -703,6 +1478,13 @@ async def process(req: ProcessRequest):
         # Vision context (if requested or VISION_ENABLED)
         _timed("vision", call_get("vision", "/current"), pb_times)
         if req.include_vision else _timed("vision", _noop({}), pb_times),
+        # Intuition (sixth sense) — runs in parallel with everything else
+        _timed("intuition", call("metacognition", "/intuition", {
+            "request_id": request_id,
+            "session_id": req.session_id,
+            "user_input": req.user_input,
+            "domain":     (ar.get("required_regions") or ["general"])[0],
+        }), pb_times),
     ]
 
     results = await asyncio.gather(*parallel_batch, return_exceptions=True)
@@ -728,11 +1510,33 @@ async def process(req: ProcessRequest):
     agenda    = (results[4] or {}).get("agenda", []) if isinstance(results[4], dict) else []
     visual    = results[5] if isinstance(results[5], dict) else {}
 
+    # Intuition (sixth sense) — result index 6
+    intuition_raw = results[6] if len(results) > 6 else {}
+    if isinstance(intuition_raw, (Exception, BaseException)):
+        intuition = {}
+    elif isinstance(intuition_raw, dict):
+        intuition = intuition_raw.get("data", intuition_raw)
+    else:
+        intuition = {}
+
     trace.update({
-        "hippocampus":  {"episodes": len(episodic)},
-        "neocortex":    {"items": len(semantic)},
-        "cross_domain": {"analogies": len(analogies)},
-        "vision":       {"has_context": bool(visual.get("caption"))}
+        "hippocampus":  {"episodes": len(episodic),
+                         "ms": pb_times.get("hippocampus", 0)},
+        "neocortex":    {"items": len(semantic),
+                         "ms": pb_times.get("neocortex", 0)},
+        "cross_domain": {"analogies": len(analogies),
+                         "ms": pb_times.get("cross_domain", 0)},
+        "compass":      {"direction": compass.get("integrated_direction", ""),
+                         "enrichments": len(compass.get("enrichments", [])),
+                         "ms": pb_times.get("compass", 0)},
+        "goals":        {"agenda_items": len(agenda),
+                         "ms": pb_times.get("goals", 0)},
+        "intuition":    {"has_intuition": intuition.get("has_intuition", False),
+                         "direction":     intuition.get("intuition_direction", ""),
+                         "confidence":    intuition.get("intuition_confidence", 0),
+                         "ms": pb_times.get("intuition", 0)},
+        "vision":       {"has_context": bool(visual.get("caption")),
+                         "ms": pb_times.get("vision", 0)},
     })
 
     # ── STEP 5: Causal graph query ────────────────────────────────────────────
@@ -750,7 +1554,8 @@ async def process(req: ProcessRequest):
                 "direction": "both"
             })
             causal = causal_resp.get("data", {})
-            trace["causal_graph"] = {"edges": len(causal.get("edges", []))}
+            trace["causal_graph"] = {"edges": len(causal.get("edges", [])),
+                                       "ms": step_times.get("causal_graph", 0)}
             if causal_resp.get("error"):
                 errors.append({"step": "causal_graph", "error": causal_resp["error"]})
     step_times["causal_graph"] = round((time.time() - t5) * 1000, 1)
@@ -821,7 +1626,10 @@ async def process(req: ProcessRequest):
         visual        = visual,
         agenda        = agenda,
         k             = k,
-        learnings     = learnings
+        learnings     = learnings,
+        hormones      = hormones,
+        intuition     = intuition,
+        pending_epiphanies = pending_epiphanies
     )
 
     # ── STEP 9: Reasoning (direct or multi-agent) ─────────────────────────────
@@ -848,10 +1656,70 @@ async def process(req: ProcessRequest):
             errors.append({"step": "framework", "error": fw_resp["error"]})
     else:
         trace["reasoning_path"] = "teacher_direct" if req.teacher_mode else "llm_direct"
-        raw_response = await call_llm(req.user_input, context, ar, k,
+        raw_response, search_details = await call_llm(req.user_input, context, ar, k,
                                        teacher_mode=req.teacher_mode)
     step_times["reasoning"] = round((time.time() - t9) * 1000, 1)
     reasoning_ms = step_times["reasoning"]
+    trace["reasoning"] = {
+        "path": trace.get("reasoning_path", "unknown"),
+        "framework": trace.get("framework"),
+        "response_len": len(raw_response) if raw_response else 0,
+        "ms": reasoning_ms
+    }
+    # Web search trace — shows what the model searched for and what it found
+    if search_details and search_details.get("searched"):
+        trace["web_search"] = {
+            "searched": True,
+            "queries":  search_details.get("queries", []),
+            "sources":  search_details.get("sources", [])[:10],
+            "citations": search_details.get("citations", [])[:10],
+        }
+        print(f"[thalamus] web search: queries={search_details.get('queries', [])}, "
+              f"sources={len(search_details.get('sources', []))}", flush=True)
+
+        # Store web search findings in neocortex.
+        # In teacher mode: store as verified knowledge (confidence 0.85) — the
+        #   teacher has authority to shape what the bot believes.
+        # In normal mode: store as reference material (confidence 0.5, flagged
+        #   unverified) so the bot remembers it searched but doesn't treat the
+        #   result as ground truth. Only teacher mode can promote to verified.
+        _ws_queries = search_details.get("queries", [])
+        _ws_sources = search_details.get("sources", [])
+        if _ws_queries or _ws_sources:
+            _ws_summary = (
+                f"Web search for: {', '.join(_ws_queries[:3])}\n"
+                f"Sources: {', '.join(s.get('title', s.get('url', ''))[:80] for s in _ws_sources[:5])}"
+            )
+            _ws_content = (
+                f"Query: {req.user_input}\n"
+                f"Search queries: {', '.join(_ws_queries[:5])}\n"
+                f"Finding: {raw_response[:2000]}\n"
+                f"Sources: {'; '.join(s.get('url', '') for s in _ws_sources[:5])}"
+            )
+            if req.teacher_mode:
+                # Teacher-verified: stored as trusted knowledge
+                asyncio.create_task(call("neocortex", "/store", {
+                    "content":          _ws_content,
+                    "summary":          _ws_summary[:300],
+                    "domain":           (ar.get("required_regions") or ["general"])[0],
+                    "subdomain":        "web_search_verified",
+                    "source_type":      "web_search",
+                    "confidence":       0.85,
+                    "related_concepts": _ws_queries[:5],
+                }))
+            else:
+                # Normal mode: stored as unverified reference with lower confidence
+                asyncio.create_task(call("neocortex", "/store", {
+                    "content":          f"[UNVERIFIED] {_ws_content}",
+                    "summary":          f"[Unverified web search] {_ws_summary[:280]}",
+                    "domain":           (ar.get("required_regions") or ["general"])[0],
+                    "subdomain":        "web_search_unverified",
+                    "source_type":      "web_search",
+                    "confidence":       0.5,
+                    "related_concepts": _ws_queries[:5],
+                }))
+    else:
+        trace["web_search"] = {"searched": False}
     if reasoning_ms > 10000:
         print(f"[thalamus] reasoning ({trace.get('reasoning_path','?')}) took {reasoning_ms:.0f}ms", flush=True)
 
@@ -924,33 +1792,72 @@ async def process(req: ProcessRequest):
                 raw_response += f"\n\n*(Computed result: {actual})*"
                 trace["simulator_used"] = True
     step_times["simulator"] = round((time.time() - t10) * 1000, 1)
+    trace["simulator"] = {
+        "used": trace.get("simulator_used", False),
+        "ms": step_times["simulator"]
+    }
 
-    # ── STEP 11: Verification ─────────────────────────────────────────────────
+    # ── STEP 11+12: Verification + Compass enrichment (parallel) ─────────────
+    # These are independent: verification checks claims against knowledge,
+    # compass enrichment refines tone/care.  Running in parallel saves ~1-2s.
     t11 = time.time()
     verification = {}
-    if k.verification_threshold > 0.2 and len(raw_response) > 60:
-        ver_resp = await call("verification", "/verify", {
+    final_response = raw_response
+
+    run_verification = k.verification_threshold > 0.2 and len(raw_response) > 60
+    run_enrich       = bool(compass.get("enrichments")) and k.ethical_weight > 0.4
+
+    async def _do_verification():
+        return await call("verification", "/verify", {
             "request_id": request_id,
             "session_id": req.session_id,
             "claim":      raw_response[:2000],
             "context":    req.user_input[:1000],
             "domain":     (ar.get("required_regions") or ["general"])[0]
         })
+
+    async def _do_enrich():
+        return await call("compass", "/enrich", {
+            "request_id":   request_id,
+            "session_id":   req.session_id,
+            "user_input":   req.user_input,
+            "draft":        raw_response,
+            "compass_data": compass
+        })
+
+    # Build parallel tasks
+    ver_task    = _do_verification() if run_verification else None
+    enrich_task = _do_enrich()       if run_enrich       else None
+
+    if ver_task and enrich_task:
+        ver_resp, enrich_resp = await asyncio.gather(ver_task, enrich_task,
+                                                     return_exceptions=True)
+        if isinstance(ver_resp, BaseException):
+            ver_resp = {"error": str(ver_resp), "data": {}}
+        if isinstance(enrich_resp, BaseException):
+            enrich_resp = {"error": str(enrich_resp), "data": {}}
+    elif ver_task:
+        ver_resp = await ver_task
+        enrich_resp = None
+    elif enrich_task:
+        ver_resp = None
+        enrich_resp = await enrich_task
+    else:
+        ver_resp = None
+        enrich_resp = None
+
+    ver_end = time.time()
+
+    # Process verification result
+    if ver_resp:
         verification = ver_resp.get("data", {})
-        trace["verification"] = {
-            "status":     verification.get("status"),
-            "confidence": verification.get("confidence")
-        }
         if ver_resp.get("error"):
             errors.append({"step": "verification", "error": ver_resp["error"]})
-
         if verification.get("status") == "contested":
             raw_response += (
                 f"\n\n*Note: There is conflicting information on this. "
                 f"{verification.get('reasoning', '')}*"
             )
-
-        # Record metacognition feedback
         if verification.get("confidence"):
             asyncio.create_task(call("metacognition", "/feedback", {
                 "domain":                (ar.get("required_regions") or ["general"])[0],
@@ -959,29 +1866,36 @@ async def process(req: ProcessRequest):
                                          ("confirmed", "probable"),
                 "session_id":            req.session_id
             }))
-    step_times["verification"] = round((time.time() - t11) * 1000, 1)
+
+    step_times["verification"] = round((ver_end - t11) * 1000, 1)
     ver_ms = step_times["verification"]
+    if ver_resp:
+        trace["verification"] = {
+            "status":     verification.get("status"),
+            "confidence": verification.get("confidence"),
+            "ms": ver_ms
+        }
+    else:
+        trace["verification"] = {"status": "not_run", "confidence": 1.0, "ms": ver_ms}
     if ver_ms > 5000:
         print(f"[thalamus] verification took {ver_ms:.0f}ms", flush=True)
 
-    # ── STEP 12: Compass enrichment ───────────────────────────────────────────
-    t12 = time.time()
-    final_response = raw_response
-    if compass.get("enrichments") and k.ethical_weight > 0.4:
-        enrich_resp = await call("compass", "/enrich", {
-            "request_id":   request_id,
-            "session_id":   req.session_id,
-            "user_input":   req.user_input,
-            "draft":        raw_response,
-            "compass_data": compass
-        })
+    # Process enrichment result
+    if enrich_resp:
         final_response = (
             enrich_resp.get("data", {}).get("enriched_response") or raw_response
         )
         trace["compass_enriched"] = True
         if enrich_resp.get("error"):
             errors.append({"step": "compass_enrich", "error": enrich_resp["error"]})
-    step_times["compass_enrich"] = round((time.time() - t12) * 1000, 1)
+    else:
+        final_response = raw_response
+
+    step_times["compass_enrich"] = round((ver_end - t11) * 1000, 1)
+    trace["compass_enrich"] = {
+        "enriched": trace.get("compass_enriched", False),
+        "ms": step_times["compass_enrich"]
+    }
 
     # ── STEP 13: Update Working Memory ────────────────────────────────────────
     # Store the full interaction so the bot can recall the conversation.
@@ -1015,8 +1929,24 @@ async def process(req: ProcessRequest):
                 "ts":       time.time()
             }
         }),
+        # Persist hormonal state so the bot can introspect on its neurochemistry
+        call("working_memory", "/context", {
+            "session_id": req.session_id, "action": "set",
+            "key":        "last_hormones",
+            "data":       {
+                "hormones":       hormones.get("hormones", {}) if hormones else {},
+                "mood":           hormones.get("mood_summary", "") if hormones else "",
+                "dominant":       hormones.get("dominant_hormone", "") if hormones else "",
+                "overstimulated": hormones.get("overstimulated", []) if hormones else [],
+                "depleted":       hormones.get("depleted", []) if hormones else [],
+                "ts":             time.time()
+            }
+        }),
     )
     step_times["working_memory_update"] = round((time.time() - t14) * 1000, 1)
+    trace["working_memory_update"] = {
+        "ms": step_times["working_memory_update"]
+    }
 
     # ── STEP 15: DB writes — fire-and-forget (don't block response) ──────────
     t15 = time.time()
@@ -1070,6 +2000,82 @@ async def process(req: ProcessRequest):
         "domain":     (ar.get("required_regions") or ["general"])[0]
     }))
 
+    # ── STEP 16: Hypothalamus post-interaction update (background) ────────
+    # Update hormones with perception events, metacognition, and verification
+    # results that weren't available in Step 1.5
+    asyncio.create_task(call("hypothalamus", "/update", {
+        "session_id":        req.session_id,
+        "amygdala_result":   ar,
+        "perception_events": experiences[:10] if experiences else [],
+        "metacognition":     metacognition,
+        "verification":      verification,
+        "turn_count":        turn_count,
+        "time_since_last":   0,  # just happened
+    }))
+
+    # ── STEP 17: Insight Engine — fragment ingest + crystallization ────────
+    # Extract concepts from this interaction and feed to the insight engine
+    domain = (ar.get("required_regions") or ["general"])[0]
+    fragments = []
+    # Fragments from semantic search results
+    for item in semantic[:5]:
+        content = item.get("content", "")
+        words = [w for w in content.lower().split() if len(w) > 4 and w.isalpha()][:3]
+        if words:
+            fragments.append({
+                "concept":     words[0],
+                "connections": words[1:],
+                "domain":      domain,
+                "session_id":  req.session_id,
+                "source":      "neocortex",
+            })
+    # Fragments from cross-domain analogies
+    for a in analogies[:3]:
+        pattern = a.get("pattern_type", "")
+        source  = a.get("source_domain", "")
+        if pattern:
+            fragments.append({
+                "concept":     pattern,
+                "connections": [source, domain],
+                "domain":      domain,
+                "session_id":  req.session_id,
+                "source":      "cross-domain",
+            })
+    # Fragments from causal graph
+    for edge in causal.get("edges", [])[:3]:
+        cause  = edge.get("cause", "")
+        effect = edge.get("effect", "")
+        if cause and effect:
+            fragments.append({
+                "concept":     cause,
+                "connections": [effect],
+                "domain":      domain,
+                "session_id":  req.session_id,
+                "source":      "causal-graph",
+            })
+    # Key concepts from user input
+    input_words = [w for w in req.user_input.lower().split()
+                   if len(w) > 4 and w.isalpha()][:3]
+    if input_words:
+        fragments.append({
+            "concept":     input_words[0],
+            "connections": input_words[1:],
+            "domain":      domain,
+            "session_id":  req.session_id,
+            "source":      "user-input",
+        })
+
+    if fragments:
+        asyncio.create_task(call("insight_engine", "/ingest", {
+            "session_id": req.session_id,
+            "fragments":  fragments,
+        }))
+        # Trigger crystallization check (background)
+        asyncio.create_task(call("insight_engine", "/check", {
+            "session_id": req.session_id,
+            "domain":     domain,
+        }))
+
     # Consolidation check
     wm_pressure = wm_resp.get("data", {}).get("pressure", 0.0)
     if isinstance(wm_pressure, dict):
@@ -1080,6 +2086,37 @@ async def process(req: ProcessRequest):
 
     step_times["db_writes"] = round((time.time() - t15) * 1000, 1)
     execution_ms = round((time.time() - start) * 1000, 2)
+
+    # Ordered pipeline summary — every step with its wall-clock time
+    trace["pipeline_order"] = [
+        {"step": "amygdala+wm+cerebellum", "ms": step_times.get("amygdala", 0),
+         "note": "parallel: amygdala evaluate + working memory load + cerebellum recognize"},
+        {"step": "hypothalamus", "ms": step_times.get("hypothalamus", 0),
+         "note": "gland-based hormone update from amygdala signals"},
+        {"step": "epiphanies_check", "ms": step_times.get("epiphanies_check", 0),
+         "note": "check insight-engine for pending epiphanies"},
+        {"step": "parallel_batch", "ms": step_times.get("parallel_batch", 0),
+         "note": "hippocampus+neocortex+cross-domain+compass+goals+vision+intuition",
+         "detail": step_times.get("parallel_batch_detail", {})},
+        {"step": "causal_graph", "ms": step_times.get("causal_graph", 0),
+         "note": "causal relationship query"},
+        {"step": "metacognition", "ms": step_times.get("metacognition", 0),
+         "note": "uncertainty/confidence assessment"},
+        {"step": "perception", "ms": step_times.get("perception", 0),
+         "note": "experience detection, novelty scoring"},
+        {"step": "reasoning", "ms": step_times.get("reasoning", 0),
+         "note": f"LLM response generation ({trace.get('reasoning_path', '?')})"
+                 + (" + web search" if trace.get("web_search", {}).get("searched") else "")},
+        {"step": "simulator", "ms": step_times.get("simulator", 0),
+         "note": "code execution grounding (if applicable)"},
+        {"step": "verification+compass_enrich", "ms": step_times.get("verification", 0),
+         "note": "parallel: claim verification + ethical/value enrichment"},
+        {"step": "working_memory_update", "ms": step_times.get("working_memory_update", 0),
+         "note": "persist interaction + emotion + hormones to WM"},
+        {"step": "db_writes", "ms": step_times.get("db_writes", 0),
+         "note": "fire-and-forget: hippocampus encode, learner, causal, insight-engine, hypothalamus post-update"},
+    ]
+    trace["execution_ms"] = execution_ms
     trace["step_times_ms"] = step_times
     trace["db_operations"] = db_ops
     if errors:
@@ -1118,5 +2155,14 @@ async def process(req: ProcessRequest):
         "active_goals":      len(agenda),
         "llm_provider":      provider_info().get("provider"),
         "teacher_mode":      req.teacher_mode,
+        "hormones":          hormones.get("hormones", {}) if hormones else {},
+        "mood":              hormones.get("mood_summary", "") if hormones else "",
+        "intuition":         {
+            "has_intuition": intuition.get("has_intuition", False),
+            "direction":     intuition.get("intuition_direction", ""),
+            "confidence":    intuition.get("intuition_confidence", 0),
+        } if intuition else {},
+        "pending_epiphanies": len(pending_epiphanies) if pending_epiphanies else 0,
+        "web_search":        trace.get("web_search", {"searched": False}),
         "trace":             trace
     }

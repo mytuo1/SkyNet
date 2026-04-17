@@ -20,7 +20,7 @@
   --brain-thalamus:#d4c5a9;--brain-amygdala:#c47d7d;--brain-hippocampus:#6d9e9e;
   --brain-cerebellum:#7d9e7d;--brain-neocortex:#7d8ea0;--brain-prefrontal:#9e8eb3;
   --brain-temporal:#b3a07d;--brain-parietal:#7da0b3;--brain-occipital:#8e7da0;
-  --brain-brainstem:#a09e7d;
+  --brain-brainstem:#a09e7d;--brain-hypothalamus:#e8a060;--brain-insightengine:#c090e0;
   --glass-bg:rgba(20,25,38,.85);--glass-blur:12px;--glow-accent:rgba(0,212,255,.15);
 }
 html{font-size:14px}
@@ -122,6 +122,60 @@ button{font-family:var(--font)}
 .emo-hist-name{font-weight:600;flex:1}
 .emo-hist-conf{color:var(--text-dim);font-family:var(--mono)}
 .emo-hist-mixed{font-size:.62rem;color:var(--text-dim);margin-left:4px}
+/* Hormonal state panel */
+.hormone-panel{margin-top:8px;padding:8px;background:rgba(232,160,96,.06);border:1px solid rgba(232,160,96,.15);border-radius:var(--radius)}
+.hormone-panel-title{font-size:.7rem;font-weight:700;color:var(--brain-hypothalamus);margin-bottom:6px;letter-spacing:.5px}
+.hormone-row{display:flex;align-items:center;gap:5px;margin:3px 0;font-size:.68rem}
+.hormone-label{width:56px;color:var(--text-dim);text-align:right;flex-shrink:0;font-family:var(--mono)}
+.hormone-bar{flex:1;height:5px;background:var(--border);border-radius:3px;overflow:hidden}
+.hormone-bar-fill{height:100%;border-radius:3px;transition:width .4s ease}
+.hormone-val{width:28px;text-align:right;font-family:var(--mono);font-size:.64rem;color:var(--text-dim)}
+.hormone-mood-text{font-size:.68rem;color:var(--text-dim);font-style:italic;margin-top:4px;line-height:1.3}
+/* Hormone Injection Panel */
+.inject-panel{margin-top:8px;padding:8px;background:rgba(255,82,82,.04);border:1px solid rgba(255,82,82,.12);border-radius:var(--radius)}
+.inject-panel-title{font-size:.7rem;font-weight:700;color:#ff5252;margin-bottom:6px;letter-spacing:.5px}
+.inject-row{display:flex;gap:4px;align-items:center;margin-bottom:4px}
+.inject-row select,.inject-row input{padding:3px 6px;font-size:.68rem;border:1px solid var(--border);border-radius:4px;
+  background:var(--surface-solid);color:var(--text);font-family:var(--mono)}
+.inject-row select{flex:1;min-width:0}
+.inject-row input[type=number]{width:52px;text-align:center}
+.inject-row input[type=range]{flex:1;accent-color:#ff5252;height:14px}
+.inject-btn{padding:3px 10px;border-radius:4px;border:1px solid rgba(255,82,82,.3);background:rgba(255,82,82,.1);
+  color:#ff5252;font-size:.66rem;cursor:pointer;font-weight:600;transition:all .2s}
+.inject-btn:hover{background:rgba(255,82,82,.2);border-color:#ff5252}
+.inject-bypass{font-size:.62rem;color:var(--text-dim);display:flex;align-items:center;gap:3px}
+.inject-result{font-size:.62rem;color:var(--text-dim);margin-top:3px;min-height:14px;font-family:var(--mono)}
+/* Log source toggle */
+.log-source-toggle{display:flex;gap:0;border:1px solid var(--border);border-radius:4px;overflow:hidden}
+.log-source-btn{padding:4px 10px;font-size:.72rem;border:none;background:transparent;color:var(--text-dim);
+  cursor:pointer;transition:all .2s}
+.log-source-btn.active{background:var(--accent);color:#000;font-weight:600}
+.badge-mood{display:inline-block;padding:1px 7px;border-radius:10px;font-size:.68rem;font-weight:600;
+  background:rgba(232,160,96,.15);color:#e8a060;border:1px solid rgba(232,160,96,.25);margin-left:4px}
+.badge-intuition{display:inline-block;padding:1px 7px;border-radius:10px;font-size:.68rem;font-weight:600;
+  background:rgba(192,144,224,.15);color:#c090e0;border:1px solid rgba(192,144,224,.25);margin-left:4px}
+/* Curiosity question queue */
+.curiosity-queue{margin-top:6px;padding:0}
+.curiosity-item{padding:8px 10px;margin:4px 0;background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.12);
+  border-radius:var(--radius);font-size:.78rem;position:relative}
+.curiosity-item .cq-question{color:var(--text);margin-bottom:6px;line-height:1.4}
+.curiosity-item .cq-meta{font-size:.66rem;color:var(--text-dim);margin-bottom:6px}
+.curiosity-item .cq-answer-row{display:flex;gap:4px}
+.curiosity-item .cq-answer-input{flex:1;padding:4px 8px;border:1px solid var(--border);border-radius:4px;
+  background:var(--bg);color:var(--text);font-size:.75rem;font-family:var(--font)}
+.curiosity-item .cq-answer-input:focus{border-color:var(--accent);outline:none}
+.curiosity-item .cq-btn{padding:4px 10px;border:none;border-radius:4px;cursor:pointer;font-size:.7rem;font-weight:600}
+.cq-btn-answer{background:var(--accent);color:#000}
+.cq-btn-answer:hover{background:#33ddff}
+.cq-btn-dismiss{background:transparent;color:var(--text-dim);border:1px solid var(--border) !important}
+.cq-btn-dismiss:hover{color:var(--error);border-color:var(--error) !important}
+.curiosity-badge{position:fixed;bottom:76px;right:16px;background:var(--accent);color:#000;
+  font-weight:700;font-size:.72rem;padding:4px 12px;border-radius:16px;cursor:pointer;z-index:30;
+  box-shadow:0 2px 12px rgba(0,212,255,.3);transition:.2s;display:none}
+.curiosity-badge:hover{transform:scale(1.05);box-shadow:0 4px 20px rgba(0,212,255,.5)}
+.curiosity-badge .cq-count{background:#fff;color:var(--accent);border-radius:50%;
+  display:inline-block;width:18px;height:18px;text-align:center;line-height:18px;margin-left:6px;font-size:.66rem}
+.msg.bot.curiosity{border-left:3px solid var(--accent);background:rgba(0,212,255,.03)}
 
 /* == 3D Brain ========================================================= */
 .brain-thumb{position:fixed;top:54px;right:12px;width:160px;height:120px;z-index:10;
@@ -404,6 +458,7 @@ button{font-family:var(--font)}
 <div class="sidebar">
   <!-- Emotion Tracker (always visible) -->
   <div class="emotion-panel" id="emotion-tracker">
+    <div style="font-size:.7rem;font-weight:700;color:var(--text-dim);margin-bottom:4px;letter-spacing:.5px">&#x1F465; User Emotion (Detected)</div>
     <div class="emo-face-wrap">
       <canvas id="pixel-face" width="80" height="80"></canvas>
       <div class="emo-face-label" id="emo-face-label">neutral</div>
@@ -423,6 +478,63 @@ button{font-family:var(--font)}
     </div>
     <button class="emo-expand-btn" id="emo-expand-btn">&#x25BC; History</button>
     <div class="emo-history" id="emo-history"></div>
+    <!-- Hormonal State (Bot's Own Mood) -->
+    <div class="hormone-panel" id="hormone-panel">
+      <div class="hormone-panel-title">&#x1F9EA; Bot Hormonal State</div>
+      <div id="hormone-bars"></div>
+      <div class="hormone-mood-text" id="hormone-mood-text">—</div>
+    </div>
+    <!-- Hormone Injection (manual control) -->
+    <div class="inject-panel" id="inject-panel">
+      <div class="inject-panel-title">&#x1F489; Inject Hormone</div>
+      <div class="inject-row">
+        <select id="inject-hormone">
+          <option value="">— select —</option>
+          <optgroup label="Adrenal">
+            <option value="adrenaline">Adrenaline</option>
+            <option value="cortisol">Cortisol</option>
+            <option value="norepinephrine">Norepinephrine</option>
+          </optgroup>
+          <optgroup label="VTA">
+            <option value="dopamine">Dopamine</option>
+            <option value="anandamide">Anandamide</option>
+            <option value="PEA">PEA</option>
+          </optgroup>
+          <optgroup label="Pituitary">
+            <option value="oxytocin">Oxytocin</option>
+            <option value="vasopressin">Vasopressin</option>
+            <option value="endorphins">Endorphins</option>
+          </optgroup>
+          <optgroup label="Pineal">
+            <option value="serotonin">Serotonin</option>
+            <option value="melatonin">Melatonin</option>
+          </optgroup>
+          <optgroup label="Nuclei">
+            <option value="GABA">GABA</option>
+            <option value="glutamate">Glutamate</option>
+          </optgroup>
+          <optgroup label="Basal">
+            <option value="acetylcholine">Acetylcholine</option>
+          </optgroup>
+          <optgroup label="Gonads">
+            <option value="testosterone">Testosterone</option>
+            <option value="estrogen">Estrogen</option>
+          </optgroup>
+        </select>
+      </div>
+      <div class="inject-row">
+        <span style="font-size:.62rem;color:var(--text-dim);width:14px">&#x2212;</span>
+        <input type="range" id="inject-amount-slider" min="-0.40" max="0.40" step="0.01" value="0.10"/>
+        <span style="font-size:.62rem;color:var(--text-dim);width:10px">+</span>
+        <input type="number" id="inject-amount" min="-0.40" max="0.40" step="0.01" value="0.10"/>
+      </div>
+      <div class="inject-row">
+        <label class="inject-bypass"><input type="checkbox" id="inject-bypass"/> Bypass gland</label>
+        <span style="flex:1"></span>
+        <button class="inject-btn" id="inject-btn">&#x1F489; Inject</button>
+      </div>
+      <div class="inject-result" id="inject-result"></div>
+    </div>
   </div>
 
   <!-- Session History -->
@@ -457,7 +569,17 @@ button{font-family:var(--font)}
     <span style="font-weight:700">&#x1F4DA; Teacher Mode Active</span>
     <span style="color:var(--text-dim);margin-left:8px">— your messages teach the brain. Type <code>/teach</code> again to exit.</span>
   </div>
+  <!-- Curiosity Question Queue (shown in teacher mode area) -->
+  <div id="curiosity-queue-panel" style="display:none;padding:8px 16px;background:rgba(0,212,255,.03);border-top:1px solid rgba(0,212,255,.12);max-height:280px;overflow-y:auto;flex-shrink:0">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <span style="font-size:.74rem;font-weight:700;color:var(--accent);letter-spacing:.5px">&#x1F914; Bot Questions</span>
+      <span style="font-size:.66rem;color:var(--text-dim)" id="cq-count-label">0 pending</span>
+    </div>
+    <div class="curiosity-queue" id="curiosity-queue"></div>
+  </div>
 </div>
+<!-- Floating curiosity badge -->
+<div class="curiosity-badge" id="curiosity-badge" title="The bot has questions for you">&#x1F914; Questions <span class="cq-count" id="cq-badge-count">0</span></div>
 
 <!-- PAGE: Monitoring -->
 <div class="page" id="page-monitoring">
@@ -489,6 +611,10 @@ button{font-family:var(--font)}
 <!-- PAGE: Logging -->
 <div class="page" id="page-logging">
   <div class="log-toolbar">
+    <div class="log-source-toggle">
+      <button class="log-source-btn active" id="log-src-app" data-source="app">App Logs</button>
+      <button class="log-source-btn" id="log-src-docker" data-source="docker">Docker Logs</button>
+    </div>
     <select id="log-svc-select">
       <option value="all">All Services</option>
     </select>
@@ -752,35 +878,37 @@ function urgencyColor(u){return u>7?'var(--error)':u>4?'var(--warning)':'var(--s
 var svcToRegion={thalamus:'thalamus',amygdala:'amygdala',hippocampus:'hippocampus',
   cerebellum:'cerebellum',neocortex:'neocortex',compass:'prefrontal',
   'cross-domain':'temporal',perception:'temporal','working-memory':'parietal',
-  vision:'occipital','framework-router':'brainstem',goals:'brainstem'};
+  vision:'occipital','framework-router':'brainstem',goals:'brainstem',
+  hypothalamus:'hypothalamus','insight-engine':'insightEngine',
+  metacognition:'prefrontal','causal-graph':'temporal'};
 
 /* =====================================================================
    Three.js 3D Brain — Anatomical Layout
    ===================================================================== */
 var brainDefs={
-  /* Left hemisphere — large cerebral cortex dome */
-  leftHemi:{px:-0.65,py:0.5,pz:0.0,sx:1.15,sy:1.25,sz:1.55,color:0x8e96aa,name:'Left Hemisphere (Neocortex)',svc:'neocortex',hemi:true},
-  /* Right hemisphere */
-  rightHemi:{px:0.65,py:0.5,pz:0.0,sx:1.15,sy:1.25,sz:1.55,color:0x7d8ea0,name:'Right Hemisphere (Neocortex)',svc:'neocortex',hemi:true},
-  /* Frontal / prefrontal — front of brain */
-  prefrontal:{px:0,py:0.6,pz:1.15,sx:0.9,sy:0.7,sz:0.6,color:0x9e8eb3,name:'Prefrontal Cortex',svc:'compass'},
-  /* Parietal — top-back */
-  parietal:{px:0,py:1.15,pz:-0.15,sx:0.85,sy:0.45,sz:0.8,color:0x7da0b3,name:'Parietal Lobe',svc:'working-memory'},
-  /* Occipital — back */
-  occipital:{px:0,py:0.4,pz:-1.25,sx:0.75,sy:0.65,sz:0.5,color:0x8e7da0,name:'Occipital Lobe',svc:'vision'},
-  /* Temporal lobes — sides, below */
-  temporalL:{px:-1.1,py:-0.15,pz:0.3,sx:0.55,sy:0.45,sz:0.9,color:0xb3a07d,name:'Temporal Lobe (L)',svc:'cross-domain'},
-  temporalR:{px:1.1,py:-0.15,pz:0.3,sx:0.55,sy:0.45,sz:0.9,color:0xb0997a,name:'Temporal Lobe (R)',svc:'perception'},
-  /* Thalamus — deep centre */
-  thalamus:{px:0,py:0.15,pz:0,sx:0.5,sy:0.4,sz:0.45,color:0xd4c5a9,name:'Thalamus (Hub)',svc:'thalamus'},
-  /* Amygdala — small, medial temporal */
-  amygdala:{px:-0.45,py:-0.1,pz:0.35,sx:0.3,sy:0.25,sz:0.25,color:0xc47d7d,name:'Amygdala',svc:'amygdala'},
-  /* Hippocampus — curved, medial temporal */
-  hippocampus:{px:0.45,py:-0.1,pz:0.35,sx:0.45,sy:0.2,sz:0.35,color:0x6d9e9e,name:'Hippocampus',svc:'hippocampus'},
-  /* Cerebellum — back bottom, has "ridges" */
-  cerebellum:{px:0,py:-0.65,pz:-0.85,sx:1.1,sy:0.55,sz:0.7,color:0x7d9e7d,name:'Cerebellum',svc:'cerebellum'},
-  /* Brainstem — extends down */
-  brainstem:{px:0,py:-1.15,pz:-0.35,sx:0.28,sy:0.7,sz:0.28,color:0xa09e7d,name:'Brainstem',svc:'framework-router'}
+  /* ── Cerebral Hemispheres — large domes wrapping deep structures ──────── */
+  leftHemi:{px:-0.52,py:0.45,pz:0.0,sx:1.05,sy:1.15,sz:1.45,color:0x8e96aa,name:'Left Hemisphere (Neocortex)',svc:'neocortex',hemi:true},
+  rightHemi:{px:0.52,py:0.45,pz:0.0,sx:1.05,sy:1.15,sz:1.45,color:0x7d8ea0,name:'Right Hemisphere (Neocortex)',svc:'neocortex',hemi:true},
+  /* ── Frontal — front of brain ─────────────────────────────────────────── */
+  prefrontal:{px:0,py:0.5,pz:0.95,sx:0.82,sy:0.62,sz:0.52,color:0x9e8eb3,name:'Prefrontal Cortex (Compass)',svc:'compass'},
+  /* ── Parietal — crown ────────────────────────────────────────────────── */
+  parietal:{px:0,py:1.0,pz:-0.1,sx:0.78,sy:0.38,sz:0.72,color:0x7da0b3,name:'Parietal Lobe (Working Memory)',svc:'working-memory'},
+  /* ── Occipital — back ────────────────────────────────────────────────── */
+  occipital:{px:0,py:0.35,pz:-1.05,sx:0.68,sy:0.58,sz:0.45,color:0x8e7da0,name:'Occipital Lobe (Vision)',svc:'vision'},
+  /* ── Temporal lobes — sides, slightly below ──────────────────────────── */
+  temporalL:{px:-0.88,py:-0.1,pz:0.25,sx:0.48,sy:0.40,sz:0.78,color:0xb3a07d,name:'Temporal Lobe L (Cross-Domain)',svc:'cross-domain'},
+  temporalR:{px:0.88,py:-0.1,pz:0.25,sx:0.48,sy:0.40,sz:0.78,color:0xb0997a,name:'Temporal Lobe R (Perception)',svc:'perception'},
+  /* ── Deep structures — clustered in the centre ───────────────────────── */
+  thalamus:{px:0,py:0.15,pz:0,sx:0.42,sy:0.32,sz:0.38,color:0xd4c5a9,name:'Thalamus (Hub)',svc:'thalamus'},
+  hypothalamus:{px:0,py:-0.12,pz:0.12,sx:0.22,sy:0.16,sz:0.20,color:0xe8a060,name:'Hypothalamus (Hormones)',svc:'hypothalamus'},
+  amygdala:{px:-0.32,py:-0.08,pz:0.28,sx:0.22,sy:0.18,sz:0.20,color:0xc47d7d,name:'Amygdala (Emotion)',svc:'amygdala'},
+  hippocampus:{px:0.32,py:-0.08,pz:0.28,sx:0.38,sy:0.16,sz:0.28,color:0x6d9e9e,name:'Hippocampus (Memory)',svc:'hippocampus'},
+  /* ── Insight Engine — right anterior temporal (aha moment region) ─────── */
+  insightEngine:{px:0.60,py:0.12,pz:0.55,sx:0.24,sy:0.20,sz:0.22,color:0xc090e0,name:'Insight Engine (Epiphany)',svc:'insight-engine'},
+  /* ── Cerebellum — back bottom, tightly packed ridges ─────────────────── */
+  cerebellum:{px:0,py:-0.55,pz:-0.72,sx:0.95,sy:0.48,sz:0.60,color:0x7d9e7d,name:'Cerebellum',svc:'cerebellum'},
+  /* ── Brainstem — extends down from centre ────────────────────────────── */
+  brainstem:{px:0,py:-0.95,pz:-0.30,sx:0.24,sy:0.60,sz:0.24,color:0xa09e7d,name:'Brainstem (Router)',svc:'framework-router'}
 };
 
 var brainScene,brainGroup,brainMeshes={};
@@ -844,6 +972,8 @@ function initBrainScene(){
     if(key==='leftHemi') geom=makeHemiGeom('left');
     else if(key==='rightHemi') geom=makeHemiGeom('right');
     else if(key==='cerebellum') geom=makeBrainSphere(28,0.025);
+    else if(key==='hypothalamus') geom=makeBrainSphere(18,0.006);
+    else if(key==='insightEngine') geom=makeBrainSphere(18,0.010);
     else geom=makeBrainSphere(22,def.hemi?0.015:0.008);
     geom.scale(def.sx,def.sy,def.sz);
     var baseOp=def.hemi?0.22:0.18;
@@ -1009,17 +1139,42 @@ var svcToRegions={
   cerebellum:['cerebellum'],neocortex:['leftHemi','rightHemi'],
   compass:['prefrontal'],'cross-domain':['temporalL','temporalR'],
   perception:['temporalR'],'working-memory':['parietal'],
-  vision:['occipital'],'framework-router':['brainstem'],goals:['brainstem']
+  vision:['occipital'],'framework-router':['brainstem'],goals:['brainstem'],
+  hypothalamus:['hypothalamus'],'insight-engine':['insightEngine'],
+  metacognition:['prefrontal'],'causal-graph':['temporalL'],
+  verification:['prefrontal','parietal']
 };
 
 function animateBrainPipeline(cogPath){
-  lightRegion('thalamus',1400);
-  setTimeout(function(){lightRegion('amygdala',1200)},300);
-  setTimeout(function(){lightRegion('parietal',1200)},600);
+  /* Step 1: thalamus receives input */
+  lightRegion('thalamus',1600);
+  /* Step 1: amygdala evaluates emotion */
+  setTimeout(function(){lightRegion('amygdala',1200)},200);
+  /* Step 1.5: hypothalamus updates hormonal state */
+  setTimeout(function(){lightRegion('hypothalamus',1200)},450);
+  /* Step 2-3: working memory + cerebellum */
+  setTimeout(function(){lightRegion('parietal',1000);lightRegion('cerebellum',1000)},700);
+  /* Step 4: parallel batch — light everything in the batch */
+  var batchDelay=1000;
+  var batchRegions=['hippocampus','leftHemi','rightHemi','temporalL','temporalR','prefrontal','brainstem','occipital'];
+  batchRegions.forEach(function(r,i){
+    setTimeout(function(){lightRegion(r,1200)},batchDelay+i*80);
+  });
+  /* Step 5-7: causal → metacognition → perception */
+  setTimeout(function(){lightRegion('temporalL',800)},batchDelay+800);
+  setTimeout(function(){lightRegion('prefrontal',800)},batchDelay+1000);
+  setTimeout(function(){lightRegion('temporalR',800)},batchDelay+1200);
+  /* Step 9: reasoning — thalamus glows strong */
+  setTimeout(function(){lightRegion('thalamus',2000);lightRegion('leftHemi',1500);lightRegion('rightHemi',1500)},batchDelay+1500);
+  /* Step 10-11: verification */
+  setTimeout(function(){lightRegion('prefrontal',800);lightRegion('parietal',800)},batchDelay+2200);
+  /* Background: insight engine pulse */
+  setTimeout(function(){lightRegion('insightEngine',1800)},batchDelay+2800);
+  /* Also light any services from cognitive path */
   if(Array.isArray(cogPath)){
     cogPath.forEach(function(svc,i){
-      var regions=svcToRegions[svc]||[svcToRegion[svc]];
-      regions.forEach(function(r){if(r)setTimeout(function(){lightRegion(r,1000)},900+i*300)});
+      var regions=svcToRegions[svc]||[];
+      regions.forEach(function(r){if(r)setTimeout(function(){lightRegion(r,800)},batchDelay+3200+i*250)});
     });
   }
 }
@@ -1294,6 +1449,103 @@ $('#emo-expand-btn').addEventListener('click',function(){
   }
 });
 
+/* -- Hormonal State Panel --------------------------------------------- */
+var HORMONE_OVERSTIM=0.85, HORMONE_DEPLETION=0.15; /* must match backend thresholds */
+function updateHormonePanel(hormones,mood){
+  var container=$('#hormone-bars');
+  var moodEl=$('#hormone-mood-text');
+  if(!hormones||Object.keys(hormones).length===0){
+    container.innerHTML='<div style="font-size:.66rem;color:var(--text-dim)">No hormonal data yet</div>';
+    moodEl.textContent='\u2014';
+    return;
+  }
+  var hColors={
+    /* Adrenal */  adrenaline:'#ff5252',cortisol:'#ef5350',norepinephrine:'#ffb74d',
+    /* Pituitary */oxytocin:'#f48fb1',vasopressin:'#e1bee7',endorphins:'#ce93d8',
+    /* Pineal */   melatonin:'#5c6bc0',serotonin:'#81c784',
+    /* Hypothal */ GABA:'#26a69a',glutamate:'#ffa726',
+    /* VTA */      dopamine:'#4fc3f7',anandamide:'#7e57c2',PEA:'#ec407a',
+    /* Basal */    acetylcholine:'#66bb6a',
+    /* Gonads */   testosterone:'#8d6e63',estrogen:'#ab47bc'
+  };
+  var hLabels={
+    adrenaline:'ADRE',cortisol:'CORT',norepinephrine:'NORE',
+    oxytocin:'OXYT',vasopressin:'VASO',endorphins:'ENDO',
+    melatonin:'MELA',serotonin:'SERO',
+    GABA:'GABA',glutamate:'GLUT',
+    dopamine:'DOPA',anandamide:'ANAN',PEA:'PEA',
+    acetylcholine:'ACh',
+    testosterone:'TEST',estrogen:'ESTR'
+  };
+  /* Group by gland for organized display */
+  var glandGroups=[
+    {name:'Adrenal',hormones:['adrenaline','cortisol','norepinephrine']},
+    {name:'VTA',hormones:['dopamine','anandamide','PEA']},
+    {name:'Pituitary',hormones:['oxytocin','vasopressin','endorphins']},
+    {name:'Pineal',hormones:['serotonin','melatonin']},
+    {name:'Nuclei',hormones:['GABA','glutamate']},
+    {name:'Basal',hormones:['acetylcholine']},
+    {name:'Gonads',hormones:['testosterone','estrogen']}
+  ];
+  var html='';
+  glandGroups.forEach(function(g){
+    var hasAny=g.hormones.some(function(k){return typeof hormones[k]==='number';});
+    if(!hasAny)return;
+    html+='<div style="font-size:.58rem;color:var(--text-dim);margin:4px 0 1px;opacity:.7;letter-spacing:.4px">'+g.name+'</div>';
+    g.hormones.forEach(function(k){
+      var v=hormones[k];if(typeof v!=='number')return;
+      var pct=Math.round(v*100);
+      var col=hColors[k]||'var(--accent)';
+      var warn=v>HORMONE_OVERSTIM?' \u26A0':'';
+      var low=v<HORMONE_DEPLETION?' \u2B07':'';
+      html+='<div class="hormone-row">';
+      html+='<span class="hormone-label">'+(hLabels[k]||k)+'</span>';
+      html+='<div class="hormone-bar"><div class="hormone-bar-fill" style="width:'+pct+'%;background:'+col+'"></div></div>';
+      html+='<span class="hormone-val" style="color:'+(v>HORMONE_OVERSTIM?'var(--warning)':v<HORMONE_DEPLETION?'var(--error)':'var(--text-dim)')+'">'+v.toFixed(2)+warn+low+'</span>';
+      html+='</div>';
+    });
+  });
+  container.innerHTML=html;
+  moodEl.textContent=mood||'\u2014';
+}
+
+/* -- Hormone Injection Panel ------------------------------------------ */
+(function(){
+  var slider=$('#inject-amount-slider');
+  var numInput=$('#inject-amount');
+  var resultEl=$('#inject-result');
+  /* Sync slider ↔ number input */
+  slider.addEventListener('input',function(){numInput.value=parseFloat(slider.value).toFixed(2)});
+  numInput.addEventListener('input',function(){slider.value=numInput.value});
+
+  $('#inject-btn').addEventListener('click',function(){
+    var hormone=$('#inject-hormone').value;
+    var amount=parseFloat(numInput.value);
+    var bypass=$('#inject-bypass').checked;
+    if(!hormone){resultEl.textContent='Select a hormone first';return}
+    if(isNaN(amount)||amount===0){resultEl.textContent='Set a non-zero amount';return}
+    if(!SESSION){resultEl.textContent='No active session';return}
+
+    resultEl.textContent='Injecting...';
+    fetch('/brain/hypothalamus/inject',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({session_id:SESSION,hormone:hormone,amount:amount,bypass_gland:bypass})
+    }).then(function(r){return r.json()}).then(function(d){
+      if(d.error){resultEl.textContent='\u274C '+d.error;return}
+      var dir=d.delta>0?'\u2191':'\u2193';
+      resultEl.innerHTML='<span style="color:'+(d.delta>0?'var(--success)':'var(--error)')+'">'+
+        dir+' '+d.hormone+': '+d.old_level.toFixed(2)+' \u2192 '+d.new_level.toFixed(2)+
+        ' ('+d.actual.toFixed(3)+' via '+d.gland+') '+d.latency_ms+'ms</span>';
+      /* Refresh hormone panel — fetch fresh state */
+      fetch('/brain/hypothalamus/state/'+encodeURIComponent(SESSION))
+        .then(function(r){return r.json()})
+        .then(function(st){if(st.hormones)updateHormonePanel(st.hormones,null)})
+        .catch(function(){});
+    }).catch(function(err){resultEl.textContent='\u274C '+err.message});
+  });
+})();
+
 /* -- Chat / Terminal -------------------------------------------------- */
 var busy=false;
 var camStream=null,camEnabled=false,sttActive=false;
@@ -1365,12 +1617,68 @@ function sendMessage(){
       '<b>Commands:</b><br>'+
       '<code>/teach</code> — toggle teacher mode (correct emotions, teach knowledge)<br>'+
       '<code>/learnings</code> — show what the brain has learned<br>'+
+      '<code>/questions</code> — show pending &amp; answered curiosity questions<br>'+
+      '<code>/interests</code> — show the bot\'s accumulated interests<br>'+
       '<code>/help</code> — show this help'
     );
     return;
   }
+  if(text.toLowerCase()==='/questions'){
+    inp.value='';
+    appendMsg('user',esc(text));
+    Promise.all([
+      fetch('/brain/curiosity/queue?session_id='+encodeURIComponent(SESSION)).then(function(r){return r.json()}),
+      fetch('/brain/curiosity/answered?session_id='+encodeURIComponent(SESSION)+'&limit=10').then(function(r){return r.json()})
+    ]).then(function(rs){
+      var pending=rs[0].questions||[];
+      var answered=rs[1].answered||[];
+      var html='<b>\uD83E\uDD14 Curiosity Questions</b><br>';
+      if(pending.length>0){
+        html+='<br><b>Pending ('+pending.length+'):</b><br>';
+        pending.forEach(function(q){
+          html+='\u2022 '+esc(q.question)+'<br>';
+        });
+      }else{
+        html+='<br>No pending questions.<br>';
+      }
+      if(answered.length>0){
+        html+='<br><b>Recently Answered ('+answered.length+'):</b><br>';
+        answered.forEach(function(qa){
+          html+='\u2022 <b>Q:</b> '+esc(qa.question)+'<br>';
+          html+='&nbsp;&nbsp;<b>A:</b> '+esc(qa.answer)+'<br>';
+        });
+      }
+      appendMsg('bot',html);
+    }).catch(function(e){appendMsg('bot','<span class="error-box">Error: '+esc(e.message)+'</span>')});
+    return;
+  }
+  if(text.toLowerCase()==='/interests'){
+    inp.value='';
+    appendMsg('user',esc(text));
+    fetch('/brain/curiosity/interests?session_id='+encodeURIComponent(SESSION))
+      .then(function(r){return r.json()})
+      .then(function(d){
+        var interests=d.interests||[];
+        var html='<b>\uD83C\uDFAF Bot Interests</b><br>';
+        if(interests.length>0){
+          html+='<br>';
+          interests.forEach(function(it,i){
+            var bar='\u2588'.repeat(Math.min(10,Math.round(it.score)));
+            var goal=it.score>=3?' \uD83C\uDFAF':'';
+            html+=(i+1)+'. <b>'+esc(it.topic)+'</b> — '+bar+' ('+it.score+')'+goal+'<br>';
+          });
+          html+='<br><span style="color:var(--text-dim)">\uD83C\uDFAF = auto-created exploration goal (score \u2265 3)</span>';
+        }else{
+          html+='<br>No interests yet. The bot will develop interests through curiosity questions.';
+        }
+        appendMsg('bot',html);
+      })
+      .catch(function(e){appendMsg('bot','<span class="error-box">Error: '+esc(e.message)+'</span>')});
+    return;
+  }
 
   busy=true;inp.value='';$('#chat-send').disabled=true;
+  resetCuriosityTimer();
   var role=teacherMode?'user teacher':'user';
   appendMsg(role,esc(text));
   saveChatMessage(role,esc(text));
@@ -1388,6 +1696,7 @@ function sendMessage(){
       if(d.cognitive_path||d.path) animateBrainPipeline(d.cognitive_path||d.path);
       if(d.experiences) addExperiences(d.experiences);
       updateEmotionTracker(d.emotion||d.dominant_emotion||'neutral',d.confidence||null,d.emotions||[]);
+      updateHormonePanel(d.hormones||{},d.mood||'');
     })
     .catch(function(e){appendMsg('bot','<span class="error-box">Error: '+esc(e.message)+'</span>')})
     .finally(function(){busy=false;$('#chat-send').disabled=false});
@@ -1401,6 +1710,9 @@ function appendMsg(role,html){
   if(role.indexOf('teacher')>=0){
     div.style.borderLeft='3px solid var(--warning)';
     html='<span style="font-size:.68rem;color:var(--warning);font-weight:700;letter-spacing:.5px">\uD83D\uDCDA TEACHER</span><br>'+html;
+  }
+  if(role.indexOf('curiosity')>=0){
+    div.classList.add('curiosity');
   }
   div.innerHTML=html;
   log.appendChild(div);log.scrollTop=log.scrollHeight;
@@ -1426,6 +1738,12 @@ function buildBotMsgHtml(d,latency){
   if(d.execution_ms)meta+='<span class="badge-latency" style="color:var(--text-dim)">\u2699 '+Math.round(d.execution_ms)+'ms server</span>';
   if(path)meta+='<span class="badge-path">\u21A3 '+esc(Array.isArray(path)?path.join(' \u2192 '):path)+'</span>';
   if(d.teacher_mode)meta+='<span style="padding:2px 8px;border-radius:12px;font-weight:600;background:rgba(255,214,0,.15);color:var(--warning);border:1px solid var(--warning)">\uD83D\uDCDA teacher</span>';
+  /* Bot mood badge (from hormones — the brain's OWN state, not the user's) */
+  if(d.mood)meta+='<span class="badge-mood">\uD83E\uDDE0 '+esc(d.mood)+'</span>';
+  /* Intuition badge */
+  if(d.intuition&&d.intuition.has_intuition)meta+='<span class="badge-intuition">\uD83D\uDD2E intuition: '+esc(d.intuition.direction||'signal')+' ('+Math.round((d.intuition.confidence||0)*100)+'%)</span>';
+  /* Pending epiphanies */
+  if(d.pending_epiphanies&&d.pending_epiphanies>0)meta+='<span class="badge-intuition" style="background:rgba(192,144,224,.2)">\uD83D\uDCA1 '+d.pending_epiphanies+' epiphany pending</span>';
   meta+='</div>';
 
   /* Trace with timing waterfall */
@@ -1473,6 +1791,53 @@ function buildBotMsgHtml(d,latency){
       traceContent+='<div style="margin-top:4px;color:var(--text-dim)">Total: '+Math.round(totalMs)+'ms</div>';
       traceContent+='</div>';
     }
+    /* Show hormonal state in trace */
+    if(d.trace.hypothalamus){
+      var hy=d.trace.hypothalamus;
+      traceContent+='<div style="margin-bottom:8px;font-size:.72rem">';
+      traceContent+='<div style="font-weight:700;color:#e8a060;margin-bottom:4px">\uD83E\uDDE0 Bot Hormonal State</div>';
+      if(hy.dominant)traceContent+='<div style="color:var(--text-dim)">Dominant: <b style="color:#e8a060">'+esc(hy.dominant)+'</b></div>';
+      if(hy.mood)traceContent+='<div style="color:var(--text-dim)">Mood: <i>'+esc(hy.mood)+'</i></div>';
+      if(hy.overstimulated&&hy.overstimulated.length>0)traceContent+='<div style="color:var(--warning)">\u26A0 Overstimulated: '+hy.overstimulated.map(esc).join(', ')+'</div>';
+      if(hy.depleted&&hy.depleted.length>0)traceContent+='<div style="color:var(--error)">\u2B07 Depleted: '+hy.depleted.map(esc).join(', ')+'</div>';
+      traceContent+='</div>';
+    }
+    /* Show hormone levels as mini-bars in trace (grouped by gland) */
+    if(d.hormones&&Object.keys(d.hormones).length>0){
+      var hColors={
+        adrenaline:'#ff5252',cortisol:'#ef5350',norepinephrine:'#ffb74d',
+        oxytocin:'#f48fb1',vasopressin:'#e1bee7',endorphins:'#ce93d8',
+        melatonin:'#5c6bc0',serotonin:'#81c784',
+        GABA:'#26a69a',glutamate:'#ffa726',
+        dopamine:'#4fc3f7',anandamide:'#7e57c2',PEA:'#ec407a',
+        acetylcholine:'#66bb6a',
+        testosterone:'#8d6e63',estrogen:'#ab47bc'
+      };
+      traceContent+='<div style="margin-bottom:8px;font-size:.72rem">';
+      traceContent+='<div style="font-weight:700;color:#e8a060;margin-bottom:4px">\uD83E\uDDEA Hormone Levels</div>';
+      Object.keys(d.hormones).forEach(function(hk){
+        var hv=d.hormones[hk];if(typeof hv!=='number')return;
+        var pct=Math.round(hv*100);
+        var col=hColors[hk]||'var(--accent)';
+        traceContent+='<div style="display:flex;align-items:center;gap:5px;margin:2px 0">';
+        traceContent+='<span style="width:70px;text-align:right;color:var(--text-dim);font-family:var(--mono);font-size:.66rem">'+esc(hk)+'</span>';
+        traceContent+='<div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden">';
+        traceContent+='<div style="width:'+pct+'%;height:100%;background:'+col+';border-radius:3px"></div></div>';
+        traceContent+='<span style="width:30px;text-align:right;font-family:var(--mono);font-size:.64rem;color:var(--text-dim)">'+hv.toFixed(2)+'</span>';
+        traceContent+='</div>';
+      });
+      traceContent+='</div>';
+    }
+    /* Show intuition signal in trace */
+    if(d.trace.intuition&&d.trace.intuition.has_intuition){
+      var intui=d.trace.intuition;
+      traceContent+='<div style="margin-bottom:8px;font-size:.72rem">';
+      traceContent+='<div style="font-weight:700;color:#c090e0;margin-bottom:4px">\uD83D\uDD2E Sixth Sense (Intuition)</div>';
+      traceContent+='<div style="color:var(--text-dim)">Direction: <b style="color:#c090e0">'+esc(intui.direction||'signal')+'</b>';
+      traceContent+=' — Confidence: '+Math.round((intui.confidence||0)*100)+'%</div>';
+      if(intui.basis)traceContent+='<div style="color:var(--text-dim);font-style:italic">'+esc(intui.basis)+'</div>';
+      traceContent+='</div>';
+    }
     /* Show errors if any */
     if(d.trace.errors&&d.trace.errors.length>0){
       traceContent+='<div style="margin-bottom:8px;font-size:.72rem">';
@@ -1514,6 +1879,7 @@ function appendBotMsg(d,latency){
   var html=buildBotMsgHtml(d,latency);
   appendMsg('bot',html);
   updateEmotionTracker(d.emotion||d.dominant_emotion||'neutral',d.confidence||null,d.emotions||[]);
+  updateHormonePanel(d.hormones||{},d.mood||'');
 }
 
 /* -- Speech-to-Text + Audio Waveform ---------------------------------- */
@@ -1683,10 +2049,10 @@ function renderDbHealth(services){
   });
 }
 
-var ALL_SVC_LIST=["thalamus","amygdala","hippocampus","cerebellum","neocortex","working-memory",
+var ALL_SVC_LIST=["thalamus","amygdala","hypothalamus","hippocampus","cerebellum","neocortex","working-memory",
   "perception","verification","cross-domain","compass","framework-router","self-update",
   "causal-graph","simulator","metacognition","goals","learner","vision","knobs","autonomy","dashboard",
-  "gateway","redis","elasticsearch","edgedb"];
+  "insight-engine","embed-queue","gateway","redis","elasticsearch","edgedb"];
 
 function renderServiceMetrics(services){
   var grid=$('#svc-metrics-grid');
@@ -1718,14 +2084,58 @@ setInterval(function(){
 
 /* -- Logging ---------------------------------------------------------- */
 var svcColors={};
+var logSource='app'; /* 'app' or 'docker' */
 ALL_SVC_LIST.forEach(function(s,i){svcColors[s]='hsl('+(i*17)%360+',55%,65%)'});
 ALL_SVC_LIST.forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;$('#log-svc-select').appendChild(o)});
 
+/* Log source toggle */
+document.querySelectorAll('.log-source-btn').forEach(function(btn){
+  btn.addEventListener('click',function(){
+    document.querySelectorAll('.log-source-btn').forEach(function(b){b.classList.remove('active')});
+    btn.classList.add('active');
+    logSource=btn.dataset.source;
+    refreshLogs();
+  });
+});
+
 function refreshLogs(){
+  if(logSource==='docker'){
+    refreshDockerLogs();
+  }else{
+    refreshAppLogs();
+  }
+}
+
+function refreshAppLogs(){
   var svc=$('#log-svc-select').value;
   var level=$('#log-level-select').value;
   var url=svc==='all'?'/api/logs/all?limit=200':('/api/logs/'+encodeURIComponent(svc)+'?limit=200&level='+level);
   fetch(url).then(function(r){return r.json()}).then(function(d){renderLogs(d.logs||[])}).catch(function(){});
+}
+
+function refreshDockerLogs(){
+  var svc=$('#log-svc-select').value;
+  if(svc==='all'){
+    /* Fetch docker logs for all services in parallel */
+    var promises=ALL_SVC_LIST.map(function(s){
+      return fetch('/api/docker-logs/'+encodeURIComponent(s)+'?tail=30')
+        .then(function(r){return r.json()})
+        .then(function(d){return d.logs||[]})
+        .catch(function(){return []});
+    });
+    Promise.all(promises).then(function(results){
+      var all=[];
+      results.forEach(function(logs){all=all.concat(logs)});
+      /* Sort by timestamp string descending */
+      all.sort(function(a,b){return (b.timestamp_str||'').localeCompare(a.timestamp_str||'')});
+      renderLogs(all.slice(0,500));
+    });
+  }else{
+    fetch('/api/docker-logs/'+encodeURIComponent(svc)+'?tail=200')
+      .then(function(r){return r.json()})
+      .then(function(d){renderLogs(d.logs||[])})
+      .catch(function(){$('#log-scroll').innerHTML='<div style="color:var(--error);padding:12px">Failed to fetch Docker logs</div>'});
+  }
 }
 
 function renderLogs(logs){
@@ -1738,11 +2148,18 @@ function renderLogs(logs){
     if(search&&(l.message||'').toLowerCase().indexOf(search)<0&&(l.service||'').toLowerCase().indexOf(search)<0)return;
     var div=document.createElement('div');
     div.className='log-line level-'+(l.level||'info');
-    var ts=new Date((l.timestamp||0)*1000);
-    var timeStr=ts.toLocaleTimeString();
+    var timeStr='';
+    if(l.timestamp_str){
+      /* Docker timestamp */
+      try{var dt=new Date(l.timestamp_str);timeStr=dt.toLocaleTimeString()}catch(e){timeStr=l.timestamp_str.substring(11,19)}
+    }else if(l.timestamp){
+      var ts=new Date((l.timestamp||0)*1000);
+      timeStr=ts.toLocaleTimeString();
+    }
     var color=svcColors[l.service]||'var(--text-dim)';
+    var srcBadge=l.source==='docker'?' <span style="font-size:.58rem;color:var(--accent);opacity:.6">&#x1F40B;</span>':'';
     div.innerHTML='<span class="log-ts">'+timeStr+'</span>'+
-      '<span class="log-svc" style="color:'+color+'">'+esc(l.service||'?')+'</span>'+
+      '<span class="log-svc" style="color:'+color+'">'+esc(l.service||'?')+srcBadge+'</span>'+
       '<span class="log-lvl lvl-'+(l.level||'info')+'">'+esc(l.level||'info')+'</span>'+
       '<span class="log-msg">'+esc(l.message||'')+'</span>';
     c.appendChild(div);
@@ -1953,11 +2370,171 @@ $('#autonomy-off').addEventListener('click',function(){$('#autonomy-status').tex
 $('#modal-close').addEventListener('click',function(){$('#modal-overlay').classList.remove('open')});
 $('#modal-overlay').addEventListener('click',function(e){if(e.target===e.currentTarget)e.currentTarget.classList.remove('open')});
 
+/* == Curiosity Engine ================================================= */
+var curiosityQueue=[];
+var curiosityTimer=null;
+var CURIOSITY_IDLE_MS=60000;  /* 60 seconds of inactivity */
+var lastActivityTs=Date.now();
+
+function resetCuriosityTimer(){
+  lastActivityTs=Date.now();
+  if(curiosityTimer)clearTimeout(curiosityTimer);
+  curiosityTimer=setTimeout(curiosityTick,CURIOSITY_IDLE_MS);
+}
+
+function curiosityTick(){
+  /* Only fire if the page is visible and we have a session */
+  if(document.hidden||!SESSION)return;
+  /* Only if enough idle time has passed */
+  if(Date.now()-lastActivityTs<CURIOSITY_IDLE_MS)return;
+  fetchCuriosityQuestion();
+}
+
+function fetchCuriosityQuestion(){
+  fetch('/brain/curiosity?session_id='+encodeURIComponent(SESSION))
+    .then(function(r){return r.json()})
+    .then(function(d){
+      if(d.has_question&&d.question){
+        /* Add to local queue if not already there */
+        if(!curiosityQueue.find(function(q){return q.id===d.id})){
+          curiosityQueue.push({
+            id:d.id,question:d.question,drive:d.curiosity_drive||0,
+            dopamine:d.dopamine||0,mood:d.mood||'',timestamp:Date.now()
+          });
+          renderCuriosityQueue();
+          /* Show as a chat message */
+          var html='<span style="font-size:.68rem;color:var(--accent);font-weight:700;letter-spacing:.5px">\uD83E\uDD14 CURIOSITY</span><br>'+esc(d.question);
+          html+='<div class="meta"><span class="badge-intuition" style="background:rgba(0,212,255,.12);color:var(--accent);border-color:rgba(0,212,255,.3)">drive: '+Math.round((d.curiosity_drive||0)*100)+'%</span>';
+          if(d.mood)html+='<span class="badge-mood">\uD83E\uDDE0 '+esc(d.mood)+'</span>';
+          html+='</div>';
+          appendMsg('bot curiosity',html);
+          saveChatMessage('bot curiosity',html);
+          /* Light up brain */
+          animateBrainPipeline(['hippocampus','neocortex','perception']);
+        }
+      }
+    })
+    .catch(function(){/* silent */})
+    .finally(function(){
+      /* Schedule next check */
+      curiosityTimer=setTimeout(curiosityTick,CURIOSITY_IDLE_MS);
+    });
+}
+
+function loadCuriosityQueue(){
+  fetch('/brain/curiosity/queue?session_id='+encodeURIComponent(SESSION))
+    .then(function(r){return r.json()})
+    .then(function(d){
+      curiosityQueue=(d.questions||[]).map(function(q){
+        return {id:q.id,question:q.question,drive:q.drive||0,
+          dopamine:q.dopamine||0,mood:q.mood||'',timestamp:q.timestamp*1000||Date.now()};
+      });
+      renderCuriosityQueue();
+    })
+    .catch(function(){});
+}
+
+function renderCuriosityQueue(){
+  var panel=$('#curiosity-queue-panel');
+  var container=$('#curiosity-queue');
+  var badge=$('#curiosity-badge');
+  var count=curiosityQueue.length;
+  $('#cq-count-label').textContent=count+' pending';
+  $('#cq-badge-count').textContent=count;
+  if(count>0){
+    badge.style.display='block';
+    panel.style.display='block';
+  }else{
+    badge.style.display='none';
+    panel.style.display='none';
+  }
+  container.innerHTML=curiosityQueue.map(function(q){
+    var t=new Date(q.timestamp).toLocaleTimeString();
+    return '<div class="curiosity-item" data-qid="'+esc(q.id)+'">'
+      +'<div class="cq-question">\uD83D\uDCA1 '+esc(q.question)+'</div>'
+      +'<div class="cq-meta">'+t+(q.drive?' \u00B7 drive: '+Math.round(q.drive*100)+'%':'')+'</div>'
+      +'<div class="cq-answer-row">'
+      +'<input class="cq-answer-input" placeholder="Your answer..." data-qid="'+esc(q.id)+'"/>'
+      +'<button class="cq-btn cq-btn-answer" onclick="answerCuriosityQuestion(\''+esc(q.id)+'\')">Answer</button>'
+      +'<button class="cq-btn cq-btn-dismiss" onclick="dismissCuriosityQuestion(\''+esc(q.id)+'\')">\u2715</button>'
+      +'</div></div>';
+  }).join('');
+}
+
+function answerCuriosityQuestion(qid){
+  var input=document.querySelector('.cq-answer-input[data-qid="'+qid+'"]');
+  if(!input)return;
+  var answer=input.value.trim();
+  if(!answer)return;
+  var q=curiosityQueue.find(function(x){return x.id===qid});
+  input.disabled=true;
+  fetch('/brain/curiosity/answer',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({session_id:SESSION,question_id:qid,answer:answer})
+  })
+    .then(function(r){return r.json()})
+    .then(function(d){
+      if(d.ok){
+        /* Show the Q+A in chat */
+        var html='<span style="font-size:.68rem;color:var(--success);font-weight:700;letter-spacing:.5px">\u2705 ANSWERED</span><br>'
+          +'<b>Q:</b> '+esc(q?q.question:d.question)+'<br>'
+          +'<b>A:</b> '+esc(answer);
+        if(d.topic)html+='<div class="meta"><span style="padding:2px 8px;border-radius:12px;font-size:.68rem;background:rgba(0,212,255,.1);color:var(--accent);border:1px solid rgba(0,212,255,.2)">topic: '+esc(d.topic)+'</span>';
+        if(d.interest_score>=3)html+='<span style="padding:2px 8px;border-radius:12px;font-size:.68rem;background:rgba(0,200,83,.1);color:var(--success);border:1px solid rgba(0,200,83,.2)">\uD83C\uDFAF interest \u2192 goal</span>';
+        if(d.topic||d.interest_score>=3)html+='</div>';
+        appendMsg('bot curiosity',html);
+        saveChatMessage('bot curiosity',html);
+        /* Remove from local queue */
+        curiosityQueue=curiosityQueue.filter(function(x){return x.id!==qid});
+        renderCuriosityQueue();
+        /* Light up brain — reward */
+        lightRegion('hypothalamus',1500);
+        setTimeout(function(){lightRegion('hippocampus',1200)},300);
+      }
+    })
+    .catch(function(e){input.disabled=false;alert('Error: '+e.message)});
+}
+
+function dismissCuriosityQuestion(qid){
+  fetch('/brain/curiosity/dismiss?session_id='+encodeURIComponent(SESSION)+'&question_id='+encodeURIComponent(qid),{method:'DELETE'})
+    .then(function(){
+      curiosityQueue=curiosityQueue.filter(function(x){return x.id!==qid});
+      renderCuriosityQueue();
+    })
+    .catch(function(){});
+}
+
+/* Badge click opens/scrolls to queue */
+$('#curiosity-badge').addEventListener('click',function(){
+  var panel=$('#curiosity-queue-panel');
+  panel.scrollIntoView({behavior:'smooth',block:'end'});
+});
+
+/* Reset timer on any user activity */
+document.addEventListener('keydown',resetCuriosityTimer);
+document.addEventListener('click',resetCuriosityTimer);
+
+/* Listen for curiosity events via WebSocket */
+var _origAddLiveEvent=addLiveEvent;
+addLiveEvent=function(m){
+  _origAddLiveEvent(m);
+  if(m.channel==='curiosity.question'&&m.data&&m.data.session_id===SESSION){
+    /* Reload queue to pick up the new question */
+    loadCuriosityQueue();
+  }
+};
+
+/* /questions slash command */
+/* (injected into sendMessage below) */
+
 /* -- Init ------------------------------------------------------------- */
 initBrainScene();
 initThumbRenderer();
 initModalRenderer();
 drawPixelFace('neutral');
+loadCuriosityQueue();
+resetCuriosityTimer();
 
 fetch('/health').then(function(r){
   if(!r.ok)throw new Error('offline');

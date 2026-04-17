@@ -24,6 +24,8 @@
 import asyncio
 import json
 import os
+import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -39,6 +41,47 @@ from pydantic import BaseModel
 
 from models import BrainResponse
 from events import EventBus
+
+
+# ── Crash / restart detection ─────────────────────────────────────────────────
+# Breadcrumb file written during model loading, removed on success.
+# If it exists at startup, the previous attempt was killed mid-load.
+_LOAD_BREADCRUMB = "/workspace/.learner_loading"
+
+def _get_rss_mb():
+    """Current process RSS in MB (from /proc/self/status)."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024  # kB → MB
+    except Exception:
+        pass
+    return 0.0
+
+def _get_cgroup_memory_limit_gb():
+    """Container memory limit in GB from cgroup, or None if unlimited."""
+    for cgroup_path in ["/sys/fs/cgroup/memory.max",
+                        "/sys/fs/cgroup/memory/memory.limit_in_bytes"]:
+        try:
+            with open(cgroup_path) as f:
+                val = f.read().strip()
+                if val != "max" and val != "9223372036854771712":
+                    return int(val) / 1024**3
+        except (FileNotFoundError, ValueError):
+            continue
+    return None
+
+def _sigterm_handler(signum, frame):
+    """Log when Docker sends SIGTERM (graceful stop / healthcheck-triggered restart)."""
+    print(f"\n  *** Received signal {signum} (SIGTERM) — container is being stopped ***")
+    print(f"  *** If this happens during model loading, check:")
+    print(f"      docker inspect brain_learner --format='{{{{.State.OOMKilled}}}}'")
+    print(f"      docker inspect brain_learner --format='{{{{.State.ExitCode}}}}'")
+    sys.stdout.flush()
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
 
 app    = FastAPI(title="Learner", version="1.0.0",
                  description="Continual local model learning — LoRA + EWC + Replay")
@@ -295,6 +338,30 @@ async def _load_models_async():
     await loop.run_in_executor(None, _load_models_sync)
 
 
+def _clear_stale_hf_cache():
+    """Clear cached model code that may be incompatible with current transformers version.
+
+    HuggingFace encodes hyphens as '_hyphen_' in cache directory names.
+    Stale cached modules cause ImportError at model load time.
+    """
+    import shutil
+    import re
+    cache_base = Path("/models/hf_cache/modules/transformers_modules")
+    if not cache_base.exists():
+        return False
+    # Derive both literal and HF-encoded directory names from the configured model
+    model_name = LOCAL_MODEL_NAME  # e.g. "microsoft/phi-4-mini-instruct"
+    hf_encoded = re.sub(r'-', '_hyphen_', model_name)
+    cleared = False
+    for name in set([model_name, hf_encoded]):
+        d = cache_base / name
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+            print(f"  Cleared stale cache: {d}")
+            cleared = True
+    return cleared
+
+
 def _load_models_sync():
     """Synchronous model loading — runs in thread pool."""
     global _model, _tokenizer, _emotion_pipe, _ewc, _model_loaded, _load_error
@@ -328,12 +395,7 @@ def _load_models_sync():
         ]:
             try:
                 if attempt_label == "slow tokenizer (fresh cache)":
-                    # Clear corrupted HF cache for this model
-                    import shutil
-                    cache_dir = Path("/models/hf_cache/modules/transformers_modules/microsoft/phi-4-mini-instruct")
-                    if cache_dir.exists():
-                        shutil.rmtree(cache_dir, ignore_errors=True)
-                        print("  Cleared corrupted model cache, retrying...")
+                    _clear_stale_hf_cache()
                 merged = {**tok_kwargs, **attempt_kwargs}
                 _tokenizer = AutoTokenizer.from_pretrained(model_source, **merged)
                 print(f"  Tokenizer loaded ({attempt_label})")
@@ -348,27 +410,152 @@ def _load_models_sync():
         if _tokenizer.pad_token is None:
             _tokenizer.pad_token = _tokenizer.eos_token
 
-        # Load model — CPU only, 4-bit quantization if bitsandbytes available
+        # Load model — auto-detect GPU, fall back to CPU
+        has_cuda = torch.cuda.is_available()
+        device_label = f"cuda ({torch.cuda.get_device_name(0)})" if has_cuda else "cpu"
+        print(f"  Device: {device_label}")
+        if has_cuda:
+            print(f"  CUDA version: {torch.version.cuda}")
+            print(f"  GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        else:
+            # Advisory: explain why running in CPU mode (not an error — just FYI)
+            gpu_mode = os.environ.get('GPU_MODE', 'cpu')
+            print(f"  (FYI) CUDA not available — running in CPU mode. Diagnostics:")
+            print(f"    GPU_MODE={gpu_mode}")
+            if gpu_mode != 'gpu':
+                print(f"    → Container started without NVIDIA runtime (GPU_MODE≠gpu)")
+                print(f"    → Host may have NVIDIA drivers, but docker-compose.gpu.yml was not loaded")
+                print(f"    (To enable GPU: run ./skynet.sh setup and select GPU, or set GPU_MODE=gpu in .env)")
+            else:
+                # GPU_MODE=gpu but CUDA still not available — runtime issue
+                print(f"    torch.version.cuda = {torch.version.cuda}")
+                print(f"    torch.backends.cuda.is_built() = {torch.backends.cuda.is_built()}")
+                if not torch.backends.cuda.is_built():
+                    print(f"    → PyTorch was built WITHOUT CUDA support (CPU-only wheel)")
+                else:
+                    print(f"    torch.cuda.device_count() = {torch.cuda.device_count()}")
+                    if torch.cuda.device_count() == 0:
+                        print(f"    → No GPU devices visible to PyTorch")
+                    print(f"    NVIDIA_VISIBLE_DEVICES = {os.environ.get('NVIDIA_VISIBLE_DEVICES', '(not set)')}")
+
+                # Check if nvidia-smi is available inside the container
+                # This tells us whether the NVIDIA runtime is injecting drivers
+                try:
+                    nvsmi = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if nvsmi.returncode == 0 and nvsmi.stdout.strip():
+                        print(f"    nvidia-smi sees GPU: {nvsmi.stdout.strip()}")
+                        print(f"    → GPU is exposed but PyTorch can't see it — likely driver/toolkit mismatch")
+                    else:
+                        print(f"    nvidia-smi: no GPUs found in container")
+                        print(f"    → Check: NVIDIA runtime in docker-compose.gpu.yml, nvidia-smi in container")
+                except FileNotFoundError:
+                    print(f"    nvidia-smi: not found in container (NVIDIA runtime not active)")
+                    print(f"    → Check: nvidia-container-toolkit installed, Docker daemon restarted")
+                except Exception as nvsmi_err:
+                    print(f"    nvidia-smi check failed: {nvsmi_err}")
+
         model_kwargs = {
             "trust_remote_code": True,
-            "torch_dtype": torch.float32,   # CPU: float32
-            "low_cpu_mem_usage": True
+            "low_cpu_mem_usage": True,
         }
         if HF_TOKEN:
             model_kwargs["token"] = HF_TOKEN
 
-        try:
-            from transformers import BitsAndBytesConfig
-            import bitsandbytes
-            model_kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float32
-            )
-            print("  4-bit quantization enabled (bitsandbytes)")
-        except ImportError:
-            print("  bitsandbytes not available — loading in float32")
+        use_quantization = False
+        if has_cuda:
+            # GPU path: float16 + device_map auto (fits model across available VRAM)
+            model_kwargs["torch_dtype"] = torch.float16
+            model_kwargs["device_map"] = "auto"
+            try:
+                from transformers import BitsAndBytesConfig
+                import bitsandbytes
+                model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16
+                )
+                use_quantization = True
+                print("  4-bit quantization enabled (bitsandbytes + CUDA)")
+            except (ImportError, AttributeError) as e:
+                print(f"  bitsandbytes not usable — using float16 on GPU: {e}")
+        else:
+            # CPU path: float32, NO quantization (bitsandbytes 4-bit requires CUDA)
+            model_kwargs["torch_dtype"] = torch.float32
+            print("  Loading in float32 (CPU mode — 4-bit quantization requires CUDA)")
+            # Report container memory limit so we can correlate with crashes
+            limit_gb = _get_cgroup_memory_limit_gb()
+            if limit_gb:
+                print(f"  Container memory limit: {limit_gb:.1f} GB")
+                if limit_gb < 12:
+                    print(f"  ⚠ float32 model may need ~10-12 GB — limit is only {limit_gb:.1f} GB")
+                    print(f"  ⚠ If container keeps restarting, increase LEARNER_MAX_MEMORY or enable GPU mode")
 
-        _model = AutoModelForCausalLM.from_pretrained(model_source, **model_kwargs)
+        # Try loading model with retries:
+        #  1. Normal load (may include 4-bit quantization on GPU)
+        #  2. Stale HF cache → clear and retry
+        #  3. Quantization / bitsandbytes error → strip quantization_config and retry
+        #  4. GPU OOM or driver error → fall back to CPU entirely
+        #
+        # Breadcrumb: write a marker file BEFORE loading. If the container is
+        # killed (OOM, signal, etc.) during loading, the next startup detects it.
+        rss_before = _get_rss_mb()
+        print(f"  Memory before model load: {rss_before:.0f} MB RSS")
+        Path(_LOAD_BREADCRUMB).write_text(
+            f"started={time.strftime('%H:%M:%S')}, rss={rss_before:.0f}MB"
+        )
+        _model = None
+        for _load_attempt in range(4):
+            try:
+                _model = AutoModelForCausalLM.from_pretrained(model_source, **model_kwargs)
+                break
+            except (ImportError, ModuleNotFoundError) as e:
+                if _load_attempt == 0 and _clear_stale_hf_cache():
+                    print(f"  Model load failed (stale cache): {e}")
+                    print("  Retrying with fresh cache...")
+                    continue
+                raise
+            except Exception as e:
+                err_msg = str(e).lower()
+                is_quant_error = (
+                    "frozenset" in err_msg or "bitsandbytes" in err_msg
+                    or "quantiz" in err_msg or isinstance(e, AttributeError)
+                )
+                is_gpu_error = (
+                    "cuda" in err_msg or "out of memory" in err_msg
+                    or "device" in err_msg
+                )
+
+                # Attempt A: Strip quantization and retry on GPU
+                if "quantization_config" in model_kwargs and is_quant_error:
+                    print(f"  Quantization failed: {e}")
+                    traceback.print_exc()
+                    print("  Retrying without 4-bit quantization (GPU float16)...")
+                    model_kwargs.pop("quantization_config", None)
+                    use_quantization = False
+                    continue
+
+                # Attempt B: Fall back from GPU to CPU entirely
+                if has_cuda and (is_quant_error or is_gpu_error):
+                    print(f"  GPU load failed: {e}")
+                    traceback.print_exc()
+                    print("  Falling back to CPU (float32, no quantization)...")
+                    model_kwargs.pop("quantization_config", None)
+                    model_kwargs.pop("device_map", None)
+                    model_kwargs["torch_dtype"] = torch.float32
+                    use_quantization = False
+                    has_cuda = False  # prevent further GPU attempts
+                    continue
+
+                raise
+        if _model is None:
+            raise RuntimeError("All model load attempts failed")
+
+        # Model loaded successfully — remove breadcrumb and report memory
+        Path(_LOAD_BREADCRUMB).unlink(missing_ok=True)
+        rss_after = _get_rss_mb()
+        print(f"  Model loaded successfully — memory: {rss_after:.0f} MB RSS (delta: +{rss_after - rss_before:.0f} MB)")
 
         # Load LoRA adapter if it exists
         adapter_dir = Path(ADAPTER_PATH)
@@ -394,14 +581,15 @@ def _load_models_sync():
         emotion_dir = Path(EMOTION_MODEL_PATH)
         if (emotion_dir / "config.json").exists():
             try:
+                emotion_device = 0 if has_cuda else -1
                 _emotion_pipe = pipeline(
                     "text-classification",
                     model=EMOTION_MODEL_PATH,
                     tokenizer=EMOTION_MODEL_PATH,
                     top_k=5,
-                    device=-1
+                    device=emotion_device
                 )
-                print(f"  Emotion classifier loaded from {EMOTION_MODEL_PATH}")
+                print(f"  Emotion classifier loaded from {EMOTION_MODEL_PATH} (device={'cuda:0' if has_cuda else 'cpu'})")
             except Exception as e:
                 print(f"  Emotion classifier load failed: {e}")
         else:
@@ -419,6 +607,21 @@ def _load_models_sync():
 async def startup():
     """Start model loading in background — service responds immediately."""
     print("Learner service starting...")
+
+    # Detect if previous load attempt was killed mid-load
+    if Path(_LOAD_BREADCRUMB).exists():
+        try:
+            prev = Path(_LOAD_BREADCRUMB).read_text().strip()
+            print(f"  ⚠ Previous model load was KILLED mid-load ({prev})")
+            print(f"  ⚠ The container was restarted by Docker (restart: unless-stopped)")
+            print(f"  ⚠ To diagnose: docker inspect brain_learner --format='{{{{.State.OOMKilled}}}}'")
+            limit = _get_cgroup_memory_limit_gb()
+            if limit:
+                print(f"  ⚠ Container memory limit: {limit:.1f} GB")
+        except Exception:
+            print(f"  ⚠ Previous model load was killed (breadcrumb exists)")
+        Path(_LOAD_BREADCRUMB).unlink(missing_ok=True)
+
     print("Model loading will happen in background...")
     asyncio.create_task(_load_models_async())
 

@@ -172,11 +172,12 @@ services:
   # Idempotent: safe to run on every deploy. All scripts check before creating.
   # Creates indices, applies schema migrations, seeds base data.
   db-init:
-    image: python:3.12-slim
+    build:
+      context: ./databases
+      dockerfile: Dockerfile.init
     container_name: brain_db_init
     command: >
       sh -c "
-        pip install -q redis==5.0.4 elasticsearch==8.13.0 edgedb==2.2.0 &&
         echo '--- Redis init ---' &&
         python /init/redis/init.py &&
         echo '--- Elasticsearch init ---' &&
@@ -188,6 +189,7 @@ services:
     volumes:
       - ./databases:/init:ro
     environment:
+      - PYTHONUNBUFFERED=1
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-http://elasticsearch:9200}
       - EDGEDB_DSN=${EDGEDB_DSN:-edgedb://edgedb/main}
@@ -456,11 +458,19 @@ services:
       context: .
       dockerfile: services/metacognition/Dockerfile
     container_name: brain_metacognition
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - HIPPOCAMPUS_URL=${HIPPOCAMPUS_URL}
+      - NEOCORTEX_URL=${NEOCORTEX_URL}
+      - CROSS_DOMAIN_URL=${CROSS_DOMAIN_URL}
+      - CEREBELLUM_URL=${CEREBELLUM_URL}
     <<: [*common-env, *common-network, *common-restart]
     depends_on:
       redis:
         condition: service_healthy
       neocortex:
+        condition: service_healthy
+      hippocampus:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8014/health')"]
@@ -479,15 +489,20 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8015/health')"]
       <<: *common-healthcheck
 
-  # ── Learner (local model — heavy, 4-8GB RAM) ──────────────────────────────
+  # ── Learner (local model — heavy, 4-8GB RAM / 2-4GB VRAM) ──────────────────
   # Model downloads on first start (10-30 min). Subsequent starts are instant.
+  # GPU: auto-detected. Set LEARNER_GPU=false in .env to force CPU-only.
   # Watch: docker compose logs -f learner
   learner:
     build:
       context: .
       dockerfile: services/learner/Dockerfile
+      args:
+        # Override with https://download.pytorch.org/whl/cpu for CPU-only builds
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
     container_name: brain_learner
     environment:
+      - PYTHONUNBUFFERED=1
       - LOCAL_MODEL_NAME=${LOCAL_MODEL_NAME:-microsoft/phi-4-mini-instruct}
       - LOCAL_MODEL_PATH=/models/local_llm
       - ADAPTER_PATH=/models/adapters
@@ -496,6 +511,8 @@ services:
       - HF_HOME=/models/hf_cache
       - REDIS_URL=${REDIS_URL}
       - WORKSPACE_PATH=/workspace
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - GPU_MODE=${GPU_MODE:-cpu}
     volumes:
       # models-volume persists downloaded models — do NOT wipe casually
       - models-volume:/models
@@ -504,18 +521,20 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    # GPU reservation lives in docker-compose.gpu.yml (loaded by skynet.sh in GPU mode).
+    # Without it the learner auto-detects CUDA at runtime and falls back to CPU.
     deploy:
       resources:
         limits:
-          memory: ${LEARNER_MAX_MEMORY:-8g}
+          memory: ${LEARNER_MAX_MEMORY:-16g}
         reservations:
           memory: 2g
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8016/health')"]
-      interval: 30s
+      interval: 60s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 3
+      start_period: 600s
 
   # ── Vision (optional — requires camera or can use image upload) ────────────
   # Enable: docker compose --profile vision up -d
@@ -580,6 +599,8 @@ services:
       - THALAMUS_URL=http://thalamus:8000
       - KNOBS_URL=http://knobs:8090
       - REDIS_URL=${REDIS_URL}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     <<: [*common-network, *common-restart]
     depends_on:
       redis:
@@ -619,9 +640,68 @@ services:
         condition: service_healthy
       knobs:
         condition: service_healthy
-    <<: [*common-network, *common-restart]
+    <<: [*common-network, *common-restart, *common-extra-hosts]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8018/health')"]
+      <<: *common-healthcheck
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # HORMONAL / INSIGHT SERVICES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Hypothalamus (hormonal state engine — lightweight, Redis-only) ────────
+  hypothalamus:
+    build:
+      context: .
+      dockerfile: services/hypothalamus/Dockerfile
+    container_name: brain_hypothalamus
+    <<: [*common-env, *common-network, *common-restart]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8019/health')"]
+      <<: *common-healthcheck
+
+  # ── Insight Engine (epiphany detection — background graph analysis) ──────
+  insight-engine:
+    build:
+      context: .
+      dockerfile: services/insight-engine/Dockerfile
+    container_name: brain_insight_engine
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - NEOCORTEX_URL=${NEOCORTEX_URL}
+      - KNOBS_URL=${KNOBS_URL}
+    <<: [*common-env, *common-network, *common-restart]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8020/health')"]
+      <<: *common-healthcheck
+
+  # ── Embed Queue (centralized embedding — Redis Streams MQ + cache) ─────
+  # All embedding calls go through this service instead of hitting Ollama directly.
+  # Provides: Redis cache (6h TTL), in-flight dedup, async queue via Redis Streams.
+  # Docker logs show every Ollama call with timing, source service, and cache status.
+  embed-queue:
+    build:
+      context: .
+      dockerfile: services/embed-queue/Dockerfile
+    container_name: brain_embed_queue
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - OLLAMA_URL=${OLLAMA_URL}
+      - OLLAMA_EMBED_MODEL=${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      - EMBED_CACHE_TTL=${EMBED_CACHE_TTL:-21600}
+      - EMBED_QUEUE_WORKERS=${EMBED_QUEUE_WORKERS:-2}
+    <<: [*common-network, *common-restart, *common-extra-hosts]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8021/health')"]
       <<: *common-healthcheck
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -640,6 +720,28 @@ services:
       - ANTHROPIC_FAST_MODEL=${ANTHROPIC_FAST_MODEL:-claude-haiku-4-5-20251001}
       - OPENAI_MAIN_MODEL=${OPENAI_MAIN_MODEL:-gpt-5.4-mini}
       - OPENAI_FAST_MODEL=${OPENAI_FAST_MODEL:-gpt-5.4-nano}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MAIN_MODEL=${GEMINI_MAIN_MODEL:-gemini-2.5-pro}
+      - GEMINI_FAST_MODEL=${GEMINI_FAST_MODEL:-gemini-2.0-flash}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_MAIN_MODEL=${DEEPSEEK_MAIN_MODEL:-deepseek-r1}
+      - DEEPSEEK_FAST_MODEL=${DEEPSEEK_FAST_MODEL:-deepseek-chat}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MAIN_MODEL=${GROQ_MAIN_MODEL:-llama-3.3-70b-versatile}
+      - GROQ_FAST_MODEL=${GROQ_FAST_MODEL:-llama-3.1-8b-instant}
+      - XAI_API_KEY=${XAI_API_KEY}
+      - XAI_MAIN_MODEL=${XAI_MAIN_MODEL:-grok-4-20}
+      - XAI_FAST_MODEL=${XAI_FAST_MODEL:-grok-3-mini-fast}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MAIN_MODEL=${OPENROUTER_MAIN_MODEL}
+      - OPENROUTER_FAST_MODEL=${OPENROUTER_FAST_MODEL}
+      - GENERIC_API_KEY=${GENERIC_API_KEY}
+      - GENERIC_BASE_URL=${GENERIC_BASE_URL}
+      - GENERIC_MAIN_MODEL=${GENERIC_MAIN_MODEL}
+      - GENERIC_FAST_MODEL=${GENERIC_FAST_MODEL}
+      - MAX_TOKENS_MAIN=${MAX_TOKENS_MAIN:-0}
+      - MAX_TOKENS_FAST=${MAX_TOKENS_FAST:-0}
+      - WEB_SEARCH_ENABLED=${WEB_SEARCH_ENABLED:-true}
       - REDIS_URL=${REDIS_URL}
       - AMYGDALA_URL=${AMYGDALA_URL}
       - HIPPOCAMPUS_URL=${HIPPOCAMPUS_URL}
@@ -660,6 +762,9 @@ services:
       - LEARNER_URL=${LEARNER_URL}
       - VISION_URL=${VISION_URL}
       - OLLAMA_URL=${OLLAMA_URL}
+      - HYPOTHALAMUS_URL=${HYPOTHALAMUS_URL}
+      - INSIGHT_ENGINE_URL=${INSIGHT_ENGINE_URL}
+      - EMBED_QUEUE_URL=${EMBED_QUEUE_URL}
     <<: [*common-network, *common-restart, *common-extra-hosts]
     depends_on:
       amygdala:
@@ -695,6 +800,12 @@ services:
       goals:
         condition: service_healthy
       learner:
+        condition: service_healthy
+      hypothalamus:
+        condition: service_healthy
+      insight-engine:
+        condition: service_healthy
+      embed-queue:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
