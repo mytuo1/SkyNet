@@ -193,30 +193,36 @@ _ensure_gpu_runtime() {
         echo "/usr/lib/wsl/lib" | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf >/dev/null 2>&1
         sudo ldconfig 2>/dev/null
 
-        # ── Symlink WSL NVIDIA libs into standard system path ─────────────
-        # On WSL2, /usr/lib/wsl/lib/ is a special directory that may be
-        # inaccessible from certain execution contexts (e.g. snap Docker's
-        # prestart hooks run nvidia-container-cli inside the snap daemon's
-        # context, which cannot reach /usr/lib/wsl/lib/).
-        #
-        # Symlinking the NVIDIA .so files into /usr/lib/x86_64-linux-gnu/
-        # ensures they're findable from ANY context — the dynamic linker
-        # always checks this standard path. Only creates symlinks for files
-        # that don't already exist at the destination (won't clobber native
-        # driver installs).
-        local _wsl_link_changed=false
+        # ── Copy WSL NVIDIA libs into standard system path ───────────────
+        # On WSL2, /usr/lib/wsl/lib/ is a special directory that snap Docker
+        # cannot access — its prestart hooks run nvidia-container-cli inside
+        # the snap daemon's confined context, which cannot reach that path.
+        # Symlinks don't help either since following them requires the same
+        # path access. Actual file COPIES into /usr/lib/x86_64-linux-gnu/
+        # are needed so the dynamic linker finds real files in a standard
+        # path. Copies are refreshed if the source is newer (driver update).
+        # Won't clobber native driver installs (skips existing regular files
+        # that aren't our copies).
+        local _wsl_copy_changed=false
         for _lib in /usr/lib/wsl/lib/lib*.so*; do
             [ -f "$_lib" ] || continue
             local _basename
             _basename="$(basename "$_lib")"
             local _dst="/usr/lib/x86_64-linux-gnu/$_basename"
-            if [ ! -e "$_dst" ]; then
-                sudo ln -sf "$_lib" "$_dst" 2>/dev/null && _wsl_link_changed=true
+            if [ -L "$_dst" ]; then
+                # Replace stale symlink (from previous fix version) with copy
+                sudo cp -f "$_lib" "$_dst" 2>/dev/null && _wsl_copy_changed=true
+            elif [ ! -e "$_dst" ]; then
+                # Destination doesn't exist — copy
+                sudo cp -f "$_lib" "$_dst" 2>/dev/null && _wsl_copy_changed=true
+            elif [ "$_lib" -nt "$_dst" ]; then
+                # Source is newer (driver updated) — refresh the copy
+                sudo cp -f "$_lib" "$_dst" 2>/dev/null && _wsl_copy_changed=true
             fi
         done
-        if $_wsl_link_changed; then
+        if $_wsl_copy_changed; then
             sudo ldconfig 2>/dev/null
-            info "Symlinked WSL2 NVIDIA libraries into /usr/lib/x86_64-linux-gnu/"
+            info "Copied WSL2 NVIDIA libraries into /usr/lib/x86_64-linux-gnu/"
         fi
 
         # Verify the ldconfig cache was actually updated
@@ -894,13 +900,20 @@ cmd_setup() {
                     info "Registering WSL2 NVIDIA libraries with ldconfig..."
                     echo "/usr/lib/wsl/lib" | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf >/dev/null 2>&1
 
-                    # Symlink WSL NVIDIA libs into standard system path so they
-                    # are discoverable from any execution context (including snap)
+                    # Copy WSL NVIDIA libs into standard system path so they
+                    # are discoverable from any execution context (including snap).
+                    # Symlinks don't work — snap can't follow links to /usr/lib/wsl/lib/.
                     for _lib in /usr/lib/wsl/lib/lib*.so*; do
                         [ -f "$_lib" ] || continue
                         _bn="$(basename "$_lib")"
-                        [ ! -e "/usr/lib/x86_64-linux-gnu/$_bn" ] && \
-                            sudo ln -sf "$_lib" "/usr/lib/x86_64-linux-gnu/$_bn" 2>/dev/null || true
+                        _dst="/usr/lib/x86_64-linux-gnu/$_bn"
+                        if [ -L "$_dst" ]; then
+                            sudo cp -f "$_lib" "$_dst" 2>/dev/null || true
+                        elif [ ! -e "$_dst" ]; then
+                            sudo cp -f "$_lib" "$_dst" 2>/dev/null || true
+                        elif [ "$_lib" -nt "$_dst" ]; then
+                            sudo cp -f "$_lib" "$_dst" 2>/dev/null || true
+                        fi
                     done
 
                     sudo ldconfig 2>/dev/null
