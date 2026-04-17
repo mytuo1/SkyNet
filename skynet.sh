@@ -153,13 +153,18 @@ _nvidia_ctk_hint() {
     fi
 }
 
-# ── GPU Runtime Validation (called at every start/restart) ────────────────────
+# ── GPU Runtime Validation (called at every start/restart/update) ─────────────
 # When GPU_MODE=gpu is set in .env, this function ensures the NVIDIA container
 # runtime actually works before Docker tries to start GPU containers.
 #
 # On WSL2, libnvidia-ml.so.1 lives at /usr/lib/wsl/lib/ but ldconfig can lose
 # the registration after a WSL restart. This function re-applies the fix every
 # time — it's idempotent and takes <100ms.
+#
+# CRITICAL: The nvidia-container-cli check must run WITHOUT LD_LIBRARY_PATH set,
+# because Docker's prestart hook runs from the Docker daemon's environment —
+# which does NOT inherit this script's LD_LIBRARY_PATH. If we check with
+# LD_LIBRARY_PATH, it masks the real problem and the container still fails.
 #
 # If the GPU runtime is broken and unfixable, it falls back to CPU compose
 # (no docker-compose.gpu.yml) so the learner still starts on CPU.
@@ -179,8 +184,16 @@ _ensure_gpu_runtime() {
     if $is_wsl && [ -d /usr/lib/wsl/lib ]; then
         echo "/usr/lib/wsl/lib" | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf >/dev/null 2>&1
         sudo ldconfig 2>/dev/null
-        # Also export LD_LIBRARY_PATH for the current process (belt + suspenders)
-        export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+        # Verify the ldconfig cache was actually updated
+        if ! ldconfig -p 2>/dev/null | grep -q libnvidia-ml; then
+            warn "ldconfig cache missing libnvidia-ml — forcing cache rebuild..."
+            sudo ldconfig 2>/dev/null || true
+        fi
+
+        # WSL2: ensure nvidia-container-runtime config has no-cgroups = true
+        # Without this, the container runtime may fail on WSL2's cgroup layout
+        _ensure_wsl2_nvidia_runtime_config
     fi
 
     # ── Native Linux: find libnvidia-ml.so.1 in non-standard locations ───
@@ -202,13 +215,23 @@ _ensure_gpu_runtime() {
     fi
 
     # ── Verify nvidia-container-cli (the binary Docker actually uses) ────
+    # IMPORTANT: Check WITHOUT LD_LIBRARY_PATH — Docker's prestart hook runs
+    # from the daemon's environment, not ours. If we let LD_LIBRARY_PATH mask
+    # the problem, the check passes but the container still fails with:
+    #   "libnvidia-ml.so.1: cannot open shared object file"
     if command -v nvidia-container-cli &>/dev/null; then
-        if nvidia-container-cli info &>/dev/null; then
-            return 0  # GPU runtime is healthy
+        # Strip LD_LIBRARY_PATH for an honest check (simulates Docker's hook env)
+        if env -u LD_LIBRARY_PATH nvidia-container-cli info &>/dev/null; then
+            # GPU runtime is healthy — set LD_LIBRARY_PATH as belt+suspenders
+            if $is_wsl; then
+                export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            fi
+            return 0
         fi
 
-        # nvidia-container-cli failed — ldconfig may need a Docker restart to take effect
-        warn "nvidia-container-cli failed — attempting Docker restart..."
+        # nvidia-container-cli failed — Docker daemon may need restart to see
+        # the updated ldconfig cache (daemon started before ldconfig ran)
+        warn "nvidia-container-cli cannot find NVIDIA libs — restarting Docker daemon..."
         local _dm
         _dm="$(_docker_method)"
         case "$_dm" in
@@ -219,9 +242,32 @@ _ensure_gpu_runtime() {
         esac
         sleep 3
 
-        if nvidia-container-cli info &>/dev/null; then
+        if env -u LD_LIBRARY_PATH nvidia-container-cli info &>/dev/null; then
             success "GPU runtime recovered after Docker restart"
+            if $is_wsl; then
+                export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            fi
             return 0
+        fi
+
+        # ── Last resort (WSL2): configure nvidia-container-cli library path ──
+        # If ldconfig + Docker restart didn't fix it, tell nvidia-container-cli
+        # where to find the libraries via its own config.
+        if $is_wsl && [ -d /usr/lib/wsl/lib ]; then
+            _ensure_wsl2_nvidia_cli_ldconfig
+            # Restart Docker one more time after config change
+            case "$_dm" in
+                snap)    sudo snap restart docker 2>/dev/null ;;
+                systemd) sudo systemctl restart docker 2>/dev/null ;;
+                service) sudo service docker restart 2>/dev/null ;;
+            esac
+            sleep 3
+
+            if env -u LD_LIBRARY_PATH nvidia-container-cli info &>/dev/null; then
+                success "GPU runtime recovered after nvidia-container-cli config update"
+                export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                return 0
+            fi
         fi
 
         # Still broken — fall back to CPU
@@ -230,6 +276,7 @@ _ensure_gpu_runtime() {
         warn "  To fix permanently:"
         if $is_wsl; then
             warn "    echo '/usr/lib/wsl/lib' | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf && sudo ldconfig"
+            warn "    Then restart Docker: sudo systemctl restart docker"
         fi
         warn "    Ensure nvidia-container-toolkit is installed and Docker is restarted"
         COMPOSE="docker compose"
@@ -238,6 +285,9 @@ _ensure_gpu_runtime() {
 
     # No nvidia-container-cli — check if Docker at least knows about NVIDIA runtime
     if docker info 2>/dev/null | grep -qi nvidia; then
+        if $is_wsl; then
+            export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        fi
         return 0
     fi
 
@@ -246,6 +296,65 @@ _ensure_gpu_runtime() {
     warn "  Install nvidia-container-toolkit to enable GPU containers"
     COMPOSE="docker compose"
     return 0
+}
+
+# ── WSL2: nvidia-container-runtime no-cgroups config ─────────────────────────
+# WSL2 doesn't have standard cgroup v1/v2 hierarchy that the NVIDIA container
+# runtime expects. Setting no-cgroups=true prevents "could not find cgroup"
+# errors. Idempotent — only modifies if needed.
+_ensure_wsl2_nvidia_runtime_config() {
+    local config_file="/etc/nvidia-container-runtime/config.toml"
+
+    # Only act if the config directory or nvidia-container-runtime exists
+    if [ -d /etc/nvidia-container-runtime ] || command -v nvidia-container-runtime &>/dev/null; then
+        sudo mkdir -p /etc/nvidia-container-runtime 2>/dev/null || return 0
+
+        if [ ! -f "$config_file" ]; then
+            # No config file — create a minimal one for WSL2
+            sudo tee "$config_file" >/dev/null 2>&1 <<'NCREOF'
+[nvidia-container-cli]
+no-cgroups = true
+ldconfig = "/sbin/ldconfig"
+NCREOF
+        elif ! grep -q '^no-cgroups' "$config_file" 2>/dev/null; then
+            # Config exists but no-cgroups not set — add it under [nvidia-container-cli]
+            if grep -q '\[nvidia-container-cli\]' "$config_file" 2>/dev/null; then
+                # Insert after the section header
+                sudo sed -i '/\[nvidia-container-cli\]/a no-cgroups = true' "$config_file" 2>/dev/null || true
+            else
+                # No section header — append both
+                printf '\n[nvidia-container-cli]\nno-cgroups = true\n' | sudo tee -a "$config_file" >/dev/null 2>&1
+            fi
+        fi
+    fi
+}
+
+# ── WSL2: ensure nvidia-container-cli uses system ldconfig ───────────────────
+# If nvidia-container-cli can't find libnvidia-ml.so.1 despite ldconfig cache
+# being correct, the cli's own config may override the ldconfig path.
+# This ensures it uses the system ldconfig which knows about /usr/lib/wsl/lib.
+_ensure_wsl2_nvidia_cli_ldconfig() {
+    local config_file="/etc/nvidia-container-runtime/config.toml"
+
+    if [ ! -f "$config_file" ]; then
+        _ensure_wsl2_nvidia_runtime_config
+        return
+    fi
+
+    # Ensure ldconfig path is set to system ldconfig
+    if grep -q '^ldconfig' "$config_file" 2>/dev/null; then
+        # Already has ldconfig setting — ensure it's correct
+        if ! grep -q 'ldconfig.*=.*"/sbin/ldconfig"' "$config_file" 2>/dev/null && \
+           ! grep -q "ldconfig.*=.*'/sbin/ldconfig'" "$config_file" 2>/dev/null; then
+            sudo sed -i 's|^ldconfig.*|ldconfig = "/sbin/ldconfig"|' "$config_file" 2>/dev/null || true
+        fi
+    elif grep -q '#.*ldconfig' "$config_file" 2>/dev/null; then
+        # Commented out — uncomment and set
+        sudo sed -i 's|^#.*ldconfig.*|ldconfig = "/sbin/ldconfig"|' "$config_file" 2>/dev/null || true
+    elif grep -q '\[nvidia-container-cli\]' "$config_file" 2>/dev/null; then
+        # Add under section header
+        sudo sed -i '/\[nvidia-container-cli\]/a ldconfig = "/sbin/ldconfig"' "$config_file" 2>/dev/null || true
+    fi
 }
 
 # ── Centralized compose-up wrapper ────────────────────────────────────────────
@@ -707,18 +816,19 @@ cmd_setup() {
                 # On WSL2, NVIDIA libraries live at /usr/lib/wsl/lib/ but
                 # nvidia-container-cli won't find them unless ldconfig knows.
                 # Error: "libnvidia-ml.so.1: cannot open shared object file"
-                if $is_wsl && [ -f /usr/lib/wsl/lib/libnvidia-ml.so.1 ]; then
-                    if ! ldconfig -p 2>/dev/null | grep -q libnvidia-ml; then
-                        info "Registering WSL2 NVIDIA libraries with ldconfig..."
-                        echo "/usr/lib/wsl/lib" | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf >/dev/null 2>&1
-                        sudo ldconfig 2>/dev/null
-                        if ldconfig -p 2>/dev/null | grep -q libnvidia-ml; then
-                            success "WSL2 NVIDIA libraries registered"
-                        else
-                            warn "Could not register WSL2 NVIDIA libs — GPU containers may fail"
-                            info "  Manual fix: echo '/usr/lib/wsl/lib' | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf && sudo ldconfig"
-                        fi
+                # ALWAYS run ldconfig (don't check ldconfig -p — it can be stale)
+                if $is_wsl && [ -d /usr/lib/wsl/lib ]; then
+                    info "Registering WSL2 NVIDIA libraries with ldconfig..."
+                    echo "/usr/lib/wsl/lib" | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf >/dev/null 2>&1
+                    sudo ldconfig 2>/dev/null
+                    if ldconfig -p 2>/dev/null | grep -q libnvidia-ml; then
+                        success "WSL2 NVIDIA libraries registered"
+                    else
+                        warn "Could not register WSL2 NVIDIA libs — GPU containers may fail"
+                        info "  Manual fix: echo '/usr/lib/wsl/lib' | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf && sudo ldconfig"
                     fi
+                    # Also ensure nvidia-container-runtime config for WSL2
+                    _ensure_wsl2_nvidia_runtime_config
                 fi
 
                 if ! docker info 2>/dev/null | grep -qi nvidia; then
