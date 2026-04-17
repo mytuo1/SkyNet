@@ -329,15 +329,10 @@ _ensure_gpu_runtime() {
         if $is_wsl; then
             warn "    • Ensure nvidia-container-toolkit is installed in WSL"
             warn "    • Run: ./skynet.sh setup  (auto-fixes config.toml + copies WSL libs)"
-            if [ "$(_docker_method)" = "snap" ]; then
-                warn "    • Snap Docker: sudo snap restart docker  (after fixes)"
-            else
-                _docker_restart_hint
-            fi
         else
             warn "    • Install nvidia-container-toolkit and restart Docker"
-            _docker_restart_hint
         fi
+        _docker_restart_hint
         COMPOSE="docker compose"
         return 0
     fi
