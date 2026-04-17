@@ -161,6 +161,39 @@ _nvidia_cli_check() {
     env -u LD_LIBRARY_PATH nvidia-container-cli info &>/dev/null
 }
 
+# ── Docker networking prerequisites ───────────────────────────────────────────
+# Docker containers need ip_forward and working iptables for bridge networking.
+# These can break when switching Docker installs (e.g. snap → apt), after
+# firewall changes, or after WSL restarts. This function is idempotent (<50ms).
+_ensure_docker_networking() {
+    # ip_forward must be enabled for container-to-container and container-to-internet
+    if [ -f /proc/sys/net/ipv4/ip_forward ]; then
+        local ip_fwd
+        ip_fwd=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "0")
+        if [ "$ip_fwd" != "1" ]; then
+            info "Enabling IP forwarding (required for Docker networking)..."
+            sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+        fi
+    fi
+
+    # Docker manages its own iptables rules, but after an install migration
+    # (snap → apt) the old rules are gone and the daemon may need a restart
+    # to re-create them. Check if the DOCKER chain exists in iptables.
+    if command -v iptables &>/dev/null; then
+        if ! sudo iptables -L DOCKER -n &>/dev/null 2>&1; then
+            info "Docker iptables rules missing — restarting Docker daemon..."
+            local _dm
+            _dm="$(_docker_method)"
+            case "$_dm" in
+                snap)    sudo snap restart docker 2>/dev/null ;;
+                systemd) sudo systemctl restart docker 2>/dev/null ;;
+                service) sudo service docker restart 2>/dev/null ;;
+            esac
+            sleep 3
+        fi
+    fi
+}
+
 # ── GPU Runtime Validation (called at every start/restart/update) ─────────────
 # When GPU_MODE=gpu is set in .env, this function ensures the NVIDIA container
 # runtime actually works before Docker tries to start GPU containers.
@@ -474,18 +507,32 @@ _fix_nvidia_ldconfig_real() {
     done
     [ -z "$config_file" ] && return 0
 
+    local changed=0
+
     # Always prefer @/sbin/ldconfig over @/sbin/ldconfig.real for portability.
     # The .real suffix is Ubuntu-specific and can break in hook contexts.
     if grep -q 'ldconfig.*@/sbin/ldconfig\.real' "$config_file" 2>/dev/null; then
         info "Fixing nvidia config: @/sbin/ldconfig.real → @/sbin/ldconfig (portable)"
         sudo sed -i 's|@/sbin/ldconfig\.real|@/sbin/ldconfig|g' "$config_file" 2>/dev/null
-        return 1  # config changed
+        changed=1
     fi
+
+    # Fix forced CDI mode → auto (CDI mode breaks prestart hook invocations)
+    if grep -q '^mode[[:space:]]*=' "$config_file" 2>/dev/null; then
+        if ! grep -q '^mode[[:space:]]*=[[:space:]]*"auto"' "$config_file" 2>/dev/null &&
+           ! grep -q "^mode[[:space:]]*=[[:space:]]*'auto'" "$config_file" 2>/dev/null; then
+            info "Fixing nvidia config: mode → auto (forced CDI breaks prestart hooks)"
+            sudo sed -i 's|^mode[[:space:]]*=.*|mode = "auto"|' "$config_file" 2>/dev/null
+            changed=1
+        fi
+    fi
+
+    [ "$changed" -eq 1 ] && return 1
     return 0
 }
 
 # ── WSL2: fix nvidia-container-toolkit config.toml for WSL2 ──────────────────
-# On WSL2, the default config.toml has two settings that break GPU containers:
+# On WSL2, the default config.toml has settings that break GPU containers:
 #
 # 1) ldconfig = "@/sbin/ldconfig.real"
 #    "ldconfig.real" is Ubuntu-specific and may not exist on all distros.
@@ -499,6 +546,12 @@ _fix_nvidia_ldconfig_real() {
 #    WSL2 lacks the standard cgroup device controller. Without no-cgroups=true,
 #    nvidia-container-cli fails with cgroup setup errors.
 #    Fix: no-cgroups = true
+#
+# 3) mode = "cdi" (user-set or stale)
+#    Forced CDI mode rejects the NVIDIA prestart hook, breaking any container
+#    that uses --gpus or deploy.resources.reservations.devices. Even with
+#    `runtime: nvidia`, forced CDI is fragile across toolkit/Docker versions.
+#    Fix: mode = "auto" (toolkit auto-detects best mode for each runtime)
 #
 # Returns 0 if config was already correct, 1 if changes were made (caller
 # must restart Docker for changes to take effect).
@@ -574,6 +627,25 @@ NCREOF
     elif grep -q '\[nvidia-container-cli\]' "$config_file" 2>/dev/null; then
         # Section exists but no ldconfig line — insert after header
         sudo sed -i '/\[nvidia-container-cli\]/a ldconfig = "@/sbin/ldconfig"' "$config_file" 2>/dev/null
+        changed=1
+    fi
+
+    # ── Fix 3: mode = "auto" (never force "cdi") ────────────────────────
+    # nvidia-container-toolkit v1.17+ supports three modes: "auto", "legacy",
+    # and "cdi". Forcing "cdi" breaks any container that triggers the NVIDIA
+    # prestart hook directly (e.g. --gpus flag, deploy.resources.reservations),
+    # producing: "Using requested mode 'cdi' — invoking the NVIDIA Container
+    # Runtime Hook directly is not supported." Even with `runtime: nvidia` in
+    # gpu.yml, forced CDI mode is fragile and breaks on toolkit/Docker version
+    # skew. "auto" lets the toolkit pick the best mode for the runtime used.
+    # We check the [nvidia-container-runtime] section (NOT [nvidia-container-cli]).
+    if grep -q '^mode[[:space:]]*=[[:space:]]*"auto"' "$config_file" 2>/dev/null; then
+        : # already correct
+    elif grep -q "^mode[[:space:]]*=[[:space:]]*'auto'" "$config_file" 2>/dev/null; then
+        : # already correct (single quotes)
+    elif grep -q '^mode[[:space:]]*=' "$config_file" 2>/dev/null; then
+        # mode set to something other than "auto" (e.g. "cdi") — fix it
+        sudo sed -i 's|^mode[[:space:]]*=.*|mode = "auto"|' "$config_file" 2>/dev/null
         changed=1
     fi
 
@@ -1534,6 +1606,9 @@ cmd_start() {
     banner
     check_deps
 
+    # Ensure Docker networking (ip_forward + iptables) is healthy before anything
+    _ensure_docker_networking
+
     # Validate GPU runtime + re-evaluate COMPOSE before any compose operations
     _ensure_gpu_runtime
     COMPOSE="$(_compose_files)"
@@ -1631,6 +1706,9 @@ cmd_stop() {
 
 cmd_restart() {
     banner
+
+    # Ensure Docker networking is healthy before restarting
+    _ensure_docker_networking
 
     # Validate GPU runtime + re-evaluate COMPOSE before restarting
     _ensure_gpu_runtime

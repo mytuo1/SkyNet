@@ -12,7 +12,12 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 def wait_for_redis(max_retries: int = 30):
     for i in range(max_retries):
         try:
-            r = redis.from_url(REDIS_URL, decode_responses=True)
+            r = redis.from_url(
+                REDIS_URL,
+                decode_responses=True,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+            )
             r.ping()
             print(f"Redis connected after {i+1} attempts")
             return r
