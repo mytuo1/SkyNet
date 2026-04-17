@@ -238,8 +238,11 @@ _ensure_gpu_runtime() {
 
         # WSL2: fix nvidia-container-toolkit config.toml
         # This fixes BOTH issues that break GPU containers on WSL2:
-        #   1) ldconfig = "@/sbin/ldconfig.real" → "/sbin/ldconfig"
-        #      (the "@" prefix resolves libs from container rootfs, missing WSL paths)
+        #   1) ldconfig = "@/sbin/ldconfig.real" → "@/sbin/ldconfig"
+        #      ("ldconfig.real" is Ubuntu-specific; "/sbin/ldconfig" is portable.
+        #       The "@" prefix is required by toolkit v1.17+ for host-relative paths.
+        #       Since we registered /usr/lib/wsl/lib with ldconfig above, the host
+        #       ldconfig cache now includes WSL2 NVIDIA libs.)
         #   2) no-cgroups = false → true
         #      (WSL2 lacks standard cgroup device controller)
         if ! _ensure_wsl2_nvidia_config; then
@@ -356,10 +359,12 @@ _ensure_gpu_runtime() {
 # On WSL2, the default config.toml has two settings that break GPU containers:
 #
 # 1) ldconfig = "@/sbin/ldconfig.real"
-#    The "@" prefix tells nvidia-container-cli to resolve library paths from the
-#    CONTAINER rootfs — where /usr/lib/wsl/lib/ doesn't exist. This causes:
-#      "libnvidia-ml.so.1: cannot open shared object file"
-#    Fix: ldconfig = "/sbin/ldconfig" (no "@", uses host's ldconfig directly)
+#    "ldconfig.real" is Ubuntu-specific and may not exist on all distros.
+#    Fix: ldconfig = "@/sbin/ldconfig" (portable path, "@" = host-relative)
+#    The "@" prefix is REQUIRED by nvidia-container-toolkit v1.17+ and tells
+#    nvidia-container-cli to use the host's ldconfig binary. This works because
+#    we register /usr/lib/wsl/lib with ldconfig BEFORE this fix runs, so the
+#    host cache already includes the WSL2 NVIDIA libraries.
 #
 # 2) no-cgroups = false (or commented out)
 #    WSL2 lacks the standard cgroup device controller. Without no-cgroups=true,
@@ -388,7 +393,7 @@ _ensure_wsl2_nvidia_config() {
             sudo tee "$config_file" >/dev/null 2>&1 <<'NCREOF'
 [nvidia-container-cli]
 no-cgroups = true
-ldconfig = "/sbin/ldconfig"
+ldconfig = "@/sbin/ldconfig"
 NCREOF
             return 1  # config was created — Docker restart needed
         fi
@@ -418,24 +423,28 @@ NCREOF
         changed=1
     fi
 
-    # ── Fix 2: ldconfig = "/sbin/ldconfig" (no "@" prefix) ────────────────
-    # The "@" prefix causes library resolution from the container rootfs context,
-    # where /usr/lib/wsl/lib/ is invisible. Must use host ldconfig directly.
-    if grep -q '^ldconfig[[:space:]]*=[[:space:]]*"/sbin/ldconfig"' "$config_file" 2>/dev/null; then
-        : # already correct (exactly "/sbin/ldconfig" without @)
-    elif grep -q "^ldconfig[[:space:]]*=[[:space:]]*'/sbin/ldconfig'" "$config_file" 2>/dev/null; then
+    # ── Fix 2: ldconfig = "@/sbin/ldconfig" (host-relative, portable) ─────
+    # The "@" prefix is REQUIRED by nvidia-container-toolkit v1.17+ and means
+    # "use this binary from the host". Without "@", the toolkit rejects the
+    # config with: 'ldconfig value is not host-relative (does not start with @)'.
+    # We use "/sbin/ldconfig" instead of the Ubuntu-specific "/sbin/ldconfig.real"
+    # for portability. The host ldconfig cache includes WSL2 NVIDIA libs because
+    # we register /usr/lib/wsl/lib with ldconfig before reaching this point.
+    if grep -q '^ldconfig[[:space:]]*=[[:space:]]*"@/sbin/ldconfig"' "$config_file" 2>/dev/null; then
+        : # already correct ("@/sbin/ldconfig")
+    elif grep -q "^ldconfig[[:space:]]*=[[:space:]]*'@/sbin/ldconfig'" "$config_file" 2>/dev/null; then
         : # already correct (single quotes)
     elif grep -q '^ldconfig' "$config_file" 2>/dev/null; then
-        # Has ldconfig but wrong value (e.g. "@/sbin/ldconfig.real") — replace
-        sudo sed -i 's|^ldconfig.*|ldconfig = "/sbin/ldconfig"|' "$config_file" 2>/dev/null
+        # Has ldconfig but wrong value (e.g. "@/sbin/ldconfig.real" or "/sbin/ldconfig") — replace
+        sudo sed -i 's|^ldconfig.*|ldconfig = "@/sbin/ldconfig"|' "$config_file" 2>/dev/null
         changed=1
     elif grep -q '^#.*ldconfig' "$config_file" 2>/dev/null; then
         # Commented out — replace with correct value
-        sudo sed -i 's|^#.*ldconfig.*|ldconfig = "/sbin/ldconfig"|' "$config_file" 2>/dev/null
+        sudo sed -i 's|^#.*ldconfig.*|ldconfig = "@/sbin/ldconfig"|' "$config_file" 2>/dev/null
         changed=1
     elif grep -q '\[nvidia-container-cli\]' "$config_file" 2>/dev/null; then
         # Section exists but no ldconfig line — insert after header
-        sudo sed -i '/\[nvidia-container-cli\]/a ldconfig = "/sbin/ldconfig"' "$config_file" 2>/dev/null
+        sudo sed -i '/\[nvidia-container-cli\]/a ldconfig = "@/sbin/ldconfig"' "$config_file" 2>/dev/null
         changed=1
     fi
 
@@ -934,7 +943,7 @@ cmd_setup() {
                         info "  Manual fix: echo '/usr/lib/wsl/lib' | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf && sudo ldconfig"
                     fi
                     # Fix nvidia-container-toolkit config.toml for WSL2
-                    # (no-cgroups=true + ldconfig="/sbin/ldconfig")
+                    # (no-cgroups=true + ldconfig="@/sbin/ldconfig")
                     local _wsl_setup_needs_restart=false
                     _ensure_wsl2_nvidia_config || _wsl_setup_needs_restart=true
                     # Snap Docker: also restart if libs were copied (snap caches fs state)
