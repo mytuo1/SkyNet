@@ -50,6 +50,7 @@ case "$(uname -s)" in
 esac
 
 COMPOSE="docker compose"
+_GPU_FALLBACK=false  # set true by _ensure_gpu_runtime() when GPU is broken
 BUILD_MAX_RETRIES=3
 GATEWAY_URL="http://localhost:8000"
 AUTONOMY_URL="http://localhost:8018"
@@ -60,6 +61,13 @@ AUTONOMY_URL="http://localhost:8018"
 # This avoids "nvidia-container-cli: initialization error" on machines where
 # the NVIDIA container runtime is not available (WSL2 snap Docker, CPU-only).
 _compose_files() {
+    # If _ensure_gpu_runtime() fell back to CPU for this session, never
+    # include the GPU overlay — even if GPU_MODE=gpu is still in .env.
+    # The user can fix the issue and restart to re-evaluate.
+    if $_GPU_FALLBACK; then
+        echo "docker compose"
+        return
+    fi
     if [ -f .env ] && grep -q '^GPU_MODE=gpu' .env 2>/dev/null; then
         if [ -f docker-compose.gpu.yml ]; then
             echo "docker compose -f docker-compose.yml -f docker-compose.gpu.yml"
@@ -216,6 +224,10 @@ _ensure_docker_networking() {
                 sudo update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true
                 sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
                 _need_docker_restart=true
+            else
+                warn "WSL2: iptables-legacy not found — Docker bridge networking may not work"
+                warn "  Fix: sudo apt-get update && sudo apt-get install -y iptables"
+                warn "  Then restart: ./skynet.sh restart"
             fi
         fi
     fi
@@ -490,6 +502,7 @@ _ensure_gpu_runtime() {
             warn "    • Run: sudo nvidia-ctk runtime configure --runtime=docker"
         fi
         _docker_restart_hint
+        _GPU_FALLBACK=true
         COMPOSE="docker compose"
         return 0
     fi
@@ -505,6 +518,7 @@ _ensure_gpu_runtime() {
     # No NVIDIA runtime at all — fall back to CPU
     warn "NVIDIA container runtime not detected — falling back to CPU for this session"
     warn "  Install nvidia-container-toolkit to enable GPU containers"
+    _GPU_FALLBACK=true
     COMPOSE="docker compose"
     return 0
 }
@@ -715,11 +729,13 @@ NCREOF
 # ── Centralized compose-up wrapper ────────────────────────────────────────────
 # EVERY code path that starts containers MUST use this wrapper.
 # It guarantees GPU runtime validation before any `docker compose up`.
+# --remove-orphans cleans up stale containers from previous Docker sessions
+# (e.g. after a Windows restart or WSL reboot where containers weren't stopped).
 _compose_up() {
     _ensure_gpu_runtime
     # Re-evaluate COMPOSE in case _ensure_gpu_runtime fell back to CPU
     COMPOSE="$(_compose_files)"
-    $COMPOSE up "$@"
+    $COMPOSE up --remove-orphans "$@"
 }
 
 # ── Dependency Checks ─────────────────────────────────────────────────────────
@@ -1675,7 +1691,7 @@ cmd_start() {
 
     # ── Phase 1: Infrastructure first (always hot, zero cold starts) ─────────
     info "Starting infrastructure (Redis, Elasticsearch, EdgeDB)..."
-    $COMPOSE up -d redis elasticsearch edgedb
+    $COMPOSE up --remove-orphans -d redis elasticsearch edgedb
 
     info "Waiting for databases to be healthy..."
     local retries=0
