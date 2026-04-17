@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+# Pre-install all database client libraries at build time so the init
+# container doesn't need internet access at runtime.  This fixes the
+# "Network is unreachable" pip failure that occurs when Docker's default
+# bridge network cannot reach the internet (common after switching Docker
+# installs, firewall changes, or corporate proxies).
+COPY redis/requirements.txt       /tmp/req-redis.txt
+COPY elasticsearch/requirements.txt /tmp/req-es.txt
+COPY edgedb/requirements.txt      /tmp/req-edgedb.txt
+
+RUN pip install --no-cache-dir \
+    -r /tmp/req-redis.txt \
+    -r /tmp/req-es.txt \
+    -r /tmp/req-edgedb.txt && \
+    rm -f /tmp/req-*.txt

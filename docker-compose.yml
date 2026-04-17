@@ -172,11 +172,12 @@ services:
   # Idempotent: safe to run on every deploy. All scripts check before creating.
   # Creates indices, applies schema migrations, seeds base data.
   db-init:
-    image: python:3.12-slim
+    build:
+      context: ./databases
+      dockerfile: Dockerfile.init
     container_name: brain_db_init
     command: >
       sh -c "
-        pip install -q redis==5.0.4 elasticsearch==8.13.0 edgedb==2.2.0 &&
         echo '--- Redis init ---' &&
         python /init/redis/init.py &&
         echo '--- Elasticsearch init ---' &&

@@ -56,7 +56,7 @@ AUTONOMY_URL="http://localhost:8018"
 
 # ── GPU override ──────────────────────────────────────────────────────────────
 # When GPU_MODE=gpu is set in .env (written by setup), compose includes the
-# docker-compose.gpu.yml override which adds NVIDIA device reservations.
+# docker-compose.gpu.yml override which adds `runtime: nvidia` to the learner.
 # This avoids "nvidia-container-cli: initialization error" on machines where
 # the NVIDIA container runtime is not available (WSL2 snap Docker, CPU-only).
 _compose_files() {
@@ -420,9 +420,10 @@ _ensure_gpu_runtime() {
 }
 
 # ── Ensure Docker daemon is configured with NVIDIA runtime ────────────────────
-# Docker must have the nvidia runtime registered in daemon.json for GPU device
-# requests (deploy.resources.reservations.devices) to work. Without this,
-# Docker's prestart hooks can't invoke nvidia-container-cli.
+# Docker must have the nvidia runtime registered in daemon.json for the
+# `runtime: nvidia` directive in docker-compose.gpu.yml to work. This is the
+# correct approach for both CDI and legacy modes (unlike deploy.resources which
+# only works in legacy mode and fails with "Using requested mode 'cdi'").
 # Runs nvidia-ctk runtime configure if needed, then restarts Docker.
 _ensure_nvidia_docker_configured() {
     # Already configured?
