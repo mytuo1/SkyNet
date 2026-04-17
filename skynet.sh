@@ -223,6 +223,11 @@ _ensure_gpu_runtime() {
         if $_wsl_copy_changed; then
             sudo ldconfig 2>/dev/null
             info "Copied WSL2 NVIDIA libraries into /usr/lib/x86_64-linux-gnu/"
+            # Snap Docker runs in a confined AppArmor context that may cache
+            # filesystem state. Force a daemon restart so it sees the new libs.
+            if [ "$(_docker_method)" = "snap" ]; then
+                wsl_config_changed=true
+            fi
         fi
 
         # Verify the ldconfig cache was actually updated
@@ -316,13 +321,23 @@ _ensure_gpu_runtime() {
         # Still broken — fall back to CPU
         warn "NVIDIA GPU runtime is not working — falling back to CPU for this session"
         warn "  The learner will start on CPU (slower but functional)"
-        warn "  To fix permanently:"
+        warn ""
+        warn "  To retry with GPU after fixing the issue:"
+        warn "    ./skynet.sh restart   (re-validates GPU runtime before starting)"
+        warn ""
+        warn "  Common fixes:"
         if $is_wsl; then
-            warn "    1. sudo nano /etc/nvidia-container-runtime/config.toml"
-            warn "       Set: no-cgroups = true  AND  ldconfig = \"/sbin/ldconfig\""
-            warn "    2. sudo systemctl restart docker"
+            warn "    • Ensure nvidia-container-toolkit is installed in WSL"
+            warn "    • Run: ./skynet.sh setup  (auto-fixes config.toml + copies WSL libs)"
+            if [ "$(_docker_method)" = "snap" ]; then
+                warn "    • Snap Docker: sudo snap restart docker  (after fixes)"
+            else
+                _docker_restart_hint
+            fi
+        else
+            warn "    • Install nvidia-container-toolkit and restart Docker"
+            _docker_restart_hint
         fi
-        warn "    Ensure nvidia-container-toolkit is installed and Docker is restarted"
         COMPOSE="docker compose"
         return 0
     fi
@@ -925,7 +940,22 @@ cmd_setup() {
                     fi
                     # Fix nvidia-container-toolkit config.toml for WSL2
                     # (no-cgroups=true + ldconfig="/sbin/ldconfig")
-                    _ensure_wsl2_nvidia_config || true
+                    local _wsl_setup_needs_restart=false
+                    _ensure_wsl2_nvidia_config || _wsl_setup_needs_restart=true
+                    # Snap Docker: also restart if libs were copied (snap caches fs state)
+                    if [ "$_dmethod" = "snap" ]; then
+                        _wsl_setup_needs_restart=true
+                    fi
+                    if $_wsl_setup_needs_restart; then
+                        info "Restarting Docker daemon to apply WSL2 NVIDIA fixes..."
+                        case "$_dmethod" in
+                            snap)    sudo snap restart docker 2>/dev/null ;;
+                            systemd) sudo systemctl restart docker 2>/dev/null ;;
+                            service) sudo service docker restart 2>/dev/null ;;
+                            desktop) info "Please restart Docker Desktop from the system tray" ;;
+                        esac
+                        sleep 3
+                    fi
                 fi
 
                 if ! docker info 2>/dev/null | grep -qi nvidia; then
