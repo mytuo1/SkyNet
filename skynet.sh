@@ -153,6 +153,14 @@ _nvidia_ctk_hint() {
     fi
 }
 
+# ── nvidia-container-cli honest check ─────────────────────────────────────────
+# Runs nvidia-container-cli WITHOUT LD_LIBRARY_PATH to simulate the environment
+# Docker's prestart hook uses. This prevents false positives: if the check only
+# passes because of LD_LIBRARY_PATH, Docker's hook will still fail.
+_nvidia_cli_check() {
+    env -u LD_LIBRARY_PATH nvidia-container-cli info &>/dev/null
+}
+
 # ── GPU Runtime Validation (called at every start/restart/update) ─────────────
 # When GPU_MODE=gpu is set in .env, this function ensures the NVIDIA container
 # runtime actually works before Docker tries to start GPU containers.
@@ -221,7 +229,7 @@ _ensure_gpu_runtime() {
     #   "libnvidia-ml.so.1: cannot open shared object file"
     if command -v nvidia-container-cli &>/dev/null; then
         # Strip LD_LIBRARY_PATH for an honest check (simulates Docker's hook env)
-        if env -u LD_LIBRARY_PATH nvidia-container-cli info &>/dev/null; then
+        if _nvidia_cli_check; then
             # GPU runtime is healthy — set LD_LIBRARY_PATH as belt+suspenders
             if $is_wsl; then
                 export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -242,7 +250,7 @@ _ensure_gpu_runtime() {
         esac
         sleep 3
 
-        if env -u LD_LIBRARY_PATH nvidia-container-cli info &>/dev/null; then
+        if _nvidia_cli_check; then
             success "GPU runtime recovered after Docker restart"
             if $is_wsl; then
                 export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -263,7 +271,7 @@ _ensure_gpu_runtime() {
             esac
             sleep 3
 
-            if env -u LD_LIBRARY_PATH nvidia-container-cli info &>/dev/null; then
+            if _nvidia_cli_check; then
                 success "GPU runtime recovered after nvidia-container-cli config update"
                 export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
                 return 0
