@@ -162,9 +162,16 @@ _nvidia_cli_check() {
 }
 
 # ── Docker networking prerequisites ───────────────────────────────────────────
-# Docker containers need ip_forward and working iptables for bridge networking.
-# These can break when switching Docker installs (e.g. snap → apt), after
-# firewall changes, or after WSL restarts. This function is idempotent (<50ms).
+# Docker containers need ip_forward, br_netfilter, and working iptables for
+# bridge networking.  These can break when switching Docker installs (e.g.
+# snap → apt), after firewall changes, or after WSL restarts.
+#
+# Snap Docker bundles its own networking stack and doesn't rely on the host's
+# iptables binary.  Docker CE (apt) does — and on WSL2, Ubuntu defaults to
+# iptables-nft (nftables backend).  Docker's iptables rules *appear* to exist
+# but the WSL2 kernel's nftables implementation doesn't enforce them correctly,
+# silently breaking container-to-container communication and port publishing.
+# The fix: switch to iptables-legacy on WSL2.  This is idempotent and safe.
 _ensure_docker_networking() {
     # ip_forward must be enabled for container-to-container and container-to-internet
     if [ -f /proc/sys/net/ipv4/ip_forward ]; then
@@ -176,20 +183,70 @@ _ensure_docker_networking() {
         fi
     fi
 
+    # br_netfilter is required for iptables rules to apply to bridge traffic.
+    # Without it, containers on the same bridge can't communicate via iptables
+    # NAT/filter rules.  Harmless no-op if already loaded or not available.
+    if [ -f /proc/sys/net/bridge/bridge-nf-call-iptables ] 2>/dev/null; then
+        : # already loaded
+    else
+        sudo modprobe br_netfilter 2>/dev/null || true
+    fi
+    # Ensure bridge-nf-call-iptables is enabled (Docker needs this)
+    if [ -f /proc/sys/net/bridge/bridge-nf-call-iptables ]; then
+        local bnf
+        bnf=$(cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo "0")
+        if [ "$bnf" != "1" ]; then
+            sudo sysctl -w net.bridge.bridge-nf-call-iptables=1 >/dev/null 2>&1 || true
+        fi
+    fi
+
+    # ── WSL2 iptables-nft → iptables-legacy fix ──────────────────────────────
+    # Snap Docker bundles its own iptables; Docker CE (apt) uses the host's.
+    # WSL2 defaults to iptables-nft, which silently breaks Docker bridge
+    # networking: rules appear to exist but packets aren't forwarded.
+    # Switching to iptables-legacy fixes this.  Safe and idempotent.
+    local _need_docker_restart=false
+    if [ "$OS" = "wsl" ] && command -v update-alternatives &>/dev/null; then
+        local _cur_ipt
+        _cur_ipt=$(update-alternatives --query iptables 2>/dev/null \
+                   | awk '/^Value:/{print $2}') || true
+        if [ -n "$_cur_ipt" ] && [[ "$_cur_ipt" == *"nft"* ]]; then
+            if [ -x /usr/sbin/iptables-legacy ]; then
+                info "WSL2: switching iptables to legacy mode (nft breaks Docker bridge networking)..."
+                sudo update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true
+                sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
+                _need_docker_restart=true
+            fi
+        fi
+    fi
+
     # Docker manages its own iptables rules, but after an install migration
     # (snap → apt) the old rules are gone and the daemon may need a restart
     # to re-create them. Check if the DOCKER chain exists in iptables.
     if command -v iptables &>/dev/null; then
         if ! sudo iptables -L DOCKER -n &>/dev/null 2>&1; then
-            info "Docker iptables rules missing — restarting Docker daemon..."
-            local _dm
-            _dm="$(_docker_method)"
-            case "$_dm" in
-                snap)    sudo snap restart docker 2>/dev/null ;;
-                systemd) sudo systemctl restart docker 2>/dev/null ;;
-                service) sudo service docker restart 2>/dev/null ;;
-            esac
-            sleep 3
+            _need_docker_restart=true
+        fi
+    fi
+
+    if $_need_docker_restart; then
+        info "Docker networking needs repair — restarting Docker daemon..."
+        local _dm
+        _dm="$(_docker_method)"
+        case "$_dm" in
+            snap)    sudo snap restart docker 2>/dev/null ;;
+            systemd) sudo systemctl restart docker 2>/dev/null ;;
+            service) sudo service docker restart 2>/dev/null ;;
+        esac
+        sleep 3
+        # Verify the DOCKER chain was created after restart
+        if command -v iptables &>/dev/null; then
+            if sudo iptables -L DOCKER -n &>/dev/null 2>&1; then
+                success "Docker networking restored"
+            else
+                warn "Docker iptables chain still missing — bridge networking may not work"
+                warn "Try: sudo systemctl restart docker"
+            fi
         fi
     fi
 }

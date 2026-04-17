@@ -189,6 +189,7 @@ services:
     volumes:
       - ./databases:/init:ro
     environment:
+      - PYTHONUNBUFFERED=1
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-http://elasticsearch:9200}
       - EDGEDB_DSN=${EDGEDB_DSN:-edgedb://edgedb/main}
