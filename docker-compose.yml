@@ -525,15 +525,15 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${LEARNER_MAX_MEMORY:-8g}
+          memory: ${LEARNER_MAX_MEMORY:-16g}
         reservations:
           memory: 2g
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8016/health')"]
-      interval: 30s
+      interval: 60s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 3
+      start_period: 600s
 
   # ── Vision (optional — requires camera or can use image upload) ────────────
   # Enable: docker compose --profile vision up -d

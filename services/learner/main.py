@@ -375,8 +375,8 @@ def _load_models_sync():
             print(f"  CUDA version: {torch.version.cuda}")
             print(f"  GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
         else:
-            # Diagnostics: explain WHY CUDA is unavailable
-            print(f"  CUDA not available — diagnostics:")
+            # Advisory: explain why running in CPU mode (not an error — just FYI)
+            print(f"  (FYI) CUDA not available — running in CPU mode. Diagnostics:")
             print(f"    torch.version.cuda = {torch.version.cuda}")
             print(f"    torch.backends.cuda.is_built() = {torch.backends.cuda.is_built()}")
             if not torch.backends.cuda.is_built():
@@ -385,8 +385,27 @@ def _load_models_sync():
                 print(f"    torch.cuda.device_count() = {torch.cuda.device_count()}")
                 if torch.cuda.device_count() == 0:
                     print(f"    → No GPU devices visible to PyTorch")
-                    print(f"    → Check: NVIDIA runtime in docker-compose.gpu.yml, nvidia-smi in container")
                 print(f"    NVIDIA_VISIBLE_DEVICES = {os.environ.get('NVIDIA_VISIBLE_DEVICES', '(not set)')}")
+
+            # Check if nvidia-smi is available inside the container
+            # This tells us whether the NVIDIA runtime is injecting drivers
+            import subprocess
+            try:
+                nvsmi = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if nvsmi.returncode == 0 and nvsmi.stdout.strip():
+                    print(f"    nvidia-smi sees GPU: {nvsmi.stdout.strip()}")
+                    print(f"    → GPU is exposed but PyTorch can't see it — likely driver/toolkit mismatch")
+                else:
+                    print(f"    nvidia-smi: no GPUs found in container")
+                    print(f"    (To enable GPU: set GPU_MODE=gpu in .env → ./skynet.sh restart)")
+            except FileNotFoundError:
+                print(f"    nvidia-smi: not found in container (NVIDIA runtime not active)")
+                print(f"    (To enable GPU: set GPU_MODE=gpu in .env → ./skynet.sh restart)")
+            except Exception as nvsmi_err:
+                print(f"    nvidia-smi check failed: {nvsmi_err}")
 
         model_kwargs = {
             "trust_remote_code": True,
@@ -415,9 +434,10 @@ def _load_models_sync():
             # CPU path: float32, NO quantization (bitsandbytes 4-bit requires CUDA)
             model_kwargs["torch_dtype"] = torch.float32
             print("  Loading in float32 (CPU mode — 4-bit quantization requires CUDA)")
-            # Warn about memory: float32 model can exceed Docker memory limit
+            # Check Docker cgroup memory limit — abort early if model won't fit
+            # (prevents infinite OOM-kill → restart loop)
+            _mem_abort = False
             try:
-                # Check Docker cgroup memory limit
                 cgroup_limit = None
                 for cgroup_path in ["/sys/fs/cgroup/memory.max",
                                     "/sys/fs/cgroup/memory/memory.limit_in_bytes"]:
@@ -431,12 +451,22 @@ def _load_models_sync():
                         continue
                 if cgroup_limit:
                     limit_gb = cgroup_limit / 1024**3
-                    print(f"  ⚠ Container memory limit: {limit_gb:.1f} GB")
+                    print(f"  Container memory limit: {limit_gb:.1f} GB")
                     if limit_gb < 12:
-                        print(f"  ⚠ float32 model may exceed {limit_gb:.1f} GB limit and get OOM-killed")
-                        print(f"  ⚠ Increase LEARNER_MAX_MEMORY in .env or enable GPU mode for 4-bit quantization")
+                        print(f"  ✗ ABORTING: float32 model needs ~10-12 GB but container only has {limit_gb:.1f} GB")
+                        print(f"  ✗ Without this guard the container gets OOM-killed and restarts forever")
+                        print(f"  ✗ Fix options:")
+                        print(f"    1. Enable GPU:    set GPU_MODE=gpu in .env → ./skynet.sh restart")
+                        print(f"       (4-bit quantization uses only ~2-3 GB VRAM)")
+                        print(f"    2. More memory:   set LEARNER_MAX_MEMORY=16g in .env → ./skynet.sh restart")
+                        _mem_abort = True
             except Exception:
-                pass
+                pass  # cgroup read failed — proceed optimistically
+            if _mem_abort:
+                raise MemoryError(
+                    f"Container memory limit ({limit_gb:.1f} GB) too low for float32 model. "
+                    f"Set GPU_MODE=gpu or LEARNER_MAX_MEMORY=16g in .env"
+                )
 
         # Try loading model with retries:
         #  1. Normal load (may include 4-bit quantization on GPU)
