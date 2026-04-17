@@ -502,6 +502,7 @@ services:
         TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
     container_name: brain_learner
     environment:
+      - PYTHONUNBUFFERED=1
       - LOCAL_MODEL_NAME=${LOCAL_MODEL_NAME:-microsoft/phi-4-mini-instruct}
       - LOCAL_MODEL_PATH=/models/local_llm
       - ADAPTER_PATH=/models/adapters

@@ -374,6 +374,19 @@ def _load_models_sync():
         if has_cuda:
             print(f"  CUDA version: {torch.version.cuda}")
             print(f"  GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        else:
+            # Diagnostics: explain WHY CUDA is unavailable
+            print(f"  CUDA not available — diagnostics:")
+            print(f"    torch.version.cuda = {torch.version.cuda}")
+            print(f"    torch.backends.cuda.is_built() = {torch.backends.cuda.is_built()}")
+            if not torch.backends.cuda.is_built():
+                print(f"    → PyTorch was built WITHOUT CUDA support (CPU-only wheel)")
+            else:
+                print(f"    torch.cuda.device_count() = {torch.cuda.device_count()}")
+                if torch.cuda.device_count() == 0:
+                    print(f"    → No GPU devices visible to PyTorch")
+                    print(f"    → Check: NVIDIA runtime in docker-compose.gpu.yml, nvidia-smi in container")
+                print(f"    NVIDIA_VISIBLE_DEVICES = {os.environ.get('NVIDIA_VISIBLE_DEVICES', '(not set)')}")
 
         model_kwargs = {
             "trust_remote_code": True,
@@ -402,6 +415,28 @@ def _load_models_sync():
             # CPU path: float32, NO quantization (bitsandbytes 4-bit requires CUDA)
             model_kwargs["torch_dtype"] = torch.float32
             print("  Loading in float32 (CPU mode — 4-bit quantization requires CUDA)")
+            # Warn about memory: float32 model can exceed Docker memory limit
+            try:
+                # Check Docker cgroup memory limit
+                cgroup_limit = None
+                for cgroup_path in ["/sys/fs/cgroup/memory.max",
+                                    "/sys/fs/cgroup/memory/memory.limit_in_bytes"]:
+                    try:
+                        with open(cgroup_path) as f:
+                            val = f.read().strip()
+                            if val != "max" and val != "9223372036854771712":
+                                cgroup_limit = int(val)
+                                break
+                    except (FileNotFoundError, ValueError):
+                        continue
+                if cgroup_limit:
+                    limit_gb = cgroup_limit / 1024**3
+                    print(f"  ⚠ Container memory limit: {limit_gb:.1f} GB")
+                    if limit_gb < 12:
+                        print(f"  ⚠ float32 model may exceed {limit_gb:.1f} GB limit and get OOM-killed")
+                        print(f"  ⚠ Increase LEARNER_MAX_MEMORY in .env or enable GPU mode for 4-bit quantization")
+            except Exception:
+                pass
 
         # Try loading model with retries:
         #  1. Normal load (may include 4-bit quantization on GPU)
@@ -433,6 +468,7 @@ def _load_models_sync():
                 # Attempt A: Strip quantization and retry on GPU
                 if "quantization_config" in model_kwargs and is_quant_error:
                     print(f"  Quantization failed: {e}")
+                    traceback.print_exc()
                     print("  Retrying without 4-bit quantization (GPU float16)...")
                     model_kwargs.pop("quantization_config", None)
                     use_quantization = False
@@ -441,6 +477,7 @@ def _load_models_sync():
                 # Attempt B: Fall back from GPU to CPU entirely
                 if has_cuda and (is_quant_error or is_gpu_error):
                     print(f"  GPU load failed: {e}")
+                    traceback.print_exc()
                     print("  Falling back to CPU (float32, no quantization)...")
                     model_kwargs.pop("quantization_config", None)
                     model_kwargs.pop("device_map", None)
