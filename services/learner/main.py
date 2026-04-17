@@ -419,35 +419,43 @@ def _load_models_sync():
             print(f"  GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
         else:
             # Advisory: explain why running in CPU mode (not an error — just FYI)
+            gpu_mode = os.environ.get('GPU_MODE', 'cpu')
             print(f"  (FYI) CUDA not available — running in CPU mode. Diagnostics:")
-            print(f"    torch.version.cuda = {torch.version.cuda}")
-            print(f"    torch.backends.cuda.is_built() = {torch.backends.cuda.is_built()}")
-            if not torch.backends.cuda.is_built():
-                print(f"    → PyTorch was built WITHOUT CUDA support (CPU-only wheel)")
+            print(f"    GPU_MODE={gpu_mode}")
+            if gpu_mode != 'gpu':
+                print(f"    → Container started without NVIDIA runtime (GPU_MODE≠gpu)")
+                print(f"    → Host may have NVIDIA drivers, but docker-compose.gpu.yml was not loaded")
+                print(f"    (To enable GPU: run ./skynet.sh setup and select GPU, or set GPU_MODE=gpu in .env)")
             else:
-                print(f"    torch.cuda.device_count() = {torch.cuda.device_count()}")
-                if torch.cuda.device_count() == 0:
-                    print(f"    → No GPU devices visible to PyTorch")
-                print(f"    NVIDIA_VISIBLE_DEVICES = {os.environ.get('NVIDIA_VISIBLE_DEVICES', '(not set)')}")
-
-            # Check if nvidia-smi is available inside the container
-            # This tells us whether the NVIDIA runtime is injecting drivers
-            try:
-                nvsmi = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if nvsmi.returncode == 0 and nvsmi.stdout.strip():
-                    print(f"    nvidia-smi sees GPU: {nvsmi.stdout.strip()}")
-                    print(f"    → GPU is exposed but PyTorch can't see it — likely driver/toolkit mismatch")
+                # GPU_MODE=gpu but CUDA still not available — runtime issue
+                print(f"    torch.version.cuda = {torch.version.cuda}")
+                print(f"    torch.backends.cuda.is_built() = {torch.backends.cuda.is_built()}")
+                if not torch.backends.cuda.is_built():
+                    print(f"    → PyTorch was built WITHOUT CUDA support (CPU-only wheel)")
                 else:
-                    print(f"    nvidia-smi: no GPUs found in container")
-                    print(f"    (To enable GPU: set GPU_MODE=gpu in .env → ./skynet.sh restart)")
-            except FileNotFoundError:
-                print(f"    nvidia-smi: not found in container (NVIDIA runtime not active)")
-                print(f"    (To enable GPU: set GPU_MODE=gpu in .env → ./skynet.sh restart)")
-            except Exception as nvsmi_err:
-                print(f"    nvidia-smi check failed: {nvsmi_err}")
+                    print(f"    torch.cuda.device_count() = {torch.cuda.device_count()}")
+                    if torch.cuda.device_count() == 0:
+                        print(f"    → No GPU devices visible to PyTorch")
+                    print(f"    NVIDIA_VISIBLE_DEVICES = {os.environ.get('NVIDIA_VISIBLE_DEVICES', '(not set)')}")
+
+                # Check if nvidia-smi is available inside the container
+                # This tells us whether the NVIDIA runtime is injecting drivers
+                try:
+                    nvsmi = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if nvsmi.returncode == 0 and nvsmi.stdout.strip():
+                        print(f"    nvidia-smi sees GPU: {nvsmi.stdout.strip()}")
+                        print(f"    → GPU is exposed but PyTorch can't see it — likely driver/toolkit mismatch")
+                    else:
+                        print(f"    nvidia-smi: no GPUs found in container")
+                        print(f"    → Check: NVIDIA runtime in docker-compose.gpu.yml, nvidia-smi in container")
+                except FileNotFoundError:
+                    print(f"    nvidia-smi: not found in container (NVIDIA runtime not active)")
+                    print(f"    → Check: nvidia-container-toolkit installed, Docker daemon restarted")
+                except Exception as nvsmi_err:
+                    print(f"    nvidia-smi check failed: {nvsmi_err}")
 
         model_kwargs = {
             "trust_remote_code": True,

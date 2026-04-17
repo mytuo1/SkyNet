@@ -91,7 +91,7 @@ async def quick_summarize(content: str) -> str:
                     "stream": False,
                     "options": {"num_predict": 80}
                 },
-                timeout=30.0
+                timeout=10.0
             )
             return resp.json().get("response", content[:200]).strip()
         except (httpx.ConnectTimeout, httpx.ConnectError) as e:

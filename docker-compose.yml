@@ -512,6 +512,7 @@ services:
       - REDIS_URL=${REDIS_URL}
       - WORKSPACE_PATH=/workspace
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - GPU_MODE=${GPU_MODE:-cpu}
     volumes:
       # models-volume persists downloaded models — do NOT wipe casually
       - models-volume:/models
