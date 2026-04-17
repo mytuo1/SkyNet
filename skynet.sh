@@ -286,7 +286,7 @@ _ensure_gpu_runtime() {
             fi
         fi
 
-        # Fix config.toml @/sbin/ldconfig.real on non-Ubuntu distros
+        # Fix config.toml @/sbin/ldconfig.real → portable @/sbin/ldconfig
         if ! _fix_nvidia_ldconfig_real; then
             native_config_changed=true
         fi
@@ -337,6 +337,31 @@ _ensure_gpu_runtime() {
 
         if _nvidia_cli_check; then
             success "GPU runtime recovered after Docker restart"
+            _ensure_nvidia_docker_configured || true
+            if $is_wsl; then
+                export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            fi
+            return 0
+        fi
+
+        # Still broken — try fixing config.toml ldconfig path + restart
+        # The initial fix may have been skipped (e.g. WSL2 not detected, or
+        # nvidia-ctk reset the config). Try the portable ldconfig fix now.
+        if ! _fix_nvidia_ldconfig_real; then
+            info "Fixed nvidia config during escalation — restarting Docker daemon..."
+            local _dm3
+            _dm3="$(_docker_method)"
+            case "$_dm3" in
+                snap)    sudo snap restart docker 2>/dev/null ;;
+                systemd) sudo systemctl restart docker 2>/dev/null ;;
+                service) sudo service docker restart 2>/dev/null ;;
+                desktop) info "Please restart Docker Desktop from the system tray" ;;
+            esac
+            sleep 3
+        fi
+
+        if _nvidia_cli_check; then
+            success "GPU runtime recovered after config fix"
             _ensure_nvidia_docker_configured || true
             if $is_wsl; then
                 export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -430,8 +455,12 @@ _ensure_nvidia_docker_configured() {
 
 # ── Fix config.toml ldconfig.real on any distro ──────────────────────────────
 # nvidia-container-toolkit defaults to @/sbin/ldconfig.real which is
-# Ubuntu-specific. On other distros (or when ldconfig.real doesn't exist),
-# this breaks the container GPU setup. Fix it to @/sbin/ldconfig (portable).
+# Ubuntu-specific. Even on Ubuntu where ldconfig.real exists, it can fail in
+# Docker's prestart hook context (container namespace, snap confinement, etc.).
+# Fix it to @/sbin/ldconfig which is portable and works everywhere:
+# on Ubuntu it's a wrapper that calls ldconfig.real, on other distros it IS
+# the binary. This avoids the prestart hook error:
+#   "libnvidia-ml.so.1: cannot open shared object file: no such file or directory"
 # Returns 0 if config was already correct, 1 if changes were made.
 _fix_nvidia_ldconfig_real() {
     local config_file=""
@@ -444,13 +473,12 @@ _fix_nvidia_ldconfig_real() {
     done
     [ -z "$config_file" ] && return 0
 
-    # Only fix if config references ldconfig.real AND the binary doesn't exist
+    # Always prefer @/sbin/ldconfig over @/sbin/ldconfig.real for portability.
+    # The .real suffix is Ubuntu-specific and can break in hook contexts.
     if grep -q 'ldconfig.*@/sbin/ldconfig\.real' "$config_file" 2>/dev/null; then
-        if [ ! -f /sbin/ldconfig.real ]; then
-            info "Fixing nvidia config: @/sbin/ldconfig.real → @/sbin/ldconfig (ldconfig.real not found)"
-            sudo sed -i 's|@/sbin/ldconfig\.real|@/sbin/ldconfig|g' "$config_file" 2>/dev/null
-            return 1  # config changed
-        fi
+        info "Fixing nvidia config: @/sbin/ldconfig.real → @/sbin/ldconfig (portable)"
+        sudo sed -i 's|@/sbin/ldconfig\.real|@/sbin/ldconfig|g' "$config_file" 2>/dev/null
+        return 1  # config changed
     fi
     return 0
 }
