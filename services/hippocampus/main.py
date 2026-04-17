@@ -79,7 +79,8 @@ def cosine_similarity(a: list, b: list) -> float:
 
 async def quick_summarize(content: str) -> str:
     """Summarize content locally without using Claude API."""
-    if len(content.split()) <= 35:
+    word_count = len(content.split())
+    if word_count <= 60:
         return content
     for attempt in range(2):
         try:
@@ -91,7 +92,7 @@ async def quick_summarize(content: str) -> str:
                     "stream": False,
                     "options": {"num_predict": 80}
                 },
-                timeout=10.0  # short: falls back to truncation if Ollama model is cold-loading
+                timeout=5.0  # short: falls back to truncation if Ollama is busy/cold
             )
             return resp.json().get("response", content[:200]).strip()
         except (httpx.ConnectTimeout, httpx.ConnectError) as e:
@@ -205,9 +206,12 @@ async def encode_episode(req: EncodeRequest,
     start   = time.time()
     content = req.content or req.user_input
 
-    embedding = await embed(content)
-    summary   = await quick_summarize(content)
-    related   = await find_related_episodes(embedding, limit=5) if embedding else []
+    # Embed and summarize in parallel (independent operations)
+    embedding, summary = await asyncio.gather(
+        embed(content),
+        quick_summarize(content),
+    )
+    related = await find_related_episodes(embedding, limit=5) if embedding else []
 
     try:
         episode = await db.query_single("""

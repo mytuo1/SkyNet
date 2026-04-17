@@ -5,6 +5,7 @@
 # Builds a calibration database so "80% confident" actually means correct 80%.
 # Called by thalamus before and after Claude to assess uncertainty.
 
+import asyncio
 import json
 import os
 import sys
@@ -313,37 +314,55 @@ async def assess_intuition(req: IntuitionRequest):
     """
     start = time.time()
 
-    # ── Signal 1: Experience depth (hippocampus episodes in this domain) ──
+    # ── Signals 1+2: Hippocampus episodes + Neocortex knowledge (parallel) ──
+    episodes = []
     episode_count = 0
-    try:
-        hipp_resp = await http.post(f"{HIPPOCAMPUS_URL}/recall", json={
+    knowledge_count = 0
+    top_score = 0.0
+
+    async def _hipp_recall():
+        resp = await http.post(f"{HIPPOCAMPUS_URL}/recall", json={
             "request_id": req.request_id,
             "session_id": req.session_id,
             "user_input": req.user_input,
         }, timeout=10.0)
-        if hipp_resp.status_code == 200:
-            episodes = hipp_resp.json().get("data", {}).get("episodes", [])
-            episode_count = len(episodes)
-    except Exception:
-        episodes = []
+        return resp
 
-    # ── Signal 2: Knowledge breadth (neocortex hits for this domain) ──────
-    knowledge_count = 0
-    top_score       = 0.0
-    try:
-        neo_resp = await http.post(f"{NEOCORTEX_URL}/search", json={
+    async def _neo_search():
+        resp = await http.post(f"{NEOCORTEX_URL}/search", json={
             "request_id": req.request_id,
             "session_id": req.session_id,
             "user_input": req.user_input,
             "domain":     req.domain,
         }, timeout=10.0)
-        if neo_resp.status_code == 200:
-            results = neo_resp.json().get("data", {}).get("results", [])
-            knowledge_count = len(results)
-            if results:
-                top_score = max(float(item.get("score", 0)) for item in results)
+        return resp
+
+    try:
+        hipp_resp, neo_resp = await asyncio.gather(
+            _hipp_recall(), _neo_search(), return_exceptions=True
+        )
     except Exception:
-        pass
+        hipp_resp, neo_resp = None, None
+
+    # Process hippocampus result
+    if not isinstance(hipp_resp, BaseException) and hipp_resp is not None:
+        try:
+            if hipp_resp.status_code == 200:
+                episodes = hipp_resp.json().get("data", {}).get("episodes", [])
+                episode_count = len(episodes)
+        except Exception:
+            pass
+
+    # Process neocortex result
+    if not isinstance(neo_resp, BaseException) and neo_resp is not None:
+        try:
+            if neo_resp.status_code == 200:
+                results = neo_resp.json().get("data", {}).get("results", [])
+                knowledge_count = len(results)
+                if results:
+                    top_score = max(float(item.get("score", 0)) for item in results)
+        except Exception:
+            pass
 
     # ── Signal 3: Domain calibration accuracy (past prediction track record) ─
     cal            = get_domain_calibration(req.domain)

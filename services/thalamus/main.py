@@ -1797,33 +1797,67 @@ async def process(req: ProcessRequest):
         "ms": step_times["simulator"]
     }
 
-    # ── STEP 11: Verification ─────────────────────────────────────────────────
+    # ── STEP 11+12: Verification + Compass enrichment (parallel) ─────────────
+    # These are independent: verification checks claims against knowledge,
+    # compass enrichment refines tone/care.  Running in parallel saves ~1-2s.
     t11 = time.time()
     verification = {}
-    if k.verification_threshold > 0.2 and len(raw_response) > 60:
-        ver_resp = await call("verification", "/verify", {
+    final_response = raw_response
+
+    run_verification = k.verification_threshold > 0.2 and len(raw_response) > 60
+    run_enrich       = bool(compass.get("enrichments")) and k.ethical_weight > 0.4
+
+    async def _do_verification():
+        return await call("verification", "/verify", {
             "request_id": request_id,
             "session_id": req.session_id,
             "claim":      raw_response[:2000],
             "context":    req.user_input[:1000],
             "domain":     (ar.get("required_regions") or ["general"])[0]
         })
+
+    async def _do_enrich():
+        return await call("compass", "/enrich", {
+            "request_id":   request_id,
+            "session_id":   req.session_id,
+            "user_input":   req.user_input,
+            "draft":        raw_response,
+            "compass_data": compass
+        })
+
+    # Build parallel tasks
+    ver_task    = _do_verification() if run_verification else None
+    enrich_task = _do_enrich()       if run_enrich       else None
+
+    if ver_task and enrich_task:
+        ver_resp, enrich_resp = await asyncio.gather(ver_task, enrich_task,
+                                                     return_exceptions=True)
+        if isinstance(ver_resp, BaseException):
+            ver_resp = {"error": str(ver_resp), "data": {}}
+        if isinstance(enrich_resp, BaseException):
+            enrich_resp = {"error": str(enrich_resp), "data": {}}
+    elif ver_task:
+        ver_resp = await ver_task
+        enrich_resp = None
+    elif enrich_task:
+        ver_resp = None
+        enrich_resp = await enrich_task
+    else:
+        ver_resp = None
+        enrich_resp = None
+
+    ver_end = time.time()
+
+    # Process verification result
+    if ver_resp:
         verification = ver_resp.get("data", {})
-        trace["verification"] = {
-            "status":     verification.get("status"),
-            "confidence": verification.get("confidence"),
-            "ms": step_times.get("verification", 0)
-        }
         if ver_resp.get("error"):
             errors.append({"step": "verification", "error": ver_resp["error"]})
-
         if verification.get("status") == "contested":
             raw_response += (
                 f"\n\n*Note: There is conflicting information on this. "
                 f"{verification.get('reasoning', '')}*"
             )
-
-        # Record metacognition feedback
         if verification.get("confidence"):
             asyncio.create_task(call("metacognition", "/feedback", {
                 "domain":                (ar.get("required_regions") or ["general"])[0],
@@ -1832,34 +1866,32 @@ async def process(req: ProcessRequest):
                                          ("confirmed", "probable"),
                 "session_id":            req.session_id
             }))
-    step_times["verification"] = round((time.time() - t11) * 1000, 1)
+
+    step_times["verification"] = round((ver_end - t11) * 1000, 1)
     ver_ms = step_times["verification"]
-    # Update verification trace with final timing
-    if "verification" not in trace:
-        trace["verification"] = {"status": "not_run", "confidence": 1.0, "ms": ver_ms}
+    if ver_resp:
+        trace["verification"] = {
+            "status":     verification.get("status"),
+            "confidence": verification.get("confidence"),
+            "ms": ver_ms
+        }
     else:
-        trace["verification"]["ms"] = ver_ms
+        trace["verification"] = {"status": "not_run", "confidence": 1.0, "ms": ver_ms}
     if ver_ms > 5000:
         print(f"[thalamus] verification took {ver_ms:.0f}ms", flush=True)
 
-    # ── STEP 12: Compass enrichment ───────────────────────────────────────────
-    t12 = time.time()
-    final_response = raw_response
-    if compass.get("enrichments") and k.ethical_weight > 0.4:
-        enrich_resp = await call("compass", "/enrich", {
-            "request_id":   request_id,
-            "session_id":   req.session_id,
-            "user_input":   req.user_input,
-            "draft":        raw_response,
-            "compass_data": compass
-        })
+    # Process enrichment result
+    if enrich_resp:
         final_response = (
             enrich_resp.get("data", {}).get("enriched_response") or raw_response
         )
         trace["compass_enriched"] = True
         if enrich_resp.get("error"):
             errors.append({"step": "compass_enrich", "error": enrich_resp["error"]})
-    step_times["compass_enrich"] = round((time.time() - t12) * 1000, 1)
+    else:
+        final_response = raw_response
+
+    step_times["compass_enrich"] = round((ver_end - t11) * 1000, 1)
     trace["compass_enrich"] = {
         "enriched": trace.get("compass_enriched", False),
         "ms": step_times["compass_enrich"]
@@ -2077,10 +2109,8 @@ async def process(req: ProcessRequest):
                  + (" + web search" if trace.get("web_search", {}).get("searched") else "")},
         {"step": "simulator", "ms": step_times.get("simulator", 0),
          "note": "code execution grounding (if applicable)"},
-        {"step": "verification", "ms": step_times.get("verification", 0),
-         "note": "claim verification against knowledge base"},
-        {"step": "compass_enrich", "ms": step_times.get("compass_enrich", 0),
-         "note": "ethical/value enrichment of response"},
+        {"step": "verification+compass_enrich", "ms": step_times.get("verification", 0),
+         "note": "parallel: claim verification + ethical/value enrichment"},
         {"step": "working_memory_update", "ms": step_times.get("working_memory_update", 0),
          "note": "persist interaction + emotion + hormones to WM"},
         {"step": "db_writes", "ms": step_times.get("db_writes", 0),
