@@ -373,7 +373,7 @@ def _load_models_sync():
         print(f"  Device: {device_label}")
         if has_cuda:
             print(f"  CUDA version: {torch.version.cuda}")
-            print(f"  GPU memory: {torch.cuda.get_device_properties(0).total_mem / 1024**3:.1f} GB")
+            print(f"  GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
 
         model_kwargs = {
             "trust_remote_code": True,
