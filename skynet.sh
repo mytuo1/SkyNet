@@ -223,11 +223,12 @@ _ensure_gpu_runtime() {
         if $_wsl_copy_changed; then
             sudo ldconfig 2>/dev/null
             info "Copied WSL2 NVIDIA libraries into /usr/lib/x86_64-linux-gnu/"
-            # Snap Docker runs in a confined AppArmor context that may cache
-            # filesystem state. Force a daemon restart so it sees the new libs.
-            if [ "$(_docker_method)" = "snap" ]; then
-                wsl_config_changed=true
-            fi
+            # Docker daemon may have started before these libraries existed.
+            # Its prestart hooks (nvidia-container-cli) inherit the daemon's
+            # process context, so a restart is needed for the hooks to find
+            # the newly copied libs. This applies to ALL Docker installs —
+            # snap (confined AppArmor), systemd, and service.
+            wsl_config_changed=true
         fi
 
         # Verify the ldconfig cache was actually updated
@@ -270,6 +271,7 @@ _ensure_gpu_runtime() {
     # ── Native Linux: find libnvidia-ml.so.1 in non-standard locations ───
     # Some distros/drivers install to /usr/lib/x86_64-linux-gnu/ or other
     # paths that ldconfig doesn't know about by default.
+    local native_config_changed=false
     if ! $is_wsl; then
         local nvidia_lib_path=""
         nvidia_lib_path=$(find /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu \
@@ -283,6 +285,25 @@ _ensure_gpu_runtime() {
                 sudo ldconfig 2>/dev/null
             fi
         fi
+
+        # Fix config.toml @/sbin/ldconfig.real on non-Ubuntu distros
+        if ! _fix_nvidia_ldconfig_real; then
+            native_config_changed=true
+        fi
+
+        # If config changed, Docker needs a restart
+        if $native_config_changed; then
+            info "NVIDIA config was updated — restarting Docker daemon..."
+            local _dm_native
+            _dm_native="$(_docker_method)"
+            case "$_dm_native" in
+                snap)    sudo snap restart docker 2>/dev/null ;;
+                systemd) sudo systemctl restart docker 2>/dev/null ;;
+                service) sudo service docker restart 2>/dev/null ;;
+                desktop) info "Please restart Docker Desktop from the system tray" ;;
+            esac
+            sleep 3
+        fi
     fi
 
     # ── Verify nvidia-container-cli (the binary Docker actually uses) ────
@@ -293,7 +314,8 @@ _ensure_gpu_runtime() {
     if command -v nvidia-container-cli &>/dev/null; then
         # Strip LD_LIBRARY_PATH for an honest check (simulates Docker's hook env)
         if _nvidia_cli_check; then
-            # GPU runtime is healthy — set LD_LIBRARY_PATH as belt+suspenders
+            # GPU runtime is healthy — also ensure Docker knows about nvidia runtime
+            _ensure_nvidia_docker_configured || true
             if $is_wsl; then
                 export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             fi
@@ -315,6 +337,21 @@ _ensure_gpu_runtime() {
 
         if _nvidia_cli_check; then
             success "GPU runtime recovered after Docker restart"
+            _ensure_nvidia_docker_configured || true
+            if $is_wsl; then
+                export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            fi
+            return 0
+        fi
+
+        # Still broken — try nvidia-ctk configure as last resort
+        if command -v nvidia-ctk &>/dev/null; then
+            info "Attempting nvidia-ctk runtime configure as last resort..."
+            _ensure_nvidia_docker_configured || true
+        fi
+
+        if _nvidia_cli_check; then
+            success "GPU runtime recovered after nvidia-ctk configure"
             if $is_wsl; then
                 export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             fi
@@ -332,8 +369,10 @@ _ensure_gpu_runtime() {
         if $is_wsl; then
             warn "    • Ensure nvidia-container-toolkit is installed in WSL"
             warn "    • Run: ./skynet.sh setup  (auto-fixes config.toml + copies WSL libs)"
+            warn "    • Copy NVIDIA libs: sudo cp /usr/lib/wsl/lib/lib*.so* /usr/lib/x86_64-linux-gnu/ && sudo ldconfig"
         else
             warn "    • Install nvidia-container-toolkit and restart Docker"
+            warn "    • Run: sudo nvidia-ctk runtime configure --runtime=docker"
         fi
         _docker_restart_hint
         COMPOSE="docker compose"
@@ -352,6 +391,67 @@ _ensure_gpu_runtime() {
     warn "NVIDIA container runtime not detected — falling back to CPU for this session"
     warn "  Install nvidia-container-toolkit to enable GPU containers"
     COMPOSE="docker compose"
+    return 0
+}
+
+# ── Ensure Docker daemon is configured with NVIDIA runtime ────────────────────
+# Docker must have the nvidia runtime registered in daemon.json for GPU device
+# requests (deploy.resources.reservations.devices) to work. Without this,
+# Docker's prestart hooks can't invoke nvidia-container-cli.
+# Runs nvidia-ctk runtime configure if needed, then restarts Docker.
+_ensure_nvidia_docker_configured() {
+    # Already configured?
+    if docker info 2>/dev/null | grep -qi nvidia; then
+        return 0
+    fi
+    # nvidia-ctk must be available
+    if ! command -v nvidia-ctk &>/dev/null; then
+        return 1
+    fi
+    info "Configuring Docker daemon with NVIDIA runtime (nvidia-ctk)..."
+    local _dm
+    _dm="$(_docker_method)"
+    if [ "$_dm" = "snap" ]; then
+        sudo nvidia-ctk runtime configure --runtime=docker \
+            --config /var/snap/docker/current/config/daemon.json 2>/dev/null || return 1
+    else
+        sudo nvidia-ctk runtime configure --runtime=docker 2>/dev/null || return 1
+    fi
+    info "Restarting Docker to apply NVIDIA runtime configuration..."
+    case "$_dm" in
+        snap)    sudo snap restart docker 2>/dev/null ;;
+        systemd) sudo systemctl restart docker 2>/dev/null ;;
+        service) sudo service docker restart 2>/dev/null ;;
+        desktop) info "Please restart Docker Desktop from the system tray" ;;
+    esac
+    sleep 3
+    return 0
+}
+
+# ── Fix config.toml ldconfig.real on any distro ──────────────────────────────
+# nvidia-container-toolkit defaults to @/sbin/ldconfig.real which is
+# Ubuntu-specific. On other distros (or when ldconfig.real doesn't exist),
+# this breaks the container GPU setup. Fix it to @/sbin/ldconfig (portable).
+# Returns 0 if config was already correct, 1 if changes were made.
+_fix_nvidia_ldconfig_real() {
+    local config_file=""
+    for candidate in /etc/nvidia-container-runtime/config.toml \
+                     /etc/nvidia-container-toolkit/config.toml; do
+        if [ -f "$candidate" ]; then
+            config_file="$candidate"
+            break
+        fi
+    done
+    [ -z "$config_file" ] && return 0
+
+    # Only fix if config references ldconfig.real AND the binary doesn't exist
+    if grep -q 'ldconfig.*@/sbin/ldconfig\.real' "$config_file" 2>/dev/null; then
+        if [ ! -f /sbin/ldconfig.real ]; then
+            info "Fixing nvidia config: @/sbin/ldconfig.real → @/sbin/ldconfig (ldconfig.real not found)"
+            sudo sed -i 's|@/sbin/ldconfig\.real|@/sbin/ldconfig|g' "$config_file" 2>/dev/null
+            return 1  # config changed
+        fi
+    fi
     return 0
 }
 
@@ -946,12 +1046,31 @@ cmd_setup() {
                     # (no-cgroups=true + ldconfig="@/sbin/ldconfig")
                     local _wsl_setup_needs_restart=false
                     _ensure_wsl2_nvidia_config || _wsl_setup_needs_restart=true
-                    # Snap Docker: also restart if libs were copied (snap caches fs state)
-                    if [ "$_dmethod" = "snap" ]; then
-                        _wsl_setup_needs_restart=true
-                    fi
+                    # Docker daemon needs restart after lib copies so its
+                    # prestart hooks (nvidia-container-cli) can find the new libs.
+                    # This applies to ALL Docker installs, not just snap.
+                    _wsl_setup_needs_restart=true
                     if $_wsl_setup_needs_restart; then
                         info "Restarting Docker daemon to apply WSL2 NVIDIA fixes..."
+                        case "$_dmethod" in
+                            snap)    sudo snap restart docker 2>/dev/null ;;
+                            systemd) sudo systemctl restart docker 2>/dev/null ;;
+                            service) sudo service docker restart 2>/dev/null ;;
+                            desktop) info "Please restart Docker Desktop from the system tray" ;;
+                        esac
+                        sleep 3
+                    fi
+                fi
+
+                # Auto-configure Docker with NVIDIA runtime if not already done
+                _ensure_nvidia_docker_configured || true
+
+                # Also fix ldconfig.real on non-Ubuntu distros
+                if ! $is_wsl; then
+                    local _native_needs_restart=false
+                    _fix_nvidia_ldconfig_real || _native_needs_restart=true
+                    if $_native_needs_restart; then
+                        info "Restarting Docker for config.toml fix..."
                         case "$_dmethod" in
                             snap)    sudo snap restart docker 2>/dev/null ;;
                             systemd) sudo systemctl restart docker 2>/dev/null ;;
