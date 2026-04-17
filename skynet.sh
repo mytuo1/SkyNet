@@ -170,19 +170,33 @@ _ensure_gpu_runtime() {
     local is_wsl=false
     grep -qi microsoft /proc/version 2>/dev/null && is_wsl=true
 
-    # ── WSL2: Always ensure NVIDIA libraries are registered ──────────────
-    # The ldconfig entry can be lost after a WSL restart (wsl --shutdown).
-    # Re-applying is cheap and idempotent.
+    # ── WSL2: ALWAYS force ldconfig (unconditional — fast & idempotent) ──
+    # On WSL2, NVIDIA libraries live at /usr/lib/wsl/lib/ but ldconfig loses
+    # the registration after every `wsl --shutdown` or Windows reboot.
+    # The `ldconfig -p` check can report stale data, so we skip it entirely
+    # and always re-register. This takes <50ms and is the single most common
+    # cause of "libnvidia-ml.so.1: cannot open shared object file".
     if $is_wsl && [ -d /usr/lib/wsl/lib ]; then
-        if ! ldconfig -p 2>/dev/null | grep -q libnvidia-ml; then
-            info "WSL2: Registering NVIDIA libraries with ldconfig..."
-            echo "/usr/lib/wsl/lib" | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf >/dev/null 2>&1
-            sudo ldconfig 2>/dev/null
-            if ldconfig -p 2>/dev/null | grep -q libnvidia-ml; then
-                success "WSL2 NVIDIA libraries registered"
-            else
-                warn "Could not register WSL2 NVIDIA libs — GPU containers may fail"
-                warn "  Manual fix: echo '/usr/lib/wsl/lib' | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf && sudo ldconfig"
+        echo "/usr/lib/wsl/lib" | sudo tee /etc/ld.so.conf.d/nvidia-wsl.conf >/dev/null 2>&1
+        sudo ldconfig 2>/dev/null
+        # Also export LD_LIBRARY_PATH for the current process (belt + suspenders)
+        export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+
+    # ── Native Linux: find libnvidia-ml.so.1 in non-standard locations ───
+    # Some distros/drivers install to /usr/lib/x86_64-linux-gnu/ or other
+    # paths that ldconfig doesn't know about by default.
+    if ! $is_wsl; then
+        local nvidia_lib_path=""
+        nvidia_lib_path=$(find /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu \
+            /usr/local/lib -name "libnvidia-ml.so.1" 2>/dev/null | head -1 || true)
+        if [ -n "$nvidia_lib_path" ]; then
+            local nvidia_lib_dir
+            nvidia_lib_dir=$(dirname "$nvidia_lib_path")
+            if ! ldconfig -p 2>/dev/null | grep -q libnvidia-ml; then
+                info "Registering NVIDIA libraries from $nvidia_lib_dir..."
+                echo "$nvidia_lib_dir" | sudo tee /etc/ld.so.conf.d/nvidia-skynet.conf >/dev/null 2>&1
+                sudo ldconfig 2>/dev/null
             fi
         fi
     fi
@@ -232,6 +246,16 @@ _ensure_gpu_runtime() {
     warn "  Install nvidia-container-toolkit to enable GPU containers"
     COMPOSE="docker compose"
     return 0
+}
+
+# ── Centralized compose-up wrapper ────────────────────────────────────────────
+# EVERY code path that starts containers MUST use this wrapper.
+# It guarantees GPU runtime validation before any `docker compose up`.
+_compose_up() {
+    _ensure_gpu_runtime
+    # Re-evaluate COMPOSE in case _ensure_gpu_runtime fell back to CPU
+    COMPOSE="$(_compose_files)"
+    $COMPOSE up "$@"
 }
 
 # ── Dependency Checks ─────────────────────────────────────────────────────────
@@ -1121,8 +1145,9 @@ cmd_start() {
     banner
     check_deps
 
-    # Validate GPU runtime before building (may fall back COMPOSE to CPU-only)
+    # Validate GPU runtime + re-evaluate COMPOSE before any compose operations
     _ensure_gpu_runtime
+    COMPOSE="$(_compose_files)"
 
     info "Building containers..."
     compose_build
@@ -1173,7 +1198,7 @@ cmd_start() {
 
     # ── Phase 3: Start all services ──────────────────────────────────────────
     info "Starting all services..."
-    $COMPOSE up -d
+    _compose_up -d
 
     info "Waiting for system health..."
     local health_retries=0
@@ -1218,12 +1243,13 @@ cmd_stop() {
 cmd_restart() {
     banner
 
-    # Validate GPU runtime before restarting (may fall back COMPOSE to CPU-only)
+    # Validate GPU runtime + re-evaluate COMPOSE before restarting
     _ensure_gpu_runtime
+    COMPOSE="$(_compose_files)"
 
     info "Restarting services (preserving all data)..."
     $COMPOSE stop
-    $COMPOSE up -d
+    _compose_up -d
     info "Waiting for system health..."
     local health_retries=0
     while [ $health_retries -lt 30 ]; do
@@ -1299,6 +1325,13 @@ cmd_think() {
 
 cmd_update() {
     banner
+
+    # Validate GPU runtime + re-evaluate COMPOSE before any compose operations.
+    # Without this, WSL2 ldconfig can be stale after wsl --shutdown, causing:
+    #   "libnvidia-ml.so.1: cannot open shared object file: no such file or directory"
+    _ensure_gpu_runtime
+    COMPOSE="$(_compose_files)"
+
     info "Pulling latest code..."
     git pull --rebase || git pull
 
@@ -1306,7 +1339,7 @@ cmd_update() {
     compose_build
 
     info "Restarting updated services..."
-    $COMPOSE up -d
+    _compose_up -d
 
     success "Update complete"
     info "Check health: ./skynet.sh status"
@@ -1321,6 +1354,10 @@ cmd_reset() {
         info "Reset cancelled"
         exit 0
     fi
+
+    # Ensure GPU runtime is valid so COMPOSE points at the right files
+    _ensure_gpu_runtime
+    COMPOSE="$(_compose_files)"
 
     info "Stopping all services..."
     $COMPOSE down -v --remove-orphans
@@ -1343,6 +1380,10 @@ cmd_rebuild() {
         info "Rebuild cancelled"
         exit 0
     fi
+
+    # Ensure GPU runtime is valid so COMPOSE points at the right files
+    _ensure_gpu_runtime
+    COMPOSE="$(_compose_files)"
 
     info "Stopping all services and removing volumes..."
     $COMPOSE down -v --remove-orphans

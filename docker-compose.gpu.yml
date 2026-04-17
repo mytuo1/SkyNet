@@ -7,9 +7,18 @@
 # This file adds NVIDIA GPU reservations to services that benefit from GPU
 # acceleration. Without this override, all services run on CPU — the learner
 # code auto-detects CUDA availability at runtime and falls back gracefully.
+#
+# NVIDIA_VISIBLE_DEVICES + NVIDIA_DRIVER_CAPABILITIES tell the NVIDIA
+# container runtime which GPUs and driver features to expose. These are
+# essential for nvidia-container-cli to correctly set up the container.
 # ═══════════════════════════════════════════════════════════════════════════════
 services:
   learner:
+    environment:
+      # Tell nvidia-container-runtime to expose all GPUs (or subset via .env)
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      # Expose compute (CUDA) + utility (nvidia-smi) capabilities
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     deploy:
       resources:
         reservations:
